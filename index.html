@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#111827">
-<title>Barcode Count</title>
+<title>Barscan</title>
 <script src="html5-qrcode.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -16,20 +16,17 @@
     max-width: 640px; margin: 0 auto;
   }
   header {
-    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
     background: #1f2937; position: sticky; top: 0; z-index: 10;
   }
-  header h1 { font-size: 1.1rem; font-weight: 600; }
-  header .count-badge { font-size: 0.8rem; color: #9ca3af; }
+  header h1 { font-size: 1.1rem; font-weight: 600; white-space: nowrap; }
+  header .right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  header .user-badge { font-size: 0.8rem; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; }
+  header button { padding: 8px 12px; font-size: 0.8rem; }
 
-  #reader-wrap { position: relative; background: #000; }
-  #reader { width: 100%; }
-  #reader video { width: 100% !important; display: block; }
-  #scanner-off {
-    padding: 40px 16px; text-align: center; color: #9ca3af; background: #0b0f19;
-  }
+  .view { display: none; flex: 1; flex-direction: column; min-height: 0; }
+  .view.active { display: flex; }
 
-  .controls { display: flex; gap: 8px; padding: 10px 12px; background: #1f2937; }
   button {
     border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
     padding: 12px 14px; cursor: pointer; color: #fff; background: #374151;
@@ -41,11 +38,54 @@
   button.flex { flex: 1; }
   button:disabled { opacity: 0.45; }
 
-  #manual-row { display: flex; gap: 8px; padding: 0 12px 10px; background: #1f2937; }
-  #manual-input {
-    flex: 1; border: 1px solid #4b5563; border-radius: 10px; background: #111827;
-    color: #f9fafb; padding: 12px; font-size: 1rem;
+  input[type="text"], input[type="password"], input[type="number"] {
+    border: 1px solid #4b5563; border-radius: 10px; background: #111827;
+    color: #f9fafb; padding: 12px; font-size: 1rem; width: 100%;
   }
+
+  /* ---- Auth view ---- */
+  #auth-view { justify-content: center; padding: 24px 20px; }
+  .auth-card { background: #1f2937; border-radius: 16px; padding: 24px 20px; }
+  .auth-card .logo { text-align: center; font-size: 2rem; margin-bottom: 4px; }
+  .auth-card h2 { text-align: center; font-size: 1.4rem; margin-bottom: 2px; }
+  .auth-card .sub { text-align: center; color: #9ca3af; font-size: 0.85rem; margin-bottom: 18px; }
+  .auth-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .auth-tabs button { flex: 1; background: #111827; color: #9ca3af; }
+  .auth-tabs button.on { background: #2563eb; color: #fff; }
+  .auth-card label { display: block; font-size: 0.8rem; color: #9ca3af; margin: 10px 0 4px; }
+  #auth-submit { width: 100%; margin-top: 18px; }
+  .auth-note { font-size: 0.72rem; color: #6b7280; margin-top: 14px; text-align: center; line-height: 1.4; }
+
+  /* ---- Home (stocktakes) view ---- */
+  #home-view { padding: 16px 12px; overflow-y: auto; }
+  #home-view h2 { font-size: 1rem; color: #9ca3af; margin: 4px 4px 10px; }
+  #new-stocktake { width: 100%; margin-bottom: 14px; }
+  .stocktake {
+    display: flex; align-items: center; gap: 10px;
+    background: #1f2937; border-radius: 12px; padding: 14px 12px; margin-bottom: 8px; cursor: pointer;
+  }
+  .stocktake .info { flex: 1; min-width: 0; }
+  .stocktake .name { font-weight: 600; font-size: 1.05rem; }
+  .stocktake .meta { font-size: 0.75rem; color: #9ca3af; margin-top: 3px; }
+  .stocktake .del { background: transparent; color: #f87171; font-size: 1.1rem; padding: 8px; }
+  .empty { text-align: center; color: #6b7280; padding: 32px 16px; }
+
+  /* ---- Scan view ---- */
+  .subheader {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #1f2937;
+    border-bottom: 1px solid #374151;
+  }
+  .subheader .name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .subheader .count-badge { font-size: 0.78rem; color: #9ca3af; white-space: nowrap; }
+  #back-btn { padding: 8px 12px; font-size: 0.85rem; }
+
+  #reader-wrap { position: relative; background: #000; }
+  #reader { width: 100%; }
+  #reader video { width: 100% !important; display: block; }
+  #scanner-off { padding: 32px 16px; text-align: center; color: #9ca3af; background: #0b0f19; font-size: 0.9rem; }
+
+  .controls { display: flex; gap: 8px; padding: 10px 12px; background: #1f2937; }
+  #manual-row { display: flex; gap: 8px; padding: 0 12px 10px; background: #1f2937; }
 
   #list { flex: 1; overflow-y: auto; padding: 8px 12px 90px; }
   .item {
@@ -63,40 +103,35 @@
     padding: 8px 4px; color: #f9fafb;
   }
   .item .del { background: transparent; color: #f87171; font-size: 1.2rem; padding: 8px; }
-  .empty { text-align: center; color: #6b7280; padding: 32px 16px; }
 
   footer {
     position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
     width: 100%; max-width: 640px;
-    display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-    background: #1f2937; border-top: 1px solid #374151;
+    display: none; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: #1f2937; border-top: 1px solid #374151; z-index: 10;
   }
+  footer.active { display: flex; }
 
-  /* Quantity dialog */
-  #qty-overlay {
+  /* ---- Modals ---- */
+  .overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 50;
     display: none; align-items: center; justify-content: center; padding: 16px;
   }
-  #qty-overlay.open { display: flex; }
-  #qty-dialog {
-    background: #1f2937; border-radius: 16px; padding: 20px; width: 100%; max-width: 360px;
-  }
-  #qty-dialog .code { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
+  .overlay.open { display: flex; }
+  .dialog { background: #1f2937; border-radius: 16px; padding: 20px; width: 100%; max-width: 360px; }
+  .dialog .title { font-weight: 600; }
+  .dialog .code { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
     background: #111827; padding: 10px; border-radius: 8px; margin: 10px 0; }
-  #qty-dialog .hint { font-size: 0.8rem; color: #fbbf24; margin-bottom: 8px; }
-  #qty-input {
-    width: 100%; font-size: 1.6rem; text-align: center; padding: 12px;
-    border-radius: 10px; border: 1px solid #4b5563; background: #111827; color: #f9fafb;
-    margin-bottom: 12px;
-  }
-  .qty-quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .dialog .hint { font-size: 0.8rem; color: #fbbf24; margin-bottom: 8px; }
+  #qty-input { font-size: 1.6rem; text-align: center; margin-bottom: 14px; }
+  #name-input { margin: 12px 0 14px; }
   .dialog-actions { display: flex; gap: 8px; }
 
   #toast {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
     background: #059669; color: #fff; padding: 10px 18px; border-radius: 999px;
     font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 60;
-    white-space: nowrap;
+    white-space: nowrap; max-width: 92vw; overflow: hidden; text-overflow: ellipsis;
   }
   #toast.show { opacity: 1; }
 </style>
@@ -104,46 +139,95 @@
 <body>
 
 <header>
-  <h1>📦 Barcode Count</h1>
-  <span class="count-badge" id="badge">0 items</span>
+  <h1>📦 Barscan</h1>
+  <div class="right">
+    <span class="user-badge" id="user-badge"></span>
+    <button id="logout-btn" style="display:none">Log out</button>
+  </div>
 </header>
 
-<div id="reader-wrap">
-  <div id="reader"></div>
-  <div id="scanner-off">Camera is off. Tap <b>Start camera</b> to begin scanning.<br>
-    <small>Camera access requires HTTPS and permission from your browser.</small>
+<!-- ===== Auth ===== -->
+<div id="auth-view" class="view">
+  <div class="auth-card">
+    <div class="logo">📦</div>
+    <h2>Barscan</h2>
+    <div class="sub">Barcode stocktaking</div>
+    <div class="auth-tabs">
+      <button id="tab-login" class="on">Log in</button>
+      <button id="tab-signup">Sign up</button>
+    </div>
+    <label for="auth-user">Username</label>
+    <input id="auth-user" type="text" autocomplete="username" autocapitalize="none">
+    <label for="auth-pass">Password</label>
+    <input id="auth-pass" type="password" autocomplete="current-password">
+    <div id="confirm-row" style="display:none">
+      <label for="auth-pass2">Confirm password</label>
+      <input id="auth-pass2" type="password" autocomplete="new-password">
+    </div>
+    <button id="auth-submit" class="primary">Log in</button>
+    <div class="auth-note">Accounts and stocktake data are stored on this device only.
+      Use the same device (and browser) to continue a stocktake later.</div>
   </div>
 </div>
 
-<div class="controls">
-  <button id="toggle-cam" class="primary flex">▶ Start camera</button>
-</div>
-<div id="manual-row">
-  <input id="manual-input" type="text" placeholder="Or type a barcode…" autocomplete="off">
-  <button id="manual-add">Add</button>
+<!-- ===== Home: stocktake list ===== -->
+<div id="home-view" class="view">
+  <button id="new-stocktake" class="primary">＋ New stocktake</button>
+  <h2>Saved stocktakes</h2>
+  <div id="stocktake-list"></div>
 </div>
 
-<div id="list"></div>
+<!-- ===== Scan view ===== -->
+<div id="scan-view" class="view">
+  <div class="subheader">
+    <button id="back-btn">‹ Back</button>
+    <div class="name" id="current-name"></div>
+    <span class="count-badge" id="badge"></span>
+  </div>
+  <div id="reader-wrap">
+    <div id="reader"></div>
+    <div id="scanner-off">Camera is off. Tap <b>Start camera</b> to begin scanning.<br>
+      <small>Camera access requires HTTPS and permission from your browser.</small>
+    </div>
+  </div>
+  <div class="controls">
+    <button id="toggle-cam" class="primary flex">▶ Start camera</button>
+  </div>
+  <div id="manual-row">
+    <input id="manual-input" type="text" placeholder="Or type a barcode…" autocomplete="off">
+    <button id="manual-add">Add</button>
+  </div>
+  <div id="list"></div>
+</div>
 
-<footer>
+<footer id="scan-footer">
   <button id="export-csv" class="success flex">⬇ Export CSV</button>
   <button id="share" class="flex">Share</button>
   <button id="clear" class="danger">Clear</button>
 </footer>
 
-<div id="qty-overlay">
-  <div id="qty-dialog">
-    <div style="font-weight:600">Enter quantity</div>
+<!-- ===== Quantity dialog ===== -->
+<div id="qty-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Enter quantity</div>
     <div class="code" id="qty-code"></div>
     <div class="hint" id="qty-hint" style="display:none"></div>
-    <input id="qty-input" type="number" inputmode="numeric" min="1" step="1" value="1">
-    <div class="qty-quick">
-      <button data-q="1">1</button><button data-q="5">5</button>
-      <button data-q="10">10</button><button data-q="25">25</button>
-    </div>
+    <input id="qty-input" type="number" inputmode="numeric" min="1" step="1" placeholder="Qty">
     <div class="dialog-actions">
       <button id="qty-cancel" class="flex">Cancel</button>
       <button id="qty-ok" class="primary flex">Save & continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== New stocktake dialog ===== -->
+<div id="name-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">New stocktake</div>
+    <input id="name-input" type="text" placeholder="Name, e.g. Warehouse A – July" maxlength="60">
+    <div class="dialog-actions">
+      <button id="name-cancel" class="flex">Cancel</button>
+      <button id="name-ok" class="primary flex">Create</button>
     </div>
   </div>
 </div>
@@ -154,20 +238,37 @@
 (function () {
   'use strict';
 
-  var STORAGE_KEY = 'barcode-count-items-v1';
-  var items = [];            // [{code, qty, first, last}]
+  var USERS_KEY = 'barscan-users-v1';
+  var TAKES_KEY = 'barscan-stocktakes-v1';
+  var SESSION_KEY = 'barscan-session-v1';
+
+  var users = loadJSON(USERS_KEY, {});      // {username: {salt, hash, createdAt}}
+  var takes = loadJSON(TAKES_KEY, []);      // [{id, owner, name, items[], createdAt, updatedAt}]
+  var session = loadJSON(SESSION_KEY, null); // {username}
+
+  var currentUser = null;
+  var currentTake = null;
   var scanner = null;
   var scanning = false;
   var dialogOpen = false;
   var pendingCode = null;
   var lastScan = { code: null, at: 0 };
-
-  try { items = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { items = []; }
+  var authMode = 'login';
 
   var $ = function (id) { return document.getElementById(id); };
-  var listEl = $('list'), badgeEl = $('badge');
 
-  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); }
+  function loadJSON(key, fallback) {
+    try {
+      var v = JSON.parse(localStorage.getItem(key));
+      return v === null || v === undefined ? fallback : v;
+    } catch (e) { return fallback; }
+  }
+  function saveUsers() { localStorage.setItem(USERS_KEY, JSON.stringify(users)); }
+  function saveTakes() { localStorage.setItem(TAKES_KEY, JSON.stringify(takes)); }
+  function saveSession() {
+    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else localStorage.removeItem(SESSION_KEY);
+  }
 
   function toast(msg, bg) {
     var t = $('toast');
@@ -175,7 +276,7 @@
     t.style.background = bg || '#059669';
     t.classList.add('show');
     clearTimeout(t._h);
-    t._h = setTimeout(function () { t.classList.remove('show'); }, 1400);
+    t._h = setTimeout(function () { t.classList.remove('show'); }, 1600);
   }
 
   function beep() {
@@ -190,12 +291,166 @@
     if (navigator.vibrate) navigator.vibrate(80);
   }
 
-  function totalQty() {
-    return items.reduce(function (s, it) { return s + it.qty; }, 0);
+  // ---- Views ----
+  function showView(name) {
+    ['auth-view', 'home-view', 'scan-view'].forEach(function (id) {
+      $(id).classList.toggle('active', id === name + '-view');
+    });
+    $('scan-footer').classList.toggle('active', name === 'scan');
+    $('logout-btn').style.display = currentUser ? '' : 'none';
+    $('user-badge').textContent = currentUser || '';
+    if (name !== 'scan' && scanning) stopScanner();
   }
 
-  function render() {
-    badgeEl.textContent = items.length + ' items · ' + totalQty() + ' total qty';
+  // ---- Auth ----
+  function hashPw(pw, salt) {
+    var data = new TextEncoder().encode(salt + ':' + pw);
+    return crypto.subtle.digest('SHA-256', data).then(function (buf) {
+      return Array.prototype.map.call(new Uint8Array(buf), function (b) {
+        return b.toString(16).padStart(2, '0');
+      }).join('');
+    });
+  }
+  function randomSalt() {
+    var a = new Uint8Array(16);
+    crypto.getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  }
+
+  function setAuthMode(mode) {
+    authMode = mode;
+    $('tab-login').classList.toggle('on', mode === 'login');
+    $('tab-signup').classList.toggle('on', mode === 'signup');
+    $('confirm-row').style.display = mode === 'signup' ? '' : 'none';
+    $('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
+    $('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+  }
+  $('tab-login').onclick = function () { setAuthMode('login'); };
+  $('tab-signup').onclick = function () { setAuthMode('signup'); };
+
+  function submitAuth() {
+    var name = $('auth-user').value.trim();
+    var pw = $('auth-pass').value;
+    if (!name || !pw) { toast('Enter a username and password', '#b91c1c'); return; }
+    if (authMode === 'signup') {
+      if (pw.length < 4) { toast('Password must be at least 4 characters', '#b91c1c'); return; }
+      if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); return; }
+      if (users[name]) { toast('That username already exists', '#b91c1c'); return; }
+      var salt = randomSalt();
+      hashPw(pw, salt).then(function (hash) {
+        users[name] = { salt: salt, hash: hash, createdAt: Date.now() };
+        saveUsers();
+        loginAs(name);
+        toast('Account created — welcome, ' + name + '!');
+      });
+    } else {
+      var u = users[name];
+      if (!u) { toast('Unknown username', '#b91c1c'); return; }
+      hashPw(pw, u.salt).then(function (hash) {
+        if (hash !== u.hash) { toast('Wrong password', '#b91c1c'); return; }
+        loginAs(name);
+      });
+    }
+  }
+  $('auth-submit').onclick = submitAuth;
+  $('auth-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter' && authMode === 'login') submitAuth(); });
+  $('auth-pass2').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAuth(); });
+
+  function loginAs(name) {
+    currentUser = name;
+    session = { username: name };
+    saveSession();
+    $('auth-pass').value = ''; $('auth-pass2').value = '';
+    renderHome();
+    showView('home');
+  }
+
+  $('logout-btn').onclick = function () {
+    currentUser = null; currentTake = null;
+    session = null; saveSession();
+    showView('auth');
+  };
+
+  // ---- Stocktakes (home) ----
+  function myTakes() {
+    return takes.filter(function (t) { return t.owner === currentUser; });
+  }
+
+  function takeTotals(t) {
+    var qty = t.items.reduce(function (s, it) { return s + it.qty; }, 0);
+    return t.items.length + ' items · ' + qty + ' total qty';
+  }
+
+  function renderHome() {
+    var listEl = $('stocktake-list');
+    var mine = myTakes().sort(function (a, b) { return b.updatedAt - a.updatedAt; });
+    if (!mine.length) {
+      listEl.innerHTML = '<div class="empty">No stocktakes yet.<br>Create one to start scanning.</div>';
+      return;
+    }
+    listEl.innerHTML = '';
+    mine.forEach(function (t) {
+      var row = document.createElement('div');
+      row.className = 'stocktake';
+      var info = document.createElement('div');
+      info.className = 'info';
+      var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = t.name;
+      var meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = takeTotals(t) + ' · updated ' + new Date(t.updatedAt).toLocaleString();
+      info.appendChild(nm); info.appendChild(meta);
+      var del = document.createElement('button');
+      del.className = 'del'; del.textContent = '✕';
+      del.onclick = function (e) {
+        e.stopPropagation();
+        if (confirm('Delete stocktake "' + t.name + '" and its ' + t.items.length + ' items? Export first if you need the data.')) {
+          takes.splice(takes.indexOf(t), 1); saveTakes(); renderHome();
+        }
+      };
+      row.appendChild(info); row.appendChild(del);
+      row.onclick = function () { openTake(t); };
+      listEl.appendChild(row);
+    });
+  }
+
+  $('new-stocktake').onclick = function () {
+    $('name-input').value = '';
+    $('name-overlay').classList.add('open');
+    setTimeout(function () { $('name-input').focus(); }, 50);
+  };
+  $('name-cancel').onclick = function () { $('name-overlay').classList.remove('open'); };
+  function createTake() {
+    var name = $('name-input').value.trim();
+    if (!name) { toast('Enter a name for the stocktake', '#b91c1c'); return; }
+    var now = Date.now();
+    var t = { id: 'st-' + now + '-' + Math.random().toString(36).slice(2, 8),
+              owner: currentUser, name: name, items: [], createdAt: now, updatedAt: now };
+    takes.push(t); saveTakes();
+    $('name-overlay').classList.remove('open');
+    openTake(t);
+  }
+  $('name-ok').onclick = createTake;
+  $('name-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') createTake(); });
+
+  function openTake(t) {
+    currentTake = t;
+    $('current-name').textContent = t.name;
+    renderItems();
+    showView('scan');
+  }
+
+  $('back-btn').onclick = function () {
+    currentTake = null;
+    renderHome();
+    showView('home');
+  };
+
+  // ---- Items in current stocktake ----
+  function touchTake() { currentTake.updatedAt = Date.now(); saveTakes(); }
+
+  function renderItems() {
+    var listEl = $('list');
+    $('badge').textContent = takeTotals(currentTake);
+    var items = currentTake.items;
     if (!items.length) {
       listEl.innerHTML = '<div class="empty">No scans yet.<br>Point the camera at a barcode to start.</div>';
       return;
@@ -220,16 +475,16 @@
       var val = document.createElement('div'); val.className = 'qty-val'; val.textContent = it.qty;
       var plus = document.createElement('button'); plus.textContent = '+';
       minus.onclick = function () {
-        if (it.qty > 1) { it.qty--; it.last = Date.now(); save(); render(); }
+        if (it.qty > 1) { it.qty--; it.last = Date.now(); touchTake(); renderItems(); }
       };
-      plus.onclick = function () { it.qty++; it.last = Date.now(); save(); render(); };
+      plus.onclick = function () { it.qty++; it.last = Date.now(); touchTake(); renderItems(); };
       val.onclick = function () { openQtyDialog(it.code, true); };
       qc.appendChild(minus); qc.appendChild(val); qc.appendChild(plus);
 
       var del = document.createElement('button');
       del.className = 'del'; del.textContent = '✕';
       del.onclick = function () {
-        if (confirm('Remove ' + it.code + '?')) { items.splice(i, 1); save(); render(); }
+        if (confirm('Remove ' + it.code + '?')) { items.splice(i, 1); touchTake(); renderItems(); }
       };
 
       row.appendChild(info); row.appendChild(qc); row.appendChild(del);
@@ -241,7 +496,7 @@
   function openQtyDialog(code, isEdit) {
     pendingCode = code;
     dialogOpen = true;
-    var existing = items.find(function (it) { return it.code === code; });
+    var existing = currentTake.items.find(function (it) { return it.code === code; });
     $('qty-code').textContent = code;
     var hint = $('qty-hint');
     if (existing && !isEdit) {
@@ -254,7 +509,7 @@
       hint.style.display = 'none';
     }
     $('qty-overlay').dataset.mode = isEdit ? 'edit' : 'scan';
-    $('qty-input').value = isEdit && existing ? existing.qty : 1;
+    $('qty-input').value = isEdit && existing ? existing.qty : '';
     $('qty-overlay').classList.add('open');
     setTimeout(function () { $('qty-input').focus(); $('qty-input').select(); }, 50);
   }
@@ -270,15 +525,15 @@
     if (!qty || qty < 1) { toast('Enter a quantity of 1 or more', '#b91c1c'); return; }
     var code = pendingCode;
     var mode = $('qty-overlay').dataset.mode;
-    var existing = items.find(function (it) { return it.code === code; });
+    var existing = currentTake.items.find(function (it) { return it.code === code; });
     var now = Date.now();
     if (existing) {
       existing.qty = (mode === 'edit') ? qty : existing.qty + qty;
       existing.last = now;
     } else {
-      items.unshift({ code: code, qty: qty, first: now, last: now });
+      currentTake.items.unshift({ code: code, qty: qty, first: now, last: now });
     }
-    save(); render();
+    touchTake(); renderItems();
     toast(code + '  ×' + qty + ' saved');
     closeQtyDialog();
   }
@@ -287,9 +542,6 @@
   $('qty-cancel').onclick = closeQtyDialog;
   $('qty-input').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') commitQty();
-  });
-  document.querySelectorAll('.qty-quick button').forEach(function (b) {
-    b.onclick = function () { $('qty-input').value = b.dataset.q; commitQty(); };
   });
 
   // ---- Scanning ----
@@ -354,9 +606,10 @@
   }
 
   function buildCsv() {
-    var rows = [['barcode', 'qty', 'first_scanned', 'last_scanned']];
-    items.forEach(function (it) {
-      rows.push([it.code, it.qty, new Date(it.first).toISOString(), new Date(it.last).toISOString()]);
+    var rows = [['stocktake', 'barcode', 'qty', 'first_scanned', 'last_scanned']];
+    currentTake.items.forEach(function (it) {
+      rows.push([currentTake.name, it.code, it.qty,
+                 new Date(it.first).toISOString(), new Date(it.last).toISOString()]);
     });
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
@@ -364,12 +617,13 @@
   function fileName() {
     var d = new Date();
     var pad = function (n) { return String(n).padStart(2, '0'); };
-    return 'barcode-count-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+    var slug = currentTake.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'stocktake';
+    return 'barscan-' + slug + '-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
            '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.csv';
   }
 
   $('export-csv').onclick = function () {
-    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+    if (!currentTake.items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
     var blob = new Blob(['﻿' + buildCsv()], { type: 'text/csv;charset=utf-8' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -381,11 +635,11 @@
   };
 
   $('share').onclick = function () {
-    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+    if (!currentTake.items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
     var csv = '﻿' + buildCsv();
     var file = new File([csv], fileName(), { type: 'text/csv' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file], title: 'Barcode count export' }).catch(function () {});
+      navigator.share({ files: [file], title: 'Barscan export: ' + currentTake.name }).catch(function () {});
     } else if (navigator.clipboard) {
       navigator.clipboard.writeText(buildCsv()).then(
         function () { toast('CSV copied to clipboard'); },
@@ -397,13 +651,21 @@
   };
 
   $('clear').onclick = function () {
-    if (!items.length) return;
-    if (confirm('Delete all ' + items.length + ' scanned items? Export first if you need the data.')) {
-      items = []; save(); render();
+    if (!currentTake.items.length) return;
+    if (confirm('Delete all ' + currentTake.items.length + ' scanned items in "' + currentTake.name + '"? Export first if you need the data.')) {
+      currentTake.items.length = 0; touchTake(); renderItems();
     }
   };
 
-  render();
+  // ---- Boot ----
+  if (session && users[session.username]) {
+    currentUser = session.username;
+    renderHome();
+    showView('home');
+  } else {
+    session = null; saveSession();
+    showView('auth');
+  }
 })();
 </script>
 </body>
