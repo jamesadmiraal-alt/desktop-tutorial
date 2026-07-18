@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - claude/barcode-scanner-export-465eu9
   workflow_dispatch:
 
 permissions:
