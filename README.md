@@ -1,9 +1,9 @@
-# Barscan
+# 🍺 Barscan
 
-A phone-friendly web app for barcode stocktaking, backed by [Supabase](https://supabase.com):
+A phone-friendly web app for hospitality stocktaking, backed by [Supabase](https://supabase.com). The site has a marketing landing page (`index.html`) with pricing, and the app itself (`app.html`):
 
 1. **Log in** (or sign up) with an email and password
-2. **Create a stocktake** and give it a name (e.g. "Warehouse A – July")
+2. **Create a stocktake** and give it a name (e.g. "Main Bar" or "Cellar")
 3. **Scan** barcodes with the phone camera (or type them in manually)
 4. **Enter the quantity** for each scan — scanning the same barcode again adds to its quantity
 5. **Leave and come back any time, on any device** — stocktakes are stored in the cloud and can be reopened and continued wherever you log in
@@ -23,20 +23,28 @@ A phone-friendly web app for barcode stocktaking, backed by [Supabase](https://s
 
 | File | Purpose |
 |---|---|
-| `index.html` | The whole app (UI + logic) |
-| `config.js` | Your Supabase project URL and anon key |
-| `schema.sql` | Database tables, trigger, and row-level-security policies |
+| `index.html` | Landing page: features, how it works, pricing |
+| `app.html` | The app (login/signup, scanning, stocktakes, export) |
+| `config.js` | Your Supabase project URL, anon key, and upgrade link |
+| `schema.sql` | Database tables, triggers, and row-level-security policies |
 | `html5-qrcode.min.js` | Vendored barcode-scanning library |
 | `supabase.min.js` | Vendored Supabase JS client |
 
 Libraries are vendored (no CDN) so the app keeps loading on flaky connections.
+
+## Plans
+
+- **Free** — up to **3 products per stocktake** (unlimited stocktakes). When a 4th product is scanned, the app offers an upgrade link.
+- **Pro — $25/month per user** — unlimited products per stocktake.
+
+The limit is enforced both in the app and server-side by a row-level-security policy, keyed off `profiles.is_pro`. Payments aren't automated yet: after someone pays, flip their flag (SQL at the bottom of `schema.sql`), or later wire a Stripe Payment Link + webhook and point `upgradeUrl` in `config.js` at it.
 
 ## Supabase setup (once)
 
 1. Create (or pick) a project at [supabase.com/dashboard](https://supabase.com/dashboard)
 2. **SQL Editor → New query** → paste the contents of [`schema.sql`](schema.sql) → **Run**
 3. **Project Settings → API**: copy the **Project URL** and the **anon public** key into [`config.js`](config.js)
-4. Optional but recommended for warehouse use: **Authentication → Sign In / Up → Email** → turn **off** "Confirm email", so operators can sign up and start scanning immediately
+4. Optional but recommended for venue use: **Authentication → Sign In / Up → Email** → turn **off** "Confirm email", so operators can sign up and start scanning immediately
 5. The anon key is safe to ship in the frontend — access control is enforced by the row-level-security policies in `schema.sql`
 
 ## Hosting / deployment

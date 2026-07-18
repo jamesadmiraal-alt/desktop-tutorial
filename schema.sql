@@ -1,6 +1,38 @@
 -- Barscan schema for Supabase
 -- Run this once in your Supabase project: Dashboard -> SQL Editor -> New query -> paste -> Run
+-- (Safe to re-run: statements are idempotent.)
 
+-- ---- Profiles: one row per user, holds the Pro subscription flag ----
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  is_pro boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table public.profiles enable row level security;
+
+drop policy if exists "read own profile" on public.profiles;
+create policy "read own profile" on public.profiles
+  for select using (auth.uid() = id);
+-- No insert/update policies for clients: profiles are created by the trigger
+-- below, and is_pro is flipped only by you (dashboard/service role/Stripe webhook).
+
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id) values (new.id) on conflict do nothing;
+  return new;
+end $$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- Backfill profiles for any users that signed up before this table existed
+insert into public.profiles (id) select id from auth.users on conflict do nothing;
+
+-- ---- Stocktakes ----
 create table if not exists public.stocktakes (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
@@ -38,7 +70,7 @@ create trigger touch_stocktake_on_items
   after insert or update or delete on public.stocktake_items
   for each row execute function public.touch_stocktake();
 
--- Row Level Security: each user can only see and modify their own rows
+-- ---- Row Level Security ----
 alter table public.stocktakes enable row level security;
 alter table public.stocktake_items enable row level security;
 
@@ -46,6 +78,32 @@ drop policy if exists "own stocktakes" on public.stocktakes;
 create policy "own stocktakes" on public.stocktakes
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+-- Items: read/update/delete own rows freely; INSERT enforces the free-plan
+-- limit server-side — free users can hold at most 3 distinct products per
+-- stocktake, Pro users (profiles.is_pro) are unlimited.
 drop policy if exists "own items" on public.stocktake_items;
-create policy "own items" on public.stocktake_items
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "select own items" on public.stocktake_items;
+drop policy if exists "update own items" on public.stocktake_items;
+drop policy if exists "delete own items" on public.stocktake_items;
+drop policy if exists "insert own items" on public.stocktake_items;
+
+create policy "select own items" on public.stocktake_items
+  for select using (auth.uid() = user_id);
+create policy "update own items" on public.stocktake_items
+  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "delete own items" on public.stocktake_items
+  for delete using (auth.uid() = user_id);
+create policy "insert own items" on public.stocktake_items
+  for insert with check (
+    auth.uid() = user_id
+    and (
+      coalesce((select p.is_pro from public.profiles p where p.id = auth.uid()), false)
+      or (select count(*) from public.stocktake_items i
+            where i.stocktake_id = stocktake_items.stocktake_id) < 3
+    )
+  );
+
+-- ---- Upgrading a user to Pro ----
+-- Until payments are automated (e.g. a Stripe webhook), flip the flag manually:
+--   update public.profiles set is_pro = true
+--    where id = (select id from auth.users where email = 'person@example.com');
