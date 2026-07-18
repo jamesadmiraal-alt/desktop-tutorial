@@ -6,6 +6,8 @@
 <meta name="theme-color" content="#111827">
 <title>Barscan</title>
 <script src="html5-qrcode.min.js"></script>
+<script src="supabase.min.js"></script>
+<script src="config.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
@@ -38,13 +40,13 @@
   button.flex { flex: 1; }
   button:disabled { opacity: 0.45; }
 
-  input[type="text"], input[type="password"], input[type="number"] {
+  input[type="text"], input[type="email"], input[type="password"], input[type="number"] {
     border: 1px solid #4b5563; border-radius: 10px; background: #111827;
     color: #f9fafb; padding: 12px; font-size: 1rem; width: 100%;
   }
 
-  /* ---- Auth view ---- */
-  #auth-view { justify-content: center; padding: 24px 20px; }
+  /* ---- Setup / Auth views ---- */
+  #setup-view, #auth-view { justify-content: center; padding: 24px 20px; }
   .auth-card { background: #1f2937; border-radius: 16px; padding: 24px 20px; }
   .auth-card .logo { text-align: center; font-size: 2rem; margin-bottom: 4px; }
   .auth-card h2 { text-align: center; font-size: 1.4rem; margin-bottom: 2px; }
@@ -55,6 +57,8 @@
   .auth-card label { display: block; font-size: 0.8rem; color: #9ca3af; margin: 10px 0 4px; }
   #auth-submit { width: 100%; margin-top: 18px; }
   .auth-note { font-size: 0.72rem; color: #6b7280; margin-top: 14px; text-align: center; line-height: 1.4; }
+  .setup-card code { background: #111827; padding: 2px 6px; border-radius: 6px; font-size: 0.85em; }
+  .setup-card p { color: #d1d5db; font-size: 0.9rem; line-height: 1.5; margin-top: 10px; }
 
   /* ---- Home (stocktakes) view ---- */
   #home-view { padding: 16px 12px; overflow-y: auto; }
@@ -146,6 +150,19 @@
   </div>
 </header>
 
+<!-- ===== Setup (unconfigured) ===== -->
+<div id="setup-view" class="view">
+  <div class="auth-card setup-card">
+    <div class="logo">🔧</div>
+    <h2>Barscan setup</h2>
+    <p>This copy of Barscan isn't connected to a Supabase project yet.</p>
+    <p>Edit <code>config.js</code> and fill in your project's
+      <code>supabaseUrl</code> and <code>supabaseAnonKey</code>
+      (Supabase Dashboard → Project Settings → API), and run
+      <code>schema.sql</code> once in the SQL Editor.</p>
+  </div>
+</div>
+
 <!-- ===== Auth ===== -->
 <div id="auth-view" class="view">
   <div class="auth-card">
@@ -156,8 +173,8 @@
       <button id="tab-login" class="on">Log in</button>
       <button id="tab-signup">Sign up</button>
     </div>
-    <label for="auth-user">Username</label>
-    <input id="auth-user" type="text" autocomplete="username" autocapitalize="none">
+    <label for="auth-email">Email</label>
+    <input id="auth-email" type="email" autocomplete="email" autocapitalize="none" inputmode="email">
     <label for="auth-pass">Password</label>
     <input id="auth-pass" type="password" autocomplete="current-password">
     <div id="confirm-row" style="display:none">
@@ -165,8 +182,8 @@
       <input id="auth-pass2" type="password" autocomplete="new-password">
     </div>
     <button id="auth-submit" class="primary">Log in</button>
-    <div class="auth-note">Accounts and stocktake data are stored on this device only.
-      Use the same device (and browser) to continue a stocktake later.</div>
+    <div class="auth-note">Your stocktakes are stored in the cloud and sync across devices —
+      log in with the same account anywhere to continue.</div>
   </div>
 </div>
 
@@ -238,16 +255,15 @@
 (function () {
   'use strict';
 
-  var USERS_KEY = 'barscan-users-v1';
-  var TAKES_KEY = 'barscan-stocktakes-v1';
-  var SESSION_KEY = 'barscan-session-v1';
+  var $ = function (id) { return document.getElementById(id); };
 
-  var users = loadJSON(USERS_KEY, {});      // {username: {salt, hash, createdAt}}
-  var takes = loadJSON(TAKES_KEY, []);      // [{id, owner, name, items[], createdAt, updatedAt}]
-  var session = loadJSON(SESSION_KEY, null); // {username}
+  var cfg = window.BARSCAN_CONFIG || {};
+  var configured = cfg.supabaseUrl && cfg.supabaseUrl.indexOf('YOUR-PROJECT') === -1 &&
+                   cfg.supabaseAnonKey && cfg.supabaseAnonKey.indexOf('YOUR-') === -1;
 
-  var currentUser = null;
-  var currentTake = null;
+  var currentUser = null;   // {id, email}
+  var currentTake = null;   // {id, name, ...}
+  var items = [];           // items of currentTake: [{id, barcode, qty, first_scanned, last_scanned}]
   var scanner = null;
   var scanning = false;
   var dialogOpen = false;
@@ -255,28 +271,16 @@
   var lastScan = { code: null, at: 0 };
   var authMode = 'login';
 
-  var $ = function (id) { return document.getElementById(id); };
-
-  function loadJSON(key, fallback) {
-    try {
-      var v = JSON.parse(localStorage.getItem(key));
-      return v === null || v === undefined ? fallback : v;
-    } catch (e) { return fallback; }
-  }
-  function saveUsers() { localStorage.setItem(USERS_KEY, JSON.stringify(users)); }
-  function saveTakes() { localStorage.setItem(TAKES_KEY, JSON.stringify(takes)); }
-  function saveSession() {
-    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_KEY);
-  }
-
   function toast(msg, bg) {
     var t = $('toast');
     t.textContent = msg;
     t.style.background = bg || '#059669';
     t.classList.add('show');
     clearTimeout(t._h);
-    t._h = setTimeout(function () { t.classList.remove('show'); }, 1600);
+    t._h = setTimeout(function () { t.classList.remove('show'); }, 2000);
+  }
+  function fail(error, what) {
+    toast((what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed'), '#b91c1c');
   }
 
   function beep() {
@@ -293,30 +297,19 @@
 
   // ---- Views ----
   function showView(name) {
-    ['auth-view', 'home-view', 'scan-view'].forEach(function (id) {
+    ['setup-view', 'auth-view', 'home-view', 'scan-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
     $('scan-footer').classList.toggle('active', name === 'scan');
     $('logout-btn').style.display = currentUser ? '' : 'none';
-    $('user-badge').textContent = currentUser || '';
+    $('user-badge').textContent = currentUser ? currentUser.email : '';
     if (name !== 'scan' && scanning) stopScanner();
   }
 
-  // ---- Auth ----
-  function hashPw(pw, salt) {
-    var data = new TextEncoder().encode(salt + ':' + pw);
-    return crypto.subtle.digest('SHA-256', data).then(function (buf) {
-      return Array.prototype.map.call(new Uint8Array(buf), function (b) {
-        return b.toString(16).padStart(2, '0');
-      }).join('');
-    });
-  }
-  function randomSalt() {
-    var a = new Uint8Array(16);
-    crypto.getRandomValues(a);
-    return Array.prototype.map.call(a, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
-  }
+  if (!configured) { showView('setup'); return; }
+  var sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
 
+  // ---- Auth ----
   function setAuthMode(mode) {
     authMode = mode;
     $('tab-login').classList.toggle('on', mode === 'login');
@@ -329,26 +322,30 @@
   $('tab-signup').onclick = function () { setAuthMode('signup'); };
 
   function submitAuth() {
-    var name = $('auth-user').value.trim();
+    var email = $('auth-email').value.trim();
     var pw = $('auth-pass').value;
-    if (!name || !pw) { toast('Enter a username and password', '#b91c1c'); return; }
+    if (!email || !pw) { toast('Enter an email and password', '#b91c1c'); return; }
+    $('auth-submit').disabled = true;
+    var done = function () { $('auth-submit').disabled = false; };
     if (authMode === 'signup') {
-      if (pw.length < 4) { toast('Password must be at least 4 characters', '#b91c1c'); return; }
-      if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); return; }
-      if (users[name]) { toast('That username already exists', '#b91c1c'); return; }
-      var salt = randomSalt();
-      hashPw(pw, salt).then(function (hash) {
-        users[name] = { salt: salt, hash: hash, createdAt: Date.now() };
-        saveUsers();
-        loginAs(name);
-        toast('Account created — welcome, ' + name + '!');
+      if (pw.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); done(); return; }
+      if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
+      sb.auth.signUp({ email: email, password: pw }).then(function (res) {
+        done();
+        if (res.error) { fail(res.error, 'Sign up failed'); return; }
+        if (res.data.session) {
+          enterApp(res.data.session.user);
+          toast('Account created — welcome!');
+        } else {
+          toast('Check your email to confirm your account, then log in', '#2563eb');
+          setAuthMode('login');
+        }
       });
     } else {
-      var u = users[name];
-      if (!u) { toast('Unknown username', '#b91c1c'); return; }
-      hashPw(pw, u.salt).then(function (hash) {
-        if (hash !== u.hash) { toast('Wrong password', '#b91c1c'); return; }
-        loginAs(name);
+      sb.auth.signInWithPassword({ email: email, password: pw }).then(function (res) {
+        done();
+        if (res.error) { fail(res.error, 'Login failed'); return; }
+        enterApp(res.data.session.user);
       });
     }
   }
@@ -356,54 +353,69 @@
   $('auth-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter' && authMode === 'login') submitAuth(); });
   $('auth-pass2').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAuth(); });
 
-  function loginAs(name) {
-    currentUser = name;
-    session = { username: name };
-    saveSession();
+  function enterApp(user) {
+    currentUser = { id: user.id, email: user.email };
     $('auth-pass').value = ''; $('auth-pass2').value = '';
-    renderHome();
-    showView('home');
+    loadTakes();
   }
 
   $('logout-btn').onclick = function () {
-    currentUser = null; currentTake = null;
-    session = null; saveSession();
-    showView('auth');
+    sb.auth.signOut().then(function () {
+      currentUser = null; currentTake = null; items = [];
+      setAuthMode('login');
+      showView('auth');
+    });
   };
 
   // ---- Stocktakes (home) ----
-  function myTakes() {
-    return takes.filter(function (t) { return t.owner === currentUser; });
-  }
+  var takes = [];
 
   function takeTotals(t) {
-    var qty = t.items.reduce(function (s, it) { return s + it.qty; }, 0);
-    return t.items.length + ' items · ' + qty + ' total qty';
+    var list = t.stocktake_items || [];
+    var qty = list.reduce(function (s, it) { return s + it.qty; }, 0);
+    return list.length + ' items · ' + qty + ' total qty';
+  }
+
+  function loadTakes() {
+    showView('home');
+    $('stocktake-list').innerHTML = '<div class="empty">Loading…</div>';
+    sb.from('stocktakes')
+      .select('id,name,created_at,updated_at,stocktake_items(qty)')
+      .order('updated_at', { ascending: false })
+      .then(function (res) {
+        if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
+        takes = res.data;
+        renderHome();
+      });
   }
 
   function renderHome() {
     var listEl = $('stocktake-list');
-    var mine = myTakes().sort(function (a, b) { return b.updatedAt - a.updatedAt; });
-    if (!mine.length) {
+    if (!takes.length) {
       listEl.innerHTML = '<div class="empty">No stocktakes yet.<br>Create one to start scanning.</div>';
       return;
     }
     listEl.innerHTML = '';
-    mine.forEach(function (t) {
+    takes.forEach(function (t) {
       var row = document.createElement('div');
       row.className = 'stocktake';
       var info = document.createElement('div');
       info.className = 'info';
       var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = t.name;
       var meta = document.createElement('div'); meta.className = 'meta';
-      meta.textContent = takeTotals(t) + ' · updated ' + new Date(t.updatedAt).toLocaleString();
+      meta.textContent = takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString();
       info.appendChild(nm); info.appendChild(meta);
       var del = document.createElement('button');
       del.className = 'del'; del.textContent = '✕';
       del.onclick = function (e) {
         e.stopPropagation();
-        if (confirm('Delete stocktake "' + t.name + '" and its ' + t.items.length + ' items? Export first if you need the data.')) {
-          takes.splice(takes.indexOf(t), 1); saveTakes(); renderHome();
+        var n = (t.stocktake_items || []).length;
+        if (confirm('Delete stocktake "' + t.name + '" and its ' + n + ' items? Export first if you need the data.')) {
+          sb.from('stocktakes').delete().eq('id', t.id).then(function (res) {
+            if (res.error) { fail(res.error, 'Delete failed'); return; }
+            takes.splice(takes.indexOf(t), 1);
+            renderHome();
+          });
         }
       };
       row.appendChild(info); row.appendChild(del);
@@ -421,36 +433,45 @@
   function createTake() {
     var name = $('name-input').value.trim();
     if (!name) { toast('Enter a name for the stocktake', '#b91c1c'); return; }
-    var now = Date.now();
-    var t = { id: 'st-' + now + '-' + Math.random().toString(36).slice(2, 8),
-              owner: currentUser, name: name, items: [], createdAt: now, updatedAt: now };
-    takes.push(t); saveTakes();
-    $('name-overlay').classList.remove('open');
-    openTake(t);
+    $('name-ok').disabled = true;
+    sb.from('stocktakes').insert({ name: name }).select().single().then(function (res) {
+      $('name-ok').disabled = false;
+      if (res.error) { fail(res.error, 'Could not create stocktake'); return; }
+      $('name-overlay').classList.remove('open');
+      openTake(res.data);
+    });
   }
   $('name-ok').onclick = createTake;
   $('name-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') createTake(); });
 
   function openTake(t) {
     currentTake = t;
+    items = [];
     $('current-name').textContent = t.name;
-    renderItems();
+    $('list').innerHTML = '<div class="empty">Loading…</div>';
+    $('badge').textContent = '';
     showView('scan');
+    sb.from('stocktake_items')
+      .select('*')
+      .eq('stocktake_id', t.id)
+      .order('last_scanned', { ascending: false })
+      .then(function (res) {
+        if (res.error) { fail(res.error, 'Could not load items'); return; }
+        items = res.data;
+        renderItems();
+      });
   }
 
   $('back-btn').onclick = function () {
-    currentTake = null;
-    renderHome();
-    showView('home');
+    currentTake = null; items = [];
+    loadTakes();
   };
 
   // ---- Items in current stocktake ----
-  function touchTake() { currentTake.updatedAt = Date.now(); saveTakes(); }
-
   function renderItems() {
     var listEl = $('list');
-    $('badge').textContent = takeTotals(currentTake);
-    var items = currentTake.items;
+    var qty = items.reduce(function (s, it) { return s + it.qty; }, 0);
+    $('badge').textContent = items.length + ' items · ' + qty + ' total qty';
     if (!items.length) {
       listEl.innerHTML = '<div class="empty">No scans yet.<br>Point the camera at a barcode to start.</div>';
       return;
@@ -463,10 +484,10 @@
       var info = document.createElement('div');
       info.className = 'info';
       var code = document.createElement('div');
-      code.className = 'code'; code.textContent = it.code;
+      code.className = 'code'; code.textContent = it.barcode;
       var meta = document.createElement('div');
       meta.className = 'meta';
-      meta.textContent = 'Last: ' + new Date(it.last).toLocaleTimeString();
+      meta.textContent = 'Last: ' + new Date(it.last_scanned).toLocaleTimeString();
       info.appendChild(code); info.appendChild(meta);
 
       var qc = document.createElement('div');
@@ -474,17 +495,20 @@
       var minus = document.createElement('button'); minus.textContent = '−';
       var val = document.createElement('div'); val.className = 'qty-val'; val.textContent = it.qty;
       var plus = document.createElement('button'); plus.textContent = '+';
-      minus.onclick = function () {
-        if (it.qty > 1) { it.qty--; it.last = Date.now(); touchTake(); renderItems(); }
-      };
-      plus.onclick = function () { it.qty++; it.last = Date.now(); touchTake(); renderItems(); };
-      val.onclick = function () { openQtyDialog(it.code, true); };
+      minus.onclick = function () { if (it.qty > 1) setItemQty(it, it.qty - 1); };
+      plus.onclick = function () { setItemQty(it, it.qty + 1); };
+      val.onclick = function () { openQtyDialog(it.barcode, true); };
       qc.appendChild(minus); qc.appendChild(val); qc.appendChild(plus);
 
       var del = document.createElement('button');
       del.className = 'del'; del.textContent = '✕';
       del.onclick = function () {
-        if (confirm('Remove ' + it.code + '?')) { items.splice(i, 1); touchTake(); renderItems(); }
+        if (!confirm('Remove ' + it.barcode + '?')) return;
+        sb.from('stocktake_items').delete().eq('id', it.id).then(function (res) {
+          if (res.error) { fail(res.error, 'Delete failed'); return; }
+          items.splice(i, 1);
+          renderItems();
+        });
       };
 
       row.appendChild(info); row.appendChild(qc); row.appendChild(del);
@@ -492,11 +516,21 @@
     });
   }
 
+  function setItemQty(it, qty) {
+    var now = new Date().toISOString();
+    sb.from('stocktake_items').update({ qty: qty, last_scanned: now }).eq('id', it.id)
+      .then(function (res) {
+        if (res.error) { fail(res.error, 'Update failed'); return; }
+        it.qty = qty; it.last_scanned = now;
+        renderItems();
+      });
+  }
+
   // ---- Quantity dialog ----
   function openQtyDialog(code, isEdit) {
     pendingCode = code;
     dialogOpen = true;
-    var existing = currentTake.items.find(function (it) { return it.code === code; });
+    var existing = items.find(function (it) { return it.barcode === code; });
     $('qty-code').textContent = code;
     var hint = $('qty-hint');
     if (existing && !isEdit) {
@@ -525,17 +559,33 @@
     if (!qty || qty < 1) { toast('Enter a quantity of 1 or more', '#b91c1c'); return; }
     var code = pendingCode;
     var mode = $('qty-overlay').dataset.mode;
-    var existing = currentTake.items.find(function (it) { return it.code === code; });
-    var now = Date.now();
+    var existing = items.find(function (it) { return it.barcode === code; });
+    $('qty-ok').disabled = true;
+    var done = function () { $('qty-ok').disabled = false; };
     if (existing) {
-      existing.qty = (mode === 'edit') ? qty : existing.qty + qty;
-      existing.last = now;
+      var newQty = (mode === 'edit') ? qty : existing.qty + qty;
+      var now = new Date().toISOString();
+      sb.from('stocktake_items').update({ qty: newQty, last_scanned: now }).eq('id', existing.id)
+        .then(function (res) {
+          done();
+          if (res.error) { fail(res.error, 'Save failed'); return; }
+          existing.qty = newQty; existing.last_scanned = now;
+          renderItems();
+          toast(code + '  ×' + qty + ' saved');
+          closeQtyDialog();
+        });
     } else {
-      currentTake.items.unshift({ code: code, qty: qty, first: now, last: now });
+      sb.from('stocktake_items').insert({ stocktake_id: currentTake.id, barcode: code, qty: qty })
+        .select().single()
+        .then(function (res) {
+          done();
+          if (res.error) { fail(res.error, 'Save failed'); return; }
+          items.unshift(res.data);
+          renderItems();
+          toast(code + '  ×' + qty + ' saved');
+          closeQtyDialog();
+        });
     }
-    touchTake(); renderItems();
-    toast(code + '  ×' + qty + ' saved');
-    closeQtyDialog();
   }
 
   $('qty-ok').onclick = commitQty;
@@ -607,9 +657,8 @@
 
   function buildCsv() {
     var rows = [['stocktake', 'barcode', 'qty', 'first_scanned', 'last_scanned']];
-    currentTake.items.forEach(function (it) {
-      rows.push([currentTake.name, it.code, it.qty,
-                 new Date(it.first).toISOString(), new Date(it.last).toISOString()]);
+    items.forEach(function (it) {
+      rows.push([currentTake.name, it.barcode, it.qty, it.first_scanned, it.last_scanned]);
     });
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
@@ -623,7 +672,7 @@
   }
 
   $('export-csv').onclick = function () {
-    if (!currentTake.items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
     var blob = new Blob(['﻿' + buildCsv()], { type: 'text/csv;charset=utf-8' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -635,7 +684,7 @@
   };
 
   $('share').onclick = function () {
-    if (!currentTake.items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
     var csv = '﻿' + buildCsv();
     var file = new File([csv], fileName(), { type: 'text/csv' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -651,21 +700,21 @@
   };
 
   $('clear').onclick = function () {
-    if (!currentTake.items.length) return;
-    if (confirm('Delete all ' + currentTake.items.length + ' scanned items in "' + currentTake.name + '"? Export first if you need the data.')) {
-      currentTake.items.length = 0; touchTake(); renderItems();
-    }
+    if (!items.length) return;
+    if (!confirm('Delete all ' + items.length + ' scanned items in "' + currentTake.name + '"? Export first if you need the data.')) return;
+    sb.from('stocktake_items').delete().eq('stocktake_id', currentTake.id).then(function (res) {
+      if (res.error) { fail(res.error, 'Clear failed'); return; }
+      items = [];
+      renderItems();
+    });
   };
 
   // ---- Boot ----
-  if (session && users[session.username]) {
-    currentUser = session.username;
-    renderHome();
-    showView('home');
-  } else {
-    session = null; saveSession();
-    showView('auth');
-  }
+  sb.auth.getSession().then(function (res) {
+    var session = res.data ? res.data.session : null;
+    if (session) enterApp(session.user);
+    else showView('auth');
+  });
 })();
 </script>
 </body>
