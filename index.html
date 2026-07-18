@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#111827">
+<title>Barcode Count</title>
+<script src="html5-qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #111827; color: #f9fafb;
+    display: flex; flex-direction: column;
+    max-width: 640px; margin: 0 auto;
+  }
+  header {
+    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+    background: #1f2937; position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 1.1rem; font-weight: 600; }
+  header .count-badge { font-size: 0.8rem; color: #9ca3af; }
+
+  #reader-wrap { position: relative; background: #000; }
+  #reader { width: 100%; }
+  #reader video { width: 100% !important; display: block; }
+  #scanner-off {
+    padding: 40px 16px; text-align: center; color: #9ca3af; background: #0b0f19;
+  }
+
+  .controls { display: flex; gap: 8px; padding: 10px 12px; background: #1f2937; }
+  button {
+    border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
+    padding: 12px 14px; cursor: pointer; color: #fff; background: #374151;
+  }
+  button:active { opacity: 0.8; }
+  button.primary { background: #2563eb; }
+  button.success { background: #059669; }
+  button.danger  { background: #b91c1c; }
+  button.flex { flex: 1; }
+  button:disabled { opacity: 0.45; }
+
+  #manual-row { display: flex; gap: 8px; padding: 0 12px 10px; background: #1f2937; }
+  #manual-input {
+    flex: 1; border: 1px solid #4b5563; border-radius: 10px; background: #111827;
+    color: #f9fafb; padding: 12px; font-size: 1rem;
+  }
+
+  #list { flex: 1; overflow-y: auto; padding: 8px 12px 90px; }
+  .item {
+    display: flex; align-items: center; gap: 10px;
+    background: #1f2937; border-radius: 12px; padding: 12px; margin-bottom: 8px;
+  }
+  .item .info { flex: 1; min-width: 0; }
+  .item .code { font-family: ui-monospace, Menlo, monospace; font-size: 1rem; word-break: break-all; }
+  .item .meta { font-size: 0.75rem; color: #9ca3af; margin-top: 2px; }
+  .qty-controls { display: flex; align-items: center; gap: 6px; }
+  .qty-controls button { padding: 8px 12px; font-size: 1.1rem; border-radius: 8px; }
+  .qty-val {
+    min-width: 44px; text-align: center; font-size: 1.05rem; font-weight: 700;
+    background: #111827; border: 1px solid #374151; border-radius: 8px;
+    padding: 8px 4px; color: #f9fafb;
+  }
+  .item .del { background: transparent; color: #f87171; font-size: 1.2rem; padding: 8px; }
+  .empty { text-align: center; color: #6b7280; padding: 32px 16px; }
+
+  footer {
+    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: 640px;
+    display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: #1f2937; border-top: 1px solid #374151;
+  }
+
+  /* Quantity dialog */
+  #qty-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 50;
+    display: none; align-items: center; justify-content: center; padding: 16px;
+  }
+  #qty-overlay.open { display: flex; }
+  #qty-dialog {
+    background: #1f2937; border-radius: 16px; padding: 20px; width: 100%; max-width: 360px;
+  }
+  #qty-dialog .code { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
+    background: #111827; padding: 10px; border-radius: 8px; margin: 10px 0; }
+  #qty-dialog .hint { font-size: 0.8rem; color: #fbbf24; margin-bottom: 8px; }
+  #qty-input {
+    width: 100%; font-size: 1.6rem; text-align: center; padding: 12px;
+    border-radius: 10px; border: 1px solid #4b5563; background: #111827; color: #f9fafb;
+    margin-bottom: 12px;
+  }
+  .qty-quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .dialog-actions { display: flex; gap: 8px; }
+
+  #toast {
+    position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+    background: #059669; color: #fff; padding: 10px 18px; border-radius: 999px;
+    font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 60;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📦 Barcode Count</h1>
+  <span class="count-badge" id="badge">0 items</span>
+</header>
+
+<div id="reader-wrap">
+  <div id="reader"></div>
+  <div id="scanner-off">Camera is off. Tap <b>Start camera</b> to begin scanning.<br>
+    <small>Camera access requires HTTPS and permission from your browser.</small>
+  </div>
+</div>
+
+<div class="controls">
+  <button id="toggle-cam" class="primary flex">▶ Start camera</button>
+</div>
+<div id="manual-row">
+  <input id="manual-input" type="text" placeholder="Or type a barcode…" autocomplete="off">
+  <button id="manual-add">Add</button>
+</div>
+
+<div id="list"></div>
+
+<footer>
+  <button id="export-csv" class="success flex">⬇ Export CSV</button>
+  <button id="share" class="flex">Share</button>
+  <button id="clear" class="danger">Clear</button>
+</footer>
+
+<div id="qty-overlay">
+  <div id="qty-dialog">
+    <div style="font-weight:600">Enter quantity</div>
+    <div class="code" id="qty-code"></div>
+    <div class="hint" id="qty-hint" style="display:none"></div>
+    <input id="qty-input" type="number" inputmode="numeric" min="1" step="1" value="1">
+    <div class="qty-quick">
+      <button data-q="1">1</button><button data-q="5">5</button>
+      <button data-q="10">10</button><button data-q="25">25</button>
+    </div>
+    <div class="dialog-actions">
+      <button id="qty-cancel" class="flex">Cancel</button>
+      <button id="qty-ok" class="primary flex">Save & continue</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var STORAGE_KEY = 'barcode-count-items-v1';
+  var items = [];            // [{code, qty, first, last}]
+  var scanner = null;
+  var scanning = false;
+  var dialogOpen = false;
+  var pendingCode = null;
+  var lastScan = { code: null, at: 0 };
+
+  try { items = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { items = []; }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var listEl = $('list'), badgeEl = $('badge');
+
+  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); }
+
+  function toast(msg, bg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.style.background = bg || '#059669';
+    t.classList.add('show');
+    clearTimeout(t._h);
+    t._h = setTimeout(function () { t.classList.remove('show'); }, 1400);
+  }
+
+  function beep() {
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 1200; gain.gain.value = 0.15;
+      osc.start(); osc.stop(ctx.currentTime + 0.12);
+      osc.onended = function () { ctx.close(); };
+    } catch (e) {}
+    if (navigator.vibrate) navigator.vibrate(80);
+  }
+
+  function totalQty() {
+    return items.reduce(function (s, it) { return s + it.qty; }, 0);
+  }
+
+  function render() {
+    badgeEl.textContent = items.length + ' items · ' + totalQty() + ' total qty';
+    if (!items.length) {
+      listEl.innerHTML = '<div class="empty">No scans yet.<br>Point the camera at a barcode to start.</div>';
+      return;
+    }
+    listEl.innerHTML = '';
+    items.forEach(function (it, i) {
+      var row = document.createElement('div');
+      row.className = 'item';
+
+      var info = document.createElement('div');
+      info.className = 'info';
+      var code = document.createElement('div');
+      code.className = 'code'; code.textContent = it.code;
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'Last: ' + new Date(it.last).toLocaleTimeString();
+      info.appendChild(code); info.appendChild(meta);
+
+      var qc = document.createElement('div');
+      qc.className = 'qty-controls';
+      var minus = document.createElement('button'); minus.textContent = '−';
+      var val = document.createElement('div'); val.className = 'qty-val'; val.textContent = it.qty;
+      var plus = document.createElement('button'); plus.textContent = '+';
+      minus.onclick = function () {
+        if (it.qty > 1) { it.qty--; it.last = Date.now(); save(); render(); }
+      };
+      plus.onclick = function () { it.qty++; it.last = Date.now(); save(); render(); };
+      val.onclick = function () { openQtyDialog(it.code, true); };
+      qc.appendChild(minus); qc.appendChild(val); qc.appendChild(plus);
+
+      var del = document.createElement('button');
+      del.className = 'del'; del.textContent = '✕';
+      del.onclick = function () {
+        if (confirm('Remove ' + it.code + '?')) { items.splice(i, 1); save(); render(); }
+      };
+
+      row.appendChild(info); row.appendChild(qc); row.appendChild(del);
+      listEl.appendChild(row);
+    });
+  }
+
+  // ---- Quantity dialog ----
+  function openQtyDialog(code, isEdit) {
+    pendingCode = code;
+    dialogOpen = true;
+    var existing = items.find(function (it) { return it.code === code; });
+    $('qty-code').textContent = code;
+    var hint = $('qty-hint');
+    if (existing && !isEdit) {
+      hint.style.display = 'block';
+      hint.textContent = 'Already scanned (qty ' + existing.qty + '). This quantity will be ADDED to it.';
+    } else if (existing && isEdit) {
+      hint.style.display = 'block';
+      hint.textContent = 'Editing: this will REPLACE the current quantity (' + existing.qty + ').';
+    } else {
+      hint.style.display = 'none';
+    }
+    $('qty-overlay').dataset.mode = isEdit ? 'edit' : 'scan';
+    $('qty-input').value = isEdit && existing ? existing.qty : 1;
+    $('qty-overlay').classList.add('open');
+    setTimeout(function () { $('qty-input').focus(); $('qty-input').select(); }, 50);
+  }
+
+  function closeQtyDialog() {
+    dialogOpen = false;
+    pendingCode = null;
+    $('qty-overlay').classList.remove('open');
+  }
+
+  function commitQty() {
+    var qty = parseInt($('qty-input').value, 10);
+    if (!qty || qty < 1) { toast('Enter a quantity of 1 or more', '#b91c1c'); return; }
+    var code = pendingCode;
+    var mode = $('qty-overlay').dataset.mode;
+    var existing = items.find(function (it) { return it.code === code; });
+    var now = Date.now();
+    if (existing) {
+      existing.qty = (mode === 'edit') ? qty : existing.qty + qty;
+      existing.last = now;
+    } else {
+      items.unshift({ code: code, qty: qty, first: now, last: now });
+    }
+    save(); render();
+    toast(code + '  ×' + qty + ' saved');
+    closeQtyDialog();
+  }
+
+  $('qty-ok').onclick = commitQty;
+  $('qty-cancel').onclick = closeQtyDialog;
+  $('qty-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') commitQty();
+  });
+  document.querySelectorAll('.qty-quick button').forEach(function (b) {
+    b.onclick = function () { $('qty-input').value = b.dataset.q; commitQty(); };
+  });
+
+  // ---- Scanning ----
+  function onScan(decodedText) {
+    if (dialogOpen) return; // ignore scans while entering a qty
+    var now = Date.now();
+    if (decodedText === lastScan.code && now - lastScan.at < 2500) return; // debounce repeats
+    lastScan = { code: decodedText, at: now };
+    beep();
+    openQtyDialog(decodedText, false);
+  }
+
+  function startScanner() {
+    if (typeof Html5Qrcode === 'undefined') {
+      toast('Scanner library failed to load — check your connection', '#b91c1c');
+      return;
+    }
+    scanner = new Html5Qrcode('reader');
+    scanner.start(
+      { facingMode: 'environment' },
+      { fps: 10 },
+      onScan,
+      function () {} // per-frame decode misses; ignore
+    ).then(function () {
+      scanning = true;
+      $('scanner-off').style.display = 'none';
+      $('toggle-cam').textContent = '⏸ Stop camera';
+      $('toggle-cam').classList.remove('primary');
+    }).catch(function (err) {
+      toast('Camera error: ' + err, '#b91c1c');
+    });
+  }
+
+  function stopScanner() {
+    if (!scanner) return;
+    scanner.stop().then(function () {
+      scanner.clear(); scanner = null; scanning = false;
+      $('scanner-off').style.display = 'block';
+      $('toggle-cam').textContent = '▶ Start camera';
+      $('toggle-cam').classList.add('primary');
+    }).catch(function () {});
+  }
+
+  $('toggle-cam').onclick = function () { scanning ? stopScanner() : startScanner(); };
+
+  // ---- Manual entry ----
+  function manualAdd() {
+    var v = $('manual-input').value.trim();
+    if (!v) return;
+    $('manual-input').value = '';
+    openQtyDialog(v, false);
+  }
+  $('manual-add').onclick = manualAdd;
+  $('manual-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') manualAdd();
+  });
+
+  // ---- Export ----
+  function csvEscape(v) {
+    v = String(v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  }
+
+  function buildCsv() {
+    var rows = [['barcode', 'qty', 'first_scanned', 'last_scanned']];
+    items.forEach(function (it) {
+      rows.push([it.code, it.qty, new Date(it.first).toISOString(), new Date(it.last).toISOString()]);
+    });
+    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
+  }
+
+  function fileName() {
+    var d = new Date();
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return 'barcode-count-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+           '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.csv';
+  }
+
+  $('export-csv').onclick = function () {
+    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+    var blob = new Blob(['﻿' + buildCsv()], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName();
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    toast('CSV downloaded');
+  };
+
+  $('share').onclick = function () {
+    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+    var csv = '﻿' + buildCsv();
+    var file = new File([csv], fileName(), { type: 'text/csv' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: 'Barcode count export' }).catch(function () {});
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(buildCsv()).then(
+        function () { toast('CSV copied to clipboard'); },
+        function () { toast('Copy failed — use Export CSV', '#b91c1c'); }
+      );
+    } else {
+      toast('Sharing not supported — use Export CSV', '#b91c1c');
+    }
+  };
+
+  $('clear').onclick = function () {
+    if (!items.length) return;
+    if (confirm('Delete all ' + items.length + ' scanned items? Export first if you need the data.')) {
+      items = []; save(); render();
+    }
+  };
+
+  render();
+})();
+</script>
+</body>
+</html>
