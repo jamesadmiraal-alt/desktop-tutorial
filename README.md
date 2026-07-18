@@ -1,4 +1,4 @@
-# 🍺 Barscan
+# 🍾 Barscan
 
 A phone-friendly web app for hospitality stocktaking, backed by [Supabase](https://supabase.com). The site has a marketing landing page (`index.html`) with pricing, and the app itself (`app.html`):
 
