@@ -9,6 +9,10 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
+-- Link to the Stripe customer so subscription cancellations can be matched
+-- back to the right account (written by the stripe-webhook edge function)
+alter table public.profiles add column if not exists stripe_customer_id text;
+
 alter table public.profiles enable row level security;
 
 drop policy if exists "read own profile" on public.profiles;
