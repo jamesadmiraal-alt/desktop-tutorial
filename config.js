@@ -8,6 +8,6 @@ window.BARSCAN_CONFIG = {
   // Where the in-app upgrade buttons send people. Point these at Stripe
   // Payment Links (or similar) once payments are set up; until then they
   // open the landing page's pricing section.
-  upgradeUrl: '',        // Pro Monthly  ($25/month)
-  upgradeUrlAnnual: ''   // Pro Annual   ($250/year — 2 months free)
+  upgradeUrl: 'https://buy.stripe.com/test_fZu14n5yMeS95qt4WcdEs00',        // Pro Monthly ($25/month)
+  upgradeUrlAnnual: 'https://buy.stripe.com/test_cNi3cvgdqfWdcSV0FWdEs01'   // Pro Annual ($250/year — 2 months free)
 };
