@@ -472,6 +472,13 @@
     var url = plan === 'annual'
       ? (cfg.upgradeUrlAnnual || cfg.upgradeUrl || 'index.html#pricing')
       : (cfg.upgradeUrl || 'index.html#pricing');
+    // On a real checkout link (Stripe Payment Link), identify the paying user
+    // so the webhook can activate Pro on the right account automatically.
+    if (/^https?:\/\//.test(url) && currentUser) {
+      url += (url.indexOf('?') === -1 ? '?' : '&') +
+        'client_reference_id=' + encodeURIComponent(currentUser.id) +
+        '&prefilled_email=' + encodeURIComponent(currentUser.email);
+    }
     window.open(url, '_blank');
   }
   document.querySelectorAll('.upgrade-opt').forEach(function (b) {
@@ -964,6 +971,11 @@
     var session = res.data ? res.data.session : null;
     if (session) enterApp(session.user);
     else showView('auth');
+    // Returning from Stripe checkout (Payment Link after-payment redirect)
+    if (/[?&]upgraded=1/.test(location.search)) {
+      history.replaceState(null, '', location.pathname);
+      toast('🎉 Payment received — your Pro access activates within a minute', '#059669');
+    }
   });
 })();
 </script>
