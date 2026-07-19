@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#111827">
 <title>Barscan</title>
-<script src="html5-qrcode.min.js"></script>
+<script src="barcode-detector.iife.js"></script>
 <script src="supabase.min.js"></script>
 <script src="config.js"></script>
 <style>
@@ -85,8 +85,18 @@
 
   #reader-wrap { position: relative; background: #000; }
   #reader { width: 100%; }
-  #reader video { width: 100% !important; display: block; }
+  #reader video { width: 100%; max-height: 45vh; object-fit: cover; display: block; }
   #scanner-off { padding: 32px 16px; text-align: center; color: #9ca3af; background: #0b0f19; font-size: 0.9rem; }
+  #cam-tools {
+    position: absolute; bottom: 8px; left: 8px; right: 8px; display: none;
+    align-items: center; gap: 10px;
+  }
+  #cam-tools.on { display: flex; }
+  #torch-btn { padding: 8px 12px; font-size: 1rem; background: rgba(17,24,39,0.75); display: none; }
+  #torch-btn.avail { display: block; }
+  #torch-btn.lit { background: #f59e0b; }
+  #zoom-range { flex: 1; accent-color: #2563eb; display: none; }
+  #zoom-range.avail { display: block; }
 
   .controls { display: flex; gap: 8px; padding: 10px 12px; background: #1f2937; }
   #manual-row { display: flex; gap: 8px; padding: 0 12px 10px; background: #1f2937; }
@@ -208,6 +218,10 @@
     <div id="scanner-off">Camera is off. Tap <b>Start camera</b> to begin scanning.<br>
       <small>Camera access requires HTTPS and permission from your browser.</small>
     </div>
+    <div id="cam-tools">
+      <button id="torch-btn">🔦</button>
+      <input id="zoom-range" type="range">
+    </div>
   </div>
   <div class="controls">
     <button id="toggle-cam" class="primary flex">▶ Start camera</button>
@@ -282,7 +296,6 @@
   var currentUser = null;   // {id, email}
   var currentTake = null;   // {id, name, ...}
   var items = [];           // items of currentTake: [{id, barcode, qty, first_scanned, last_scanned}]
-  var scanner = null;
   var scanning = false;
   var dialogOpen = false;
   var pendingCode = null;
@@ -321,7 +334,7 @@
     $('scan-footer').classList.toggle('active', name === 'scan');
     $('logout-btn').style.display = currentUser ? '' : 'none';
     $('user-badge').textContent = currentUser ? currentUser.email : '';
-    if (name !== 'scan' && scanning) stopScanner();
+    if (name !== 'scan') stopScanner();
   }
 
   if (!configured) { showView('setup'); return; }
@@ -642,35 +655,138 @@
     openQtyDialog(decodedText, false);
   }
 
+  // Uses the platform's native BarcodeDetector where available (hardware
+  // accelerated on Android Chrome); otherwise falls back to the vendored
+  // zxing-wasm ponyfill (fast C++ decoder compiled to WebAssembly).
+  var FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39',
+                 'code_93', 'itf', 'qr_code', 'data_matrix'];
+  var stream = null, video = null, detector = null, scanTimer = null;
+  var camTrack = null, torchOn = false, detectBusy = false;
+  var camGen = 0; // bumped on every start/stop so a stop cancels an in-flight start
+
+  function ponyfillDetector() {
+    window.BarcodeDetectionAPI.prepareZXingModule({
+      overrides: {
+        locateFile: function (path, prefix) {
+          return /\.wasm$/.test(path) ? 'zxing_reader.wasm' : prefix + path;
+        },
+      },
+    });
+    return window.BarcodeDetectionAPI.BarcodeDetector;
+  }
+
+  function makeDetector() {
+    function create(D) {
+      return D.getSupportedFormats().then(function (sup) {
+        return new D({ formats: FORMATS.filter(function (f) { return sup.indexOf(f) !== -1; }) });
+      });
+    }
+    var Native = window.BarcodeDetector;
+    var Pony = ponyfillDetector();
+    if (Native && Native !== Pony) {
+      // Only trust the native detector if it can read retail (EAN) codes
+      return Native.getSupportedFormats().then(function (sup) {
+        return sup.indexOf('ean_13') !== -1 ? create(Native) : create(Pony);
+      }).catch(function () { return create(Pony); });
+    }
+    return create(Pony);
+  }
+
+  function detectFrame() {
+    if (!detector || !video || video.readyState < 2 || detectBusy || dialogOpen) return;
+    detectBusy = true;
+    detector.detect(video).then(function (codes) {
+      detectBusy = false;
+      if (codes && codes.length && codes[0].rawValue) onScan(codes[0].rawValue);
+    }, function () { detectBusy = false; });
+  }
+
+  function setupCamTools() {
+    var caps = (camTrack && camTrack.getCapabilities) ? camTrack.getCapabilities() : {};
+    var any = false;
+    if (caps.torch) {
+      $('torch-btn').classList.add('avail'); any = true;
+      torchOn = false; $('torch-btn').classList.remove('lit');
+    }
+    if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+      var z = $('zoom-range');
+      z.min = caps.zoom.min; z.max = caps.zoom.max;
+      z.step = caps.zoom.step || 0.1;
+      z.value = (camTrack.getSettings().zoom || caps.zoom.min);
+      z.classList.add('avail'); any = true;
+    }
+    $('cam-tools').classList.toggle('on', any);
+  }
+
+  $('torch-btn').onclick = function () {
+    if (!camTrack) return;
+    torchOn = !torchOn;
+    camTrack.applyConstraints({ advanced: [{ torch: torchOn }] }).then(function () {
+      $('torch-btn').classList.toggle('lit', torchOn);
+    }, function () { torchOn = !torchOn; toast('Torch not available', '#b91c1c'); });
+  };
+  $('zoom-range').oninput = function () {
+    if (camTrack) camTrack.applyConstraints({ advanced: [{ zoom: parseFloat(this.value) }] }).catch(function () {});
+  };
+
   function startScanner() {
-    if (typeof Html5Qrcode === 'undefined') {
+    if (!window.BarcodeDetectionAPI) {
       toast('Scanner library failed to load — check your connection', '#b91c1c');
       return;
     }
-    scanner = new Html5Qrcode('reader');
-    scanner.start(
-      { facingMode: 'environment' },
-      { fps: 10 },
-      onScan,
-      function () {} // per-frame decode misses; ignore
-    ).then(function () {
+    var gen = ++camGen;
+    navigator.mediaDevices.getUserMedia({
+      audio: false,
+      // High resolution so small bottle barcodes are readable at arm's length
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+    }).then(function (s) {
+      if (gen !== camGen) { // stopped (e.g. user navigated away) while starting
+        s.getTracks().forEach(function (t) { t.stop(); });
+        throw { aborted: true };
+      }
+      stream = s;
+      camTrack = s.getVideoTracks()[0];
+      try {
+        camTrack.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {});
+      } catch (e) {}
+      video = document.createElement('video');
+      video.setAttribute('playsinline', '');
+      video.muted = true;
+      video.srcObject = s;
+      $('reader').innerHTML = '';
+      $('reader').appendChild(video);
+      return video.play();
+    }).then(function () {
+      return makeDetector();
+    }).then(function (d) {
+      if (gen !== camGen) throw { aborted: true };
+      detector = d;
       scanning = true;
+      setupCamTools();
+      scanTimer = setInterval(detectFrame, 66); // ~15 decode attempts/sec
       $('scanner-off').style.display = 'none';
       $('toggle-cam').textContent = '⏸ Stop camera';
       $('toggle-cam').classList.remove('primary');
     }).catch(function (err) {
-      toast('Camera error: ' + err, '#b91c1c');
+      if (err && err.aborted) return;
+      stopScanner();
+      toast('Camera error: ' + (err && err.message ? err.message : err), '#b91c1c');
     });
   }
 
   function stopScanner() {
-    if (!scanner) return;
-    scanner.stop().then(function () {
-      scanner.clear(); scanner = null; scanning = false;
-      $('scanner-off').style.display = 'block';
-      $('toggle-cam').textContent = '▶ Start camera';
-      $('toggle-cam').classList.add('primary');
-    }).catch(function () {});
+    camGen++;
+    clearInterval(scanTimer); scanTimer = null;
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    stream = null; video = null; detector = null; camTrack = null;
+    scanning = false; torchOn = false; detectBusy = false;
+    $('reader').innerHTML = '';
+    $('cam-tools').classList.remove('on');
+    $('torch-btn').classList.remove('avail', 'lit');
+    $('zoom-range').classList.remove('avail');
+    $('scanner-off').style.display = 'block';
+    $('toggle-cam').textContent = '▶ Start camera';
+    $('toggle-cam').classList.add('primary');
   }
 
   $('toggle-cam').onclick = function () { scanning ? stopScanner() : startScanner(); };
