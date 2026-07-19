@@ -27,7 +27,7 @@ A phone-friendly web app for hospitality stocktaking, backed by [Supabase](https
 | `app.html` | The app (login/signup, scanning, stocktakes, export) |
 | `config.js` | Your Supabase project URL, anon key, and upgrade link |
 | `schema.sql` | Database tables, triggers, and row-level-security policies |
-| `html5-qrcode.min.js` | Vendored barcode-scanning library |
+| `barcode-detector.iife.js` + `zxing_reader.wasm` | Vendored barcode decoding (native BarcodeDetector on Android, ZXing WebAssembly elsewhere) |
 | `supabase.min.js` | Vendored Supabase JS client |
 
 Libraries are vendored (no CDN) so the app keeps loading on flaky connections.
