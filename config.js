@@ -5,8 +5,9 @@
 window.BARSCAN_CONFIG = {
   supabaseUrl: 'https://vfixdchbkmqryfhirphx.supabase.co',
   supabaseAnonKey: 'sb_publishable_juhiIJWl7qvSj4hL_7JQcA_wEoNVgi6',
-  // Where the in-app "Upgrade to Pro" button sends people. Point this at a
-  // Stripe Payment Link (or similar) once payments are set up; until then it
-  // opens the landing page's pricing section.
-  upgradeUrl: ''
+  // Where the in-app upgrade buttons send people. Point these at Stripe
+  // Payment Links (or similar) once payments are set up; until then they
+  // open the landing page's pricing section.
+  upgradeUrl: '',        // Pro Monthly  ($25/month)
+  upgradeUrlAnnual: ''   // Pro Annual   ($250/year — 2 months free)
 };

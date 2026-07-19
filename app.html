@@ -23,8 +23,36 @@
   }
   header h1 { font-size: 1.1rem; font-weight: 600; white-space: nowrap; }
   header .right { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  header .user-badge { font-size: 0.8rem; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; }
-  header button { padding: 8px 12px; font-size: 0.8rem; }
+  header #user-badge { font-size: 0.8rem; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; }
+  header button { padding: 8px 12px; font-size: 0.8rem; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---- Account view ---- */
+  #account-view { padding: 16px 12px; overflow-y: auto; }
+  .acct-card { background: #1f2937; border-radius: 16px; padding: 18px 16px; margin-bottom: 12px; }
+  .acct-card h3 { font-size: 0.85rem; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+  .acct-email { font-size: 1.05rem; font-weight: 600; word-break: break-all; }
+  .plan-badge {
+    display: inline-block; padding: 4px 12px; border-radius: 999px;
+    font-size: 0.8rem; font-weight: 700; margin-bottom: 8px;
+  }
+  .plan-badge.free { background: #374151; color: #d1d5db; }
+  .plan-badge.pro { background: #059669; color: #fff; }
+  .plan-desc { color: #9ca3af; font-size: 0.88rem; line-height: 1.5; }
+  .upgrade-opt {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    width: 100%; text-align: left; margin-top: 10px; padding: 14px;
+    border: 1px solid #374151; background: #111827; border-radius: 12px;
+  }
+  .upgrade-opt .opt-name { font-weight: 700; }
+  .upgrade-opt .opt-sub { font-size: 0.78rem; color: #9ca3af; font-weight: 400; margin-top: 2px; }
+  .upgrade-opt .opt-price { font-weight: 800; font-size: 1.05rem; white-space: nowrap; }
+  .upgrade-opt.best { border-color: #059669; }
+  .save-tag {
+    background: #059669; color: #fff; font-size: 0.68rem; font-weight: 700;
+    padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: middle;
+  }
+  #acct-note { font-size: 0.75rem; color: #6b7280; line-height: 1.5; margin-top: 10px; }
+  #logout-btn { width: 100%; margin-top: 4px; }
 
   .view { display: none; flex: 1; flex-direction: column; min-height: 0; }
   .view.active { display: flex; }
@@ -156,8 +184,7 @@
 <header>
   <h1>🍾 Barscan</h1>
   <div class="right">
-    <span class="user-badge" id="user-badge"></span>
-    <button id="logout-btn" style="display:none">Log out</button>
+    <button id="account-btn" style="display:none">👤 <span id="user-badge"></span></button>
   </div>
 </header>
 
@@ -197,6 +224,42 @@
       log in with the same account anywhere to continue.<br>
       Free plan: up to 3 products per stocktake · <a href="index.html#pricing" style="color:#60a5fa">Pro $25/month per user</a></div>
   </div>
+</div>
+
+<!-- ===== Account ===== -->
+<div id="account-view" class="view">
+  <div class="subheader" style="margin:-16px -12px 14px">
+    <button id="acct-back">‹ Back</button>
+    <div class="name">Account</div>
+  </div>
+  <div class="acct-card">
+    <h3>Signed in as</h3>
+    <div class="acct-email" id="acct-email"></div>
+  </div>
+  <div class="acct-card">
+    <h3>Subscription</h3>
+    <div id="acct-plan-free">
+      <span class="plan-badge free">Free plan</span>
+      <div class="plan-desc">Count up to 3 products per stocktake. Upgrade to Pro for unlimited products.</div>
+      <button class="upgrade-opt" data-plan="monthly">
+        <span><span class="opt-name">Pro Monthly</span>
+          <div class="opt-sub">Billed monthly, cancel anytime</div></span>
+        <span class="opt-price">$25<small>/mo</small></span>
+      </button>
+      <button class="upgrade-opt best" data-plan="annual">
+        <span><span class="opt-name">Pro Annual<span class="save-tag">2 MONTHS FREE</span></span>
+          <div class="opt-sub">12 months for the price of 10</div></span>
+        <span class="opt-price">$250<small>/yr</small></span>
+      </button>
+      <div id="acct-note">After payment your account is upgraded to Pro. Questions? Reply to your welcome email.</div>
+    </div>
+    <div id="acct-plan-pro" style="display:none">
+      <span class="plan-badge pro">Pro plan</span>
+      <div class="plan-desc">Unlimited products per stocktake. Thanks for supporting Barscan!
+        To change or cancel your subscription, reply to your welcome email.</div>
+    </div>
+  </div>
+  <button id="logout-btn" class="danger">Log out</button>
 </div>
 
 <!-- ===== Home: stocktake list ===== -->
@@ -258,11 +321,19 @@
   <div class="dialog">
     <div class="title">🍾 Free plan limit reached</div>
     <p class="upgrade-text">The free version counts up to <b>3 products per stocktake</b>.
-      Upgrade to <b>Barscan&nbsp;Pro</b> for unlimited products —
-      <b>$25/month per user</b>.</p>
-    <div class="dialog-actions">
+      Upgrade to <b>Barscan&nbsp;Pro</b> for unlimited products.</p>
+    <button class="upgrade-opt" data-plan="monthly">
+      <span><span class="opt-name">Pro Monthly</span>
+        <div class="opt-sub">Billed monthly, cancel anytime</div></span>
+      <span class="opt-price">$25<small>/mo</small></span>
+    </button>
+    <button class="upgrade-opt best" data-plan="annual">
+      <span><span class="opt-name">Pro Annual<span class="save-tag">2 MONTHS FREE</span></span>
+        <div class="opt-sub">12 months for the price of 10</div></span>
+      <span class="opt-price">$250<small>/yr</small></span>
+    </button>
+    <div class="dialog-actions" style="margin-top:12px">
       <button id="upgrade-later" class="flex">Not now</button>
-      <button id="upgrade-go" class="success flex">Upgrade to Pro</button>
     </div>
   </div>
 </div>
@@ -328,11 +399,11 @@
 
   // ---- Views ----
   function showView(name) {
-    ['setup-view', 'auth-view', 'home-view', 'scan-view'].forEach(function (id) {
+    ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
     $('scan-footer').classList.toggle('active', name === 'scan');
-    $('logout-btn').style.display = currentUser ? '' : 'none';
+    $('account-btn').style.display = currentUser ? '' : 'none';
     $('user-badge').textContent = currentUser ? currentUser.email : '';
     if (name !== 'scan') stopScanner();
   }
@@ -394,15 +465,40 @@
     loadTakes();
   }
 
-  // ---- Upgrade (free plan limit) ----
+  // ---- Upgrade (free plan limit) & account ----
   function openUpgrade() { $('upgrade-overlay').classList.add('open'); }
   $('upgrade-later').onclick = function () { $('upgrade-overlay').classList.remove('open'); };
-  $('upgrade-go').onclick = function () {
-    window.open(cfg.upgradeUrl || 'index.html#pricing', '_blank');
-  };
+  function goUpgrade(plan) {
+    var url = plan === 'annual'
+      ? (cfg.upgradeUrlAnnual || cfg.upgradeUrl || 'index.html#pricing')
+      : (cfg.upgradeUrl || 'index.html#pricing');
+    window.open(url, '_blank');
+  }
+  document.querySelectorAll('.upgrade-opt').forEach(function (b) {
+    b.onclick = function () { goUpgrade(b.dataset.plan); };
+  });
   function isLimitError(error) {
     return error && /row-level security|policy/i.test(error.message || '');
   }
+
+  function openAccount() {
+    $('acct-email').textContent = currentUser.email;
+    renderPlan();
+    showView('account');
+    // Refresh the plan from the server so a just-completed upgrade shows up
+    sb.from('profiles').select('is_pro').eq('id', currentUser.id).maybeSingle().then(function (res) {
+      if (!res.error && res.data) {
+        isPro = !!res.data.is_pro;
+        renderPlan();
+      }
+    });
+  }
+  function renderPlan() {
+    $('acct-plan-free').style.display = isPro ? 'none' : '';
+    $('acct-plan-pro').style.display = isPro ? '' : 'none';
+  }
+  $('account-btn').onclick = function () { if (currentUser) openAccount(); };
+  $('acct-back').onclick = function () { loadTakes(); };
 
   $('logout-btn').onclick = function () {
     sb.auth.signOut().then(function () {

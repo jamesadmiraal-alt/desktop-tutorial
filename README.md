@@ -35,7 +35,9 @@ Libraries are vendored (no CDN) so the app keeps loading on flaky connections.
 ## Plans
 
 - **Free** — up to **3 products per stocktake** (unlimited stocktakes). When a 4th product is scanned, the app offers an upgrade link.
-- **Pro — $25/month per user** — unlimited products per stocktake.
+- **Pro — $25/month per user**, or **$250/year (2 months free)** — unlimited products per stocktake.
+
+The in-app Account section (👤 in the header) shows the signed-in user and their plan, with both upgrade options; `upgradeUrl` / `upgradeUrlAnnual` in `config.js` control where the buttons lead (point them at Stripe Payment Links when payments are set up).
 
 The limit is enforced both in the app and server-side by a row-level-security policy, keyed off `profiles.is_pro`. Payments aren't automated yet: after someone pays, flip their flag (SQL at the bottom of `schema.sql`), or later wire a Stripe Payment Link + webhook and point `upgradeUrl` in `config.js` at it.
 
