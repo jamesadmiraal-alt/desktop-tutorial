@@ -9,5 +9,5 @@ window.BARSCAN_CONFIG = {
   // Payment Links (or similar) once payments are set up; until then they
   // open the landing page's pricing section.
   upgradeUrl: '',        // Pro Monthly  ($25/month)
-  upgradeUrlAnnual: ''   // Pro Annual   ($250/year — 2 months free)
+  upgradeUrlAnnual: 'https://buy.stripe.com/test_cNi3cvgdqfWdcSV0FWdEs01'   // Pro Annual ($250/year — 2 months free)
 };
