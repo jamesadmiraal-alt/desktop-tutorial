@@ -49,6 +49,43 @@ The limit is enforced both in the app and server-side by a row-level-security po
 4. Optional but recommended for venue use: **Authentication → Sign In / Up → Email** → turn **off** "Confirm email", so operators can sign up and start scanning immediately
 5. The anon key is safe to ship in the frontend — access control is enforced by the row-level-security policies in `schema.sql`
 
+## Local development
+
+There is no build step — you edit files and refresh the browser.
+
+**Prerequisites:** [Git](https://git-scm.com/downloads), [Node.js (LTS)](https://nodejs.org),
+and optionally [VS Code](https://code.visualstudio.com) with the **Claude Code** extension.
+
+```sh
+# 1. Clone and open
+git clone https://github.com/jamesadmiraal-alt/desktop-tutorial.git
+cd desktop-tutorial
+code .                       # open in VS Code (optional)
+
+# 2. Serve it locally
+npx http-server . -p 8080    # then open http://localhost:8080
+```
+
+Notes:
+- Camera scanning needs a **secure context**. `http://localhost` counts as secure on a
+  desktop, so scanning works there — but a phone can't reach your laptop's `localhost`,
+  so use the live GitHub Pages URL (below) for real phone testing.
+- The app talks to the live Supabase project via `config.js`, so login and stocktakes
+  work locally out of the box. Don't commit real `sk_` / `service_role` keys — only the
+  anon key and Payment Link URLs belong in `config.js`.
+
+### Making changes
+
+Edit → commit → push. GitHub Actions deploys `main` automatically (see below).
+
+```sh
+git add -A
+git commit -m "describe your change"
+git push
+```
+
+See [`CLAUDE.md`](CLAUDE.md) for architecture, conventions, and gotchas.
+
 ## Hosting / deployment
 
 The app is deployed to GitHub Pages automatically by a workflow on every push to `main`
