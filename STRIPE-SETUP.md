@@ -11,8 +11,8 @@ live, repeat the same steps in live mode and swap the URLs/secrets.
 1. Stripe Dashboard → **Product catalog** → **+ Add product**
 2. Name: `Barscan Pro` · Description: `Unlimited products per stocktake`
 3. Add **two recurring prices**:
-   - `$25.00` / **month**
-   - `$250.00` / **year**  *(the "2 months free" annual deal)*
+   - `$29.00` / **month**
+   - `$290.00` / **year**  *(the "2 months free" annual deal)*
 
 ## 2. Create two Payment Links
 
@@ -30,8 +30,8 @@ Copy both link URLs (they look like `https://buy.stripe.com/test_...`).
 In `config.js`:
 
 ```js
-upgradeUrl:       'https://buy.stripe.com/test_XXXX',  // $25/month link
-upgradeUrlAnnual: 'https://buy.stripe.com/test_YYYY',  // $250/year link
+upgradeUrl:       'https://buy.stripe.com/test_XXXX',  // $29/month link
+upgradeUrlAnnual: 'https://buy.stripe.com/test_YYYY',  // $290/year link
 ```
 
 The app automatically appends `client_reference_id` (the Supabase user id) and
