@@ -60,7 +60,7 @@
     padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: middle;
   }
   #acct-note { font-size: 0.75rem; color: #6b7280; line-height: 1.5; margin-top: 10px; }
-  #logout-btn { width: 100%; margin-top: 4px; }
+  #logout-btn, #manage-sub-btn, #delete-account-btn { width: 100%; margin-top: 4px; }
 
   .view { display: none; flex: 1; flex-direction: column; min-height: 0; }
   .view.active { display: flex; }
@@ -267,11 +267,32 @@
     </div>
     <div id="acct-plan-pro" style="display:none">
       <span class="plan-badge pro">Pro plan</span>
-      <div class="plan-desc">Unlimited products per stocktake. Thanks for supporting Barscan!
-        To change or cancel your subscription, reply to your welcome email.</div>
+      <div class="plan-desc">Unlimited products per stocktake. Thanks for supporting Barscan!</div>
+      <button id="manage-sub-btn">Manage subscription</button>
+      <div id="acct-note">Update your payment method, view invoices, or cancel — handled securely by Stripe.
+        Trouble with the button above? Reply to your welcome email.</div>
     </div>
   </div>
   <button id="logout-btn" class="danger">Log out</button>
+  <div class="acct-card">
+    <h3>Danger zone</h3>
+    <div class="plan-desc">Permanently delete your account, all stocktakes, and your subscription.
+      This can't be undone.</div>
+    <button id="delete-account-btn" class="danger">Delete account</button>
+  </div>
+</div>
+
+<!-- ===== Delete account confirmation ===== -->
+<div id="delete-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Delete your account?</div>
+    <p class="upgrade-text">This permanently deletes your account, every stocktake, and cancels any
+      active subscription. <b>This can't be undone.</b></p>
+    <div class="dialog-actions">
+      <button id="delete-cancel" class="flex">Cancel</button>
+      <button id="delete-confirm" class="danger flex">Delete my account</button>
+    </div>
+  </div>
 </div>
 
 <!-- ===== Home: stocktake list ===== -->
@@ -548,6 +569,15 @@
            (plan === 'annual' ? byDefault.annual : byDefault.monthly) ||
            'index.html#pricing';
   }
+  // window.open('_blank') isn't reliable inside a native WebView; open an
+  // in-app browser tab instead. Used for both Stripe checkout and the
+  // billing portal — refreshProStatus() on app resume (native) or the
+  // upgraded=1/billing_updated=1 boot handling (web) is what picks up
+  // whatever changed once the user comes back.
+  function openExternal(url) {
+    if (isNative) Capacitor.Plugins.Browser.open({ url: url });
+    else window.open(url, '_blank');
+  }
   function goUpgrade(plan) {
     var url = upgradeLink(plan);
     // On a real checkout link (Stripe Payment Link), identify the paying user
@@ -557,14 +587,20 @@
         'client_reference_id=' + encodeURIComponent(currentUser.id) +
         '&prefilled_email=' + encodeURIComponent(currentUser.email);
     }
-    // window.open('_blank') isn't reliable inside a native WebView; open an
-    // in-app browser tab instead. The Payment Link's redirect URL still points
-    // at the hosted app.html?upgraded=1 (it just loads in that tab, not the
-    // app shell) — refreshProStatus() on app resume is what picks up the
-    // upgrade natively, see the 'resume' listener below.
-    if (isNative) Capacitor.Plugins.Browser.open({ url: url });
-    else window.open(url, '_blank');
+    openExternal(url);
   }
+  function openBillingPortal() {
+    $('manage-sub-btn').disabled = true;
+    sb.functions.invoke('create-portal-session').then(function (res) {
+      $('manage-sub-btn').disabled = false;
+      if (res.error || !res.data || !res.data.url) {
+        toast('Could not open billing portal — reply to your welcome email instead', '#b91c1c');
+        return;
+      }
+      openExternal(res.data.url);
+    });
+  }
+  $('manage-sub-btn').onclick = openBillingPortal;
   document.querySelectorAll('.upgrade-opt').forEach(function (b) {
     b.onclick = function () { goUpgrade(b.dataset.plan); };
   });
@@ -600,6 +636,28 @@
       currentUser = null; currentTake = null; items = [];
       setAuthMode('login');
       showView('auth');
+    });
+  };
+
+  // ---- Delete account ----
+  $('delete-account-btn').onclick = function () { $('delete-overlay').classList.add('open'); };
+  $('delete-cancel').onclick = function () { $('delete-overlay').classList.remove('open'); };
+  $('delete-confirm').onclick = function () {
+    $('delete-confirm').disabled = true;
+    sb.functions.invoke('delete-account').then(function (res) {
+      if (res.error || !res.data || !res.data.deleted) {
+        $('delete-confirm').disabled = false;
+        toast('Could not delete account — please try again', '#b91c1c');
+        return;
+      }
+      $('delete-overlay').classList.remove('open');
+      $('delete-confirm').disabled = false;
+      sb.auth.signOut().then(function () {
+        currentUser = null; currentTake = null; items = [];
+        setAuthMode('login');
+        showView('auth');
+        toast('Your account has been deleted');
+      });
     });
   };
 
@@ -1063,6 +1121,11 @@
     if (/[?&]upgraded=1/.test(location.search)) {
       history.replaceState(null, '', location.pathname);
       toast('🎉 Payment received — your Pro access activates within a minute', '#059669');
+    }
+    // Returning from the Stripe billing portal (manage/cancel subscription)
+    if (/[?&]billing_updated=1/.test(location.search)) {
+      history.replaceState(null, '', location.pathname);
+      toast('Billing updated');
     }
   });
 

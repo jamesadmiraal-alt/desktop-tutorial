@@ -24,6 +24,15 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - `supabase/functions/stripe-webhook/index.ts` — Deno edge function (deployed in Supabase
   under the name **`super-stripewebhooks`**, note the different name!) that flips
   `profiles.is_pro` on `checkout.session.completed` / `customer.subscription.deleted`.
+  Stripe calls it unauthenticated (JWT verification OFF, verifies its own HMAC signature
+  instead) and it never calls Stripe's API outbound — only `STRIPE_WEBHOOK_SECRET`.
+- `supabase/functions/create-portal-session/index.ts` and `.../delete-account/index.ts` —
+  the opposite trust model from the webhook: JWT verification stays ON (they act on behalf
+  of whoever calls them, identified from that caller's own session), and they *do* call
+  Stripe's API outbound (open the Customer Portal; cancel a subscription immediately before
+  deleting the account), using a new `STRIPE_SECRET_KEY` secret. Account deletion relies on
+  the existing cascade-delete FKs (`profiles`/`stocktakes`/`stocktake_items` → `auth.users`)
+  already in `schema.sql` — no separate cleanup code needed. See STRIPE-SETUP.md §7-10.
 - Barcode scanning: native `BarcodeDetector` when available (Android Chrome), else the
   vendored zxing-wasm ponyfill (`barcode-detector.iife.js` + `zxing_reader.wasm`).
   Do not reintroduce a `qrbox`-style scan region — it silently breaks QR decoding.
