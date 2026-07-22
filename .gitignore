@@ -1,0 +1,21 @@
+node_modules/
+native-www/
+
+# Android build output (android/ platform project itself is committed)
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/captures/
+android/.idea/
+
+# iOS build output (ios/ platform project itself is committed)
+ios/App/Pods/
+ios/App/App/public/
+ios/App/DerivedData/
+ios/App/build/
+ios/App/*.xcworkspace/xcuserdata/
+ios/App/*.xcodeproj/xcuserdata/
+ios/App/*.xcodeproj/project.xcworkspace/xcuserdata/
+
+.DS_Store

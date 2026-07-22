@@ -8,6 +8,14 @@
 <script src="barcode-detector.iife.js"></script>
 <script src="supabase.min.js"></script>
 <script src="config.js"></script>
+<!-- Capacitor runtime, vendored (see NATIVE-SETUP.md). No-ops harmlessly on
+     the plain web deploy: capacitorExports.Capacitor.isNativePlatform() is
+     false outside a native shell, and all native-only code below is guarded
+     on that. -->
+<script src="capacitor.js"></script>
+<script src="capacitor-app-plugin.js"></script>
+<script src="capacitor-browser-plugin.js"></script>
+<script src="capacitor-status-bar-plugin.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
@@ -18,7 +26,7 @@
     max-width: 640px; margin: 0 auto;
   }
   header {
-    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
     background: #1f2937; position: sticky; top: 0; z-index: 10;
   }
   header h1 { font-size: 1.1rem; font-weight: 600; white-space: nowrap; }
@@ -358,6 +366,12 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
+  // Vendored Capacitor runtime (see NATIVE-SETUP.md). Only present/native
+  // inside the iOS/Android app shells; isNative stays false on the plain
+  // web deploy, so every native-only branch below is a no-op there.
+  if (window.capacitorExports) window.Capacitor = window.capacitorExports.Capacitor;
+  var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform());
+
   var cfg = window.BARSCAN_CONFIG || {};
   var configured = cfg.supabaseUrl && cfg.supabaseUrl.indexOf('YOUR-PROJECT') === -1 &&
                    cfg.supabaseAnonKey && cfg.supabaseAnonKey.indexOf('YOUR-') === -1;
@@ -398,7 +412,9 @@
   }
 
   // ---- Views ----
+  var currentView = null;
   function showView(name) {
+    currentView = name;
     ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
@@ -455,13 +471,25 @@
   $('auth-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter' && authMode === 'login') submitAuth(); });
   $('auth-pass2').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAuth(); });
 
+  // Re-checks the Pro flag from the server and re-renders anywhere it's shown.
+  // Called on login, whenever the Account view opens, and (native only) when
+  // the app resumes from the in-app Stripe checkout browser tab.
+  function refreshProStatus(cb) {
+    if (!currentUser) return;
+    sb.from('profiles').select('is_pro').eq('id', currentUser.id).maybeSingle().then(function (res) {
+      if (!res.error && res.data) {
+        isPro = !!res.data.is_pro;
+        renderPlan();
+      }
+      if (cb) cb();
+    });
+  }
+
   function enterApp(user) {
     currentUser = { id: user.id, email: user.email };
     $('auth-pass').value = ''; $('auth-pass2').value = '';
     isPro = false;
-    sb.from('profiles').select('is_pro').eq('id', user.id).maybeSingle().then(function (res) {
-      if (!res.error && res.data) isPro = !!res.data.is_pro;
-    });
+    refreshProStatus();
     loadTakes();
   }
 
@@ -479,7 +507,13 @@
         'client_reference_id=' + encodeURIComponent(currentUser.id) +
         '&prefilled_email=' + encodeURIComponent(currentUser.email);
     }
-    window.open(url, '_blank');
+    // window.open('_blank') isn't reliable inside a native WebView; open an
+    // in-app browser tab instead. The Payment Link's redirect URL still points
+    // at the hosted app.html?upgraded=1 (it just loads in that tab, not the
+    // app shell) — refreshProStatus() on app resume is what picks up the
+    // upgrade natively, see the 'resume' listener below.
+    if (isNative) Capacitor.Plugins.Browser.open({ url: url });
+    else window.open(url, '_blank');
   }
   document.querySelectorAll('.upgrade-opt').forEach(function (b) {
     b.onclick = function () { goUpgrade(b.dataset.plan); };
@@ -493,12 +527,7 @@
     renderPlan();
     showView('account');
     // Refresh the plan from the server so a just-completed upgrade shows up
-    sb.from('profiles').select('is_pro').eq('id', currentUser.id).maybeSingle().then(function (res) {
-      if (!res.error && res.data) {
-        isPro = !!res.data.is_pro;
-        renderPlan();
-      }
-    });
+    refreshProStatus();
   }
   function renderPlan() {
     $('acct-plan-free').style.display = isPro ? 'none' : '';
@@ -977,6 +1006,36 @@
       toast('🎉 Payment received — your Pro access activates within a minute', '#059669');
     }
   });
+
+  // ---- Native (Capacitor) lifecycle ----
+  if (isNative) {
+    var App = Capacitor.Plugins.App;
+
+    // The app never sees the Stripe Payment Link's https redirect natively
+    // (it lands in the separate in-app browser tab opened by goUpgrade, not
+    // this WebView) — resuming from foreground is the signal to re-check.
+    App.addListener('resume', function () { refreshProStatus(); });
+
+    // Release the camera when the OS backgrounds the app instead of leaving
+    // the stream running (startScanner/stopScanner otherwise only react to
+    // in-app view navigation, not app backgrounding).
+    App.addListener('appStateChange', function (state) {
+      if (!state.isActive) stopScanner();
+    });
+
+    // There's no URL-based routing to drive Android's hardware/gesture back
+    // button from, so map it onto the same handlers the in-app "‹ Back"
+    // buttons use; exit the app from the top-level views.
+    App.addListener('backButton', function () {
+      if (currentView === 'scan') $('back-btn').onclick();
+      else if (currentView === 'account') $('acct-back').onclick();
+      else App.exitApp();
+    });
+
+    if (Capacitor.Plugins.StatusBar) {
+      Capacitor.Plugins.StatusBar.setOverlaysWebView({ overlay: false }).catch(function () {});
+    }
+  }
 })();
 </script>
 </body>
