@@ -96,11 +96,70 @@ https://vfixdchbkmqryfhirphx.supabase.co/functions/v1/stripe-webhook
 5. To test cancellation: Stripe Dashboard → Customers → cancel the subscription →
    the account drops back to Free
 
+## 7. Turn on self-service cancellation (Stripe Customer Portal)
+
+The app's Account view has a **Manage subscription** button that opens Stripe's
+hosted Customer Portal, where operators can update their payment method, view
+invoices, or cancel — without emailing you.
+
+1. Stripe Dashboard → **Settings** → **Billing** → **Customer portal**
+2. Under **Subscriptions**, make sure **Customers can cancel subscriptions** is
+   turned on (it's on by default in test mode, but double-check — this is what
+   makes cancellation actually self-service instead of just informational)
+3. Save. No link to copy here — the app requests a portal session per-user via
+   the `create-portal-session` edge function below.
+
+## 8. Add the Stripe secret key to Supabase
+
+Unlike the webhook (which only *verifies* incoming Stripe events), the two new
+functions below *call* Stripe's API — creating a portal session, cancelling a
+subscription — so they need your actual secret key, not just the webhook secret.
+
+Supabase Dashboard → **Edge Functions** → **Secrets** → add
+`STRIPE_SECRET_KEY` = your Stripe **secret key** (`sk_test_...` in test mode).
+**Never** commit this key anywhere in the repo — it belongs only in this secret.
+
+## 9. Deploy the account-management functions
+
+Two new functions: `supabase/functions/create-portal-session` (Manage
+subscription) and `supabase/functions/delete-account` (Delete account).
+
+**Important — opposite of the webhook**: leave **"Enforce JWT verification" ON**
+for both of these. They act on behalf of whoever calls them, using that
+caller's own Supabase session to identify them — unlike the webhook, which
+Stripe calls unauthenticated and which verifies itself via signature instead.
+
+```sh
+supabase functions deploy create-portal-session --project-ref vfixdchbkmqryfhirphx
+supabase functions deploy delete-account --project-ref vfixdchbkmqryfhirphx
+```
+
+(Omit `--no-verify-jwt` — that flag is specific to the webhook.) If deploying via
+the dashboard editor instead, just don't touch the JWT verification toggle; it
+defaults to on.
+
+## 10. Test both flows
+
+**Manage subscription**: sign in as a Pro user → 👤 Account → **Manage
+subscription** → confirm it opens the Stripe portal for the right customer,
+that cancelling there actually cancels (not just "scheduled" with no way to
+confirm), and that returning to the app eventually shows Free once the
+subscription period ends (the existing webhook's `customer.subscription.deleted`
+handling covers that automatically — no changes needed there).
+
+**Delete account**: sign in as a **test** user with an active subscription →
+👤 Account → **Delete account** → confirm → check in Stripe that the
+subscription was cancelled immediately (not left running), and in Supabase
+**Authentication → Users** that the user is gone (and that their `stocktakes`/
+`stocktake_items` rows are gone too, via the cascade deletes in `schema.sql`).
+
 ## Notes
 
 - **Never** put the `sk_...` secret key in this repo or the website. Only Payment
   Link URLs (safe) and the publishable `pk_...` key (also safe, and currently not
-  even needed) may appear in frontend code.
+  even needed) may appear in frontend code. The new `STRIPE_SECRET_KEY` used by
+  `create-portal-session`/`delete-account` lives only in Supabase's Edge Function
+  secrets (§8) — it is never sent to the browser.
 - **Native apps** (see `NATIVE-SETUP.md`): the redirect URL above doesn't need to
   change. On iOS/Android the checkout opens in an in-app browser tab, so that
   `?upgraded=1` page loads there rather than in the app's own screen — the app
