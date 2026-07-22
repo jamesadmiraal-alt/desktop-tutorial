@@ -19,6 +19,15 @@ const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const RETURN_URL = "https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html?billing_updated=1";
 
+// The app (github.io, or a native WebView origin) calls this cross-origin,
+// so the browser sends a preflight OPTIONS request before the real POST —
+// without these headers it never even reaches the code below.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 async function db(path: string): Promise<Response> {
   return await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     headers: {
@@ -40,7 +49,10 @@ async function stripe(path: string, params: Record<string, string>): Promise<Res
 }
 
 Deno.serve(async (req) => {
-  if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+  if (req.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
+  if (req.method !== "POST") {
+    return new Response("method not allowed", { status: 405, headers: CORS_HEADERS });
+  }
 
   const authHeader = req.headers.get("Authorization") ?? "";
   const userClient = createClient(SUPABASE_URL, ANON_KEY, {
@@ -48,7 +60,10 @@ Deno.serve(async (req) => {
   });
   const { data: { user }, error: authError } = await userClient.auth.getUser();
   if (authError || !user) {
-    return new Response(JSON.stringify({ error: "Not signed in" }), { status: 401 });
+    return new Response(JSON.stringify({ error: "Not signed in" }), {
+      status: 401,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
   }
 
   try {
@@ -58,7 +73,7 @@ Deno.serve(async (req) => {
     if (!customerId) {
       return new Response(
         JSON.stringify({ error: "No billing account found for this user yet." }),
-        { status: 400, headers: { "Content-Type": "application/json" } },
+        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
       );
     }
 
@@ -73,13 +88,13 @@ Deno.serve(async (req) => {
     const portal = await portalRes.json();
 
     return new Response(JSON.stringify({ url: portal.url }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   } catch (err) {
     console.error("create-portal-session failed:", err);
     return new Response(JSON.stringify({ error: "Could not open billing portal" }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   }
 });

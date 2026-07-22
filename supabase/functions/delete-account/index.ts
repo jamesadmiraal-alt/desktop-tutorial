@@ -18,6 +18,15 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
+// The app (github.io, or a native WebView origin) calls this cross-origin,
+// so the browser sends a preflight OPTIONS request before the real POST —
+// without these headers it never even reaches the code below.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 async function db(path: string, init: RequestInit = {}): Promise<Response> {
   return await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...init,
@@ -57,7 +66,10 @@ async function cancelActiveSubscriptions(customerId: string): Promise<void> {
 }
 
 Deno.serve(async (req) => {
-  if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+  if (req.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
+  if (req.method !== "POST") {
+    return new Response("method not allowed", { status: 405, headers: CORS_HEADERS });
+  }
 
   const authHeader = req.headers.get("Authorization") ?? "";
   const userClient = createClient(SUPABASE_URL, ANON_KEY, {
@@ -65,7 +77,10 @@ Deno.serve(async (req) => {
   });
   const { data: { user }, error: authError } = await userClient.auth.getUser();
   if (authError || !user) {
-    return new Response(JSON.stringify({ error: "Not signed in" }), { status: 401 });
+    return new Response(JSON.stringify({ error: "Not signed in" }), {
+      status: 401,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
   }
 
   try {
@@ -79,13 +94,13 @@ Deno.serve(async (req) => {
     if (deleteError) throw deleteError;
 
     return new Response(JSON.stringify({ deleted: true }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   } catch (err) {
     console.error("delete-account failed:", err);
     return new Response(JSON.stringify({ error: "Could not delete account" }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   }
 });
