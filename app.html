@@ -555,7 +555,7 @@
   }
 
   // ---- Upgrade (free plan limit) & account ----
-  function openUpgrade() { $('upgrade-overlay').classList.add('open'); }
+  function openUpgrade() { renderUpgradePrices(); $('upgrade-overlay').classList.add('open'); }
   $('upgrade-later').onclick = function () { $('upgrade-overlay').classList.remove('open'); };
   // Picks the Payment Link matching the operator's currency (from their
   // country), falling back to DEFAULT_CURRENCY if that currency isn't
@@ -568,6 +568,23 @@
     return (plan === 'annual' ? byCurrency.annual : byCurrency.monthly) ||
            (plan === 'annual' ? byDefault.annual : byDefault.monthly) ||
            'index.html#pricing';
+  }
+  // Updates the displayed "$29/mo" style price on every upgrade button (both
+  // in Account and the free-limit dialog) to match the operator's currency —
+  // the Payment Link itself already did (upgradeLink()); this keeps the
+  // shown price consistent with what Stripe will actually charge.
+  function renderUpgradePrices() {
+    var currency = (currentUser && COUNTRY_CURRENCY[currentUser.country]) || DEFAULT_CURRENCY;
+    var links = (cfg.upgradeUrls || {});
+    var info = links[currency] || links[DEFAULT_CURRENCY] || {};
+    var symbol = info.symbol || '$';
+    document.querySelectorAll('.upgrade-opt').forEach(function (b) {
+      var priceEl = b.querySelector('.opt-price');
+      if (!priceEl) return;
+      var isAnnual = b.dataset.plan === 'annual';
+      var amount = (isAnnual ? info.annualPrice : info.monthlyPrice) || (isAnnual ? '290' : '29');
+      priceEl.innerHTML = symbol + amount + '<small>' + (isAnnual ? '/yr' : '/mo') + '</small>';
+    });
   }
   // window.open('_blank') isn't reliable inside a native WebView; open an
   // in-app browser tab instead. Used for both Stripe checkout and the
@@ -612,9 +629,13 @@
     $('acct-email').textContent = currentUser.email;
     $('acct-country').value = currentUser.country || '';
     renderPlan();
+    renderUpgradePrices();
     showView('account');
     // Refresh the plan from the server so a just-completed upgrade shows up
-    refreshProStatus(function () { $('acct-country').value = currentUser.country || ''; });
+    refreshProStatus(function () {
+      $('acct-country').value = currentUser.country || '';
+      renderUpgradePrices();
+    });
   }
   function renderPlan() {
     $('acct-plan-free').style.display = isPro ? 'none' : '';
@@ -627,6 +648,7 @@
     sb.from('profiles').update({ country: country }).eq('id', currentUser.id).then(function (res) {
       if (res.error) { fail(res.error, 'Could not save country'); return; }
       currentUser.country = country;
+      renderUpgradePrices();
       toast('Country updated');
     });
   };
