@@ -13,18 +13,38 @@ create table if not exists public.profiles (
 -- back to the right account (written by the stripe-webhook edge function)
 alter table public.profiles add column if not exists stripe_customer_id text;
 
+-- Operator's country, set at signup (or later in Account) — used client-side
+-- to pick which currency's Stripe Payment Link to open. Not validated against
+-- a fixed list here; the app only ever writes the short codes from its own
+-- COUNTRY_CURRENCY table.
+alter table public.profiles add column if not exists country text;
+
 alter table public.profiles enable row level security;
 
 drop policy if exists "read own profile" on public.profiles;
 create policy "read own profile" on public.profiles
   for select using (auth.uid() = id);
--- No insert/update policies for clients: profiles are created by the trigger
--- below, and is_pro is flipped only by you (dashboard/service role/Stripe webhook).
+-- No insert policy for clients: profiles are created by the trigger below.
+-- is_pro/stripe_customer_id are flipped only by you (dashboard/service
+-- role/Stripe webhook) — see the column-scoped update policy below, which
+-- deliberately does NOT open those columns up to clients.
+
+-- Let users set/update their own country (for checkout currency) without
+-- opening up is_pro/stripe_customer_id to client writes: the policy allows
+-- updating your own row, but the GRANT below restricts *which* columns the
+-- authenticated role may actually write — both are enforced by Postgres.
+drop policy if exists "update own country" on public.profiles;
+create policy "update own country" on public.profiles
+  for update using (auth.uid() = id) with check (auth.uid() = id);
+revoke update on public.profiles from authenticated;
+grant update (country) on public.profiles to authenticated;
 
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.profiles (id) values (new.id) on conflict do nothing;
+  insert into public.profiles (id, country)
+  values (new.id, new.raw_user_meta_data->>'country')
+  on conflict do nothing;
   return new;
 end $$;
 

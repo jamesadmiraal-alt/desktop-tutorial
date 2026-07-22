@@ -76,7 +76,7 @@
   button.flex { flex: 1; }
   button:disabled { opacity: 0.45; }
 
-  input[type="text"], input[type="email"], input[type="password"], input[type="number"] {
+  input[type="text"], input[type="email"], input[type="password"], input[type="number"], select {
     border: 1px solid #4b5563; border-radius: 10px; background: #111827;
     color: #f9fafb; padding: 12px; font-size: 1rem; width: 100%;
   }
@@ -90,7 +90,7 @@
   .auth-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
   .auth-tabs button { flex: 1; background: #111827; color: #9ca3af; }
   .auth-tabs button.on { background: #2563eb; color: #fff; }
-  .auth-card label { display: block; font-size: 0.8rem; color: #9ca3af; margin: 10px 0 4px; }
+  .auth-card label, .acct-card label { display: block; font-size: 0.8rem; color: #9ca3af; margin: 10px 0 4px; }
   #auth-submit { width: 100%; margin-top: 18px; }
   .auth-note { font-size: 0.72rem; color: #6b7280; margin-top: 14px; text-align: center; line-height: 1.4; }
   .setup-card code { background: #111827; padding: 2px 6px; border-radius: 6px; font-size: 0.85em; }
@@ -226,6 +226,8 @@
     <div id="confirm-row" style="display:none">
       <label for="auth-pass2">Confirm password</label>
       <input id="auth-pass2" type="password" autocomplete="new-password">
+      <label for="auth-country">Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
+      <select id="auth-country" autocomplete="country"></select>
     </div>
     <button id="auth-submit" class="primary">Log in</button>
     <div class="auth-note">Your stocktakes are stored in the cloud and sync across devices —
@@ -243,6 +245,8 @@
   <div class="acct-card">
     <h3>Signed in as</h3>
     <div class="acct-email" id="acct-email"></div>
+    <label for="acct-country">Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
+    <select id="acct-country"></select>
   </div>
   <div class="acct-card">
     <h3>Subscription</h3>
@@ -378,7 +382,7 @@
 
   var FREE_LIMIT = 3;       // distinct products per stocktake on the free plan
   var isPro = false;
-  var currentUser = null;   // {id, email}
+  var currentUser = null;   // {id, email, country}
   var currentTake = null;   // {id, name, ...}
   var items = [];           // items of currentTake: [{id, barcode, qty, first_scanned, last_scanned}]
   var scanning = false;
@@ -386,6 +390,39 @@
   var pendingCode = null;
   var lastScan = { code: null, at: 0 };
   var authMode = 'login';
+
+  // Countries offered at signup/Account, and which Stripe checkout currency
+  // each maps to (config.js's upgradeUrls). Anything not listed here — plus
+  // 'OTHER' — falls back to DEFAULT_CURRENCY in goUpgrade().
+  var COUNTRIES = [
+    ['', 'Select your country…'],
+    ['US', 'United States'],
+    ['GB', 'United Kingdom'],
+    ['AU', 'Australia'],
+    ['IE', 'Ireland'],
+    ['DE', 'Germany'],
+    ['FR', 'France'],
+    ['ES', 'Spain'],
+    ['IT', 'Italy'],
+    ['NL', 'Netherlands'],
+    ['OTHER', 'Other']
+  ];
+  var COUNTRY_CURRENCY = { US: 'USD', GB: 'GBP', AU: 'AUD', IE: 'EUR', DE: 'EUR', FR: 'EUR', ES: 'EUR', IT: 'EUR', NL: 'EUR' };
+  // Home currency — the one guaranteed to have real Payment Links configured
+  // in config.js. Used both for unmapped/unset countries and as the fallback
+  // when a mapped currency's links haven't been set up yet.
+  var DEFAULT_CURRENCY = 'AUD';
+
+  function fillCountrySelect(select, includePlaceholder) {
+    COUNTRIES.forEach(function (c) {
+      if (c[0] === '' && !includePlaceholder) return;
+      var opt = document.createElement('option');
+      opt.value = c[0]; opt.textContent = c[1];
+      select.appendChild(opt);
+    });
+  }
+  fillCountrySelect($('auth-country'), true);
+  fillCountrySelect($('acct-country'), true);
 
   function toast(msg, bg) {
     var t = $('toast');
@@ -448,7 +485,9 @@
     if (authMode === 'signup') {
       if (pw.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); done(); return; }
       if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
-      sb.auth.signUp({ email: email, password: pw }).then(function (res) {
+      var country = $('auth-country').value;
+      if (!country) { toast('Choose your country', '#b91c1c'); done(); return; }
+      sb.auth.signUp({ email: email, password: pw, options: { data: { country: country } } }).then(function (res) {
         done();
         if (res.error) { fail(res.error, 'Sign up failed'); return; }
         if (res.data.session) {
@@ -476,9 +515,10 @@
   // the app resumes from the in-app Stripe checkout browser tab.
   function refreshProStatus(cb) {
     if (!currentUser) return;
-    sb.from('profiles').select('is_pro').eq('id', currentUser.id).maybeSingle().then(function (res) {
+    sb.from('profiles').select('is_pro, country').eq('id', currentUser.id).maybeSingle().then(function (res) {
       if (!res.error && res.data) {
         isPro = !!res.data.is_pro;
+        currentUser.country = res.data.country || '';
         renderPlan();
       }
       if (cb) cb();
@@ -496,10 +536,20 @@
   // ---- Upgrade (free plan limit) & account ----
   function openUpgrade() { $('upgrade-overlay').classList.add('open'); }
   $('upgrade-later').onclick = function () { $('upgrade-overlay').classList.remove('open'); };
+  // Picks the Payment Link matching the operator's currency (from their
+  // country), falling back to DEFAULT_CURRENCY if that currency isn't
+  // configured yet.
+  function upgradeLink(plan) {
+    var currency = (currentUser && COUNTRY_CURRENCY[currentUser.country]) || DEFAULT_CURRENCY;
+    var links = (cfg.upgradeUrls || {});
+    var byCurrency = links[currency] || {};
+    var byDefault = links[DEFAULT_CURRENCY] || {};
+    return (plan === 'annual' ? byCurrency.annual : byCurrency.monthly) ||
+           (plan === 'annual' ? byDefault.annual : byDefault.monthly) ||
+           'index.html#pricing';
+  }
   function goUpgrade(plan) {
-    var url = plan === 'annual'
-      ? (cfg.upgradeUrlAnnual || cfg.upgradeUrl || 'index.html#pricing')
-      : (cfg.upgradeUrl || 'index.html#pricing');
+    var url = upgradeLink(plan);
     // On a real checkout link (Stripe Payment Link), identify the paying user
     // so the webhook can activate Pro on the right account automatically.
     if (/^https?:\/\//.test(url) && currentUser) {
@@ -524,10 +574,11 @@
 
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
+    $('acct-country').value = currentUser.country || '';
     renderPlan();
     showView('account');
     // Refresh the plan from the server so a just-completed upgrade shows up
-    refreshProStatus();
+    refreshProStatus(function () { $('acct-country').value = currentUser.country || ''; });
   }
   function renderPlan() {
     $('acct-plan-free').style.display = isPro ? 'none' : '';
@@ -535,6 +586,14 @@
   }
   $('account-btn').onclick = function () { if (currentUser) openAccount(); };
   $('acct-back').onclick = function () { loadTakes(); };
+  $('acct-country').onchange = function () {
+    var country = $('acct-country').value;
+    sb.from('profiles').update({ country: country }).eq('id', currentUser.id).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not save country'); return; }
+      currentUser.country = country;
+      toast('Country updated');
+    });
+  };
 
   $('logout-btn').onclick = function () {
     sb.auth.signOut().then(function () {
