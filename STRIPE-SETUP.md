@@ -83,6 +83,11 @@ https://vfixdchbkmqryfhirphx.supabase.co/functions/v1/stripe-webhook
 - **Never** put the `sk_...` secret key in this repo or the website. Only Payment
   Link URLs (safe) and the publishable `pk_...` key (also safe, and currently not
   even needed) may appear in frontend code.
+- **Native apps** (see `NATIVE-SETUP.md`): the redirect URL above doesn't need to
+  change. On iOS/Android the checkout opens in an in-app browser tab, so that
+  `?upgraded=1` page loads there rather than in the app's own screen — the app
+  instead re-checks `is_pro` when it resumes from the foreground (i.e. right after
+  the user closes the checkout tab), not from the `upgraded=1` toast.
 - If a payment ever arrives without an account match (shouldn't happen via the app,
   but possible if someone pays the raw link), the webhook logs it; you can activate
   manually with the SQL at the bottom of `schema.sql`.

@@ -1,0 +1,6 @@
+{
+  "appId": "com.barscan.app",
+  "appName": "Barscan",
+  "webDir": "native-www",
+  "backgroundColor": "#111827"
+}

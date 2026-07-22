@@ -21,6 +21,26 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   vendored zxing-wasm ponyfill (`barcode-detector.iife.js` + `zxing_reader.wasm`).
   Do not reintroduce a `qrbox`-style scan region — it silently breaks QR decoding.
 
+## Native apps (iOS/Android)
+
+- Capacitor wraps `app.html` for native builds — see `NATIVE-SETUP.md` for the full
+  runbook. This layer has its own `package.json`/`node_modules` (Capacitor CLI +
+  plugins) but does **not** give the web app a build step: `index.html`/`app.html`
+  still deploy to GitHub Pages exactly as committed.
+- `scripts/prepare-native.js` copies `app.html` → `native-www/index.html` (native
+  always loads `index.html` from its `webDir`, and root `index.html` has to stay the
+  marketing page for the web deploy) plus the shared vendored assets. Generated, not
+  committed — regenerate with `npm run prepare-native` or `npm run sync:android`/`sync:ios`.
+- `capacitor.js` + `capacitor-*-plugin.js` are vendored `@capacitor/*` browser builds
+  (same convention as `supabase.min.js`), loaded directly by `app.html` and inert on
+  the web deploy since `Capacitor.isNativePlatform()` is `false` there.
+- Native-only behavior in `app.html` (Stripe checkout via in-app browser, back-button
+  handling, camera release on backgrounding, resume-triggered `is_pro` refresh) is all
+  guarded on `isNative` — search for that variable before changing checkout/back-nav/
+  scanner-lifecycle code so you don't miss the native branch.
+- `android/` and `ios/` are committed platform projects (build artifacts gitignored).
+  `capacitor.config.json`'s `appId` is a placeholder — must change before store submission.
+
 ## Deployment
 
 - Push to `main` → GitHub Actions (`.github/workflows/deploy-pages.yml`) deploys to

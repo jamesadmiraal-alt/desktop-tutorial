@@ -95,6 +95,12 @@ The app is deployed to GitHub Pages automatically by a workflow on every push to
 
 Phone cameras only work on pages served over **HTTPS**, which GitHub Pages provides. For local testing on a desktop, `http://localhost` is also allowed to use the camera. Until `config.js` is filled in, the deployed page shows a setup screen instead of the app.
 
+## Native apps
+
+Barscan also ships as native iOS/Android apps, wrapping the same `app.html` with
+[Capacitor](https://capacitorjs.com). This doesn't change anything about the web
+deploy above — see [`NATIVE-SETUP.md`](NATIVE-SETUP.md) for the build runbook.
+
 ## Usage tips
 
 - Tap **Start camera** to begin scanning; tap again to pause it

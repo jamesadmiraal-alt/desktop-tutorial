@@ -1,0 +1,24 @@
+{
+  "name": "barscan-native",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Capacitor native-app shell for Barscan. The web app itself (app.html, index.html) has no build step and deploys to GitHub Pages unchanged; this package.json exists only to scaffold and sync the iOS/Android native wrappers.",
+  "scripts": {
+    "prepare-native": "node scripts/prepare-native.js",
+    "sync:android": "npm run prepare-native && npx cap sync android",
+    "sync:ios": "npm run prepare-native && npx cap sync ios",
+    "open:android": "npx cap open android",
+    "open:ios": "npx cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/browser": "^6.0.5",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/ios": "^6.2.0",
+    "@capacitor/status-bar": "^6.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  }
+}
