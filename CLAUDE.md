@@ -9,14 +9,30 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - `index.html` — marketing landing page (features, pricing: Free vs Pro $29/mo or $290/yr).
 - `app.html` — the whole app: auth, stocktake list, scanner, account/subscription views.
   All views live in one file, toggled via `showView()`.
-- `config.js` — Supabase URL + anon key, Stripe Payment Link URLs. The anon key and
-  payment links are safe to commit. **Never commit `sk_` Stripe keys or `service_role` keys.**
-- `schema.sql` — idempotent; the whole DB: `profiles` (with `is_pro`, `stripe_customer_id`),
-  `stocktakes`, `stocktake_items`, triggers, RLS. The free-plan limit (3 distinct products
-  per stocktake) is enforced BOTH client-side and by the RLS insert policy.
+- `config.js` — Supabase URL + anon key, Stripe Payment Link URLs (`upgradeUrls`, keyed by
+  currency). The anon key and payment links are safe to commit. **Never commit `sk_` Stripe
+  keys or `service_role` keys.**
+- `schema.sql` — idempotent; the whole DB: `profiles` (with `is_pro`, `stripe_customer_id`,
+  `country`), `stocktakes`, `stocktake_items`, triggers, RLS. The free-plan limit (3 distinct
+  products per stocktake) is enforced BOTH client-side and by the RLS insert policy.
+- Checkout currency: operators pick a country at signup (or later in 👤 Account), stored as
+  `profiles.country`. `app.html`'s `COUNTRY_CURRENCY` maps it to a currency, which selects
+  which entry of `config.js`'s `upgradeUrls` map `goUpgrade()` opens (falls back to
+  `DEFAULT_CURRENCY`, currently AUD — the only currency guaranteed to have real links — if
+  the mapped currency has none configured yet). `profiles.country` is client-writable — see
+  the column-scoped GRANT in `schema.sql` — but `is_pro`/`stripe_customer_id` are not.
 - `supabase/functions/stripe-webhook/index.ts` — Deno edge function (deployed in Supabase
   under the name **`super-stripewebhooks`**, note the different name!) that flips
   `profiles.is_pro` on `checkout.session.completed` / `customer.subscription.deleted`.
+  Stripe calls it unauthenticated (JWT verification OFF, verifies its own HMAC signature
+  instead) and it never calls Stripe's API outbound — only `STRIPE_WEBHOOK_SECRET`.
+- `supabase/functions/create-portal-session/index.ts` and `.../delete-account/index.ts` —
+  the opposite trust model from the webhook: JWT verification stays ON (they act on behalf
+  of whoever calls them, identified from that caller's own session), and they *do* call
+  Stripe's API outbound (open the Customer Portal; cancel a subscription immediately before
+  deleting the account), using a new `STRIPE_SECRET_KEY` secret. Account deletion relies on
+  the existing cascade-delete FKs (`profiles`/`stocktakes`/`stocktake_items` → `auth.users`)
+  already in `schema.sql` — no separate cleanup code needed. See STRIPE-SETUP.md §7-10.
 - Barcode scanning: native `BarcodeDetector` when available (Android Chrome), else the
   vendored zxing-wasm ponyfill (`barcode-detector.iife.js` + `zxing_reader.wasm`).
   Do not reintroduce a `qrbox`-style scan region — it silently breaks QR decoding.
@@ -53,7 +69,8 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 ## Conventions & gotchas
 
 - Pricing appears in FOUR places — landing page, account view, upgrade dialog, README —
-  keep them in sync (grep for `$29` / `$290`).
+  keep them in sync (grep for `$29` / `$290`). This is reference-price *text* only; it's
+  not currency-aware — see STRIPE-SETUP.md for setting up the actual per-currency links.
 - Verify changes by driving the app headless with Playwright; the repo verify skill at
   `.claude/skills/verify/SKILL.md` documents the recipe, including how to fake a camera
   stream (y4m with a QR) to test real barcode decoding end to end.

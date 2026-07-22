@@ -8,30 +8,48 @@ live, repeat the same steps in live mode and swap the URLs/secrets.
 
 ## 1. Create the product and prices (Stripe Dashboard)
 
-1. Stripe Dashboard → **Product catalog** → **+ Add product**
-2. Name: `Barscan Pro` · Description: `Unlimited products per stocktake`
-3. Add **two recurring prices**:
-   - `$29.00` / **month**
-   - `$290.00` / **year**  *(the "2 months free" annual deal)*
+Barscan picks a Stripe Payment Link based on the operator's country (set at signup,
+editable in 👤 Account) — see `COUNTRY_CURRENCY` in `app.html`. Today that maps to four
+currencies: **AUD** (default/home currency — Australia), **USD** (US), **GBP** (UK),
+**EUR** (Ireland/Germany/France/Spain/Italy/Netherlands). AUD is already set up
+(`$29.00`/month, `$290.00`/year on the existing `Barscan Pro` product) — the app falls
+back to the AUD link for any currency you haven't configured yet, so it's safe to add
+the others one at a time.
 
-## 2. Create two Payment Links
+1. Stripe Dashboard → **Product catalog** → open the existing **Barscan Pro** product
+2. Click **+ Add another price** and add **two recurring prices per new currency**
+   (Stripe lets one product hold prices in multiple currencies) — pick whatever amounts
+   make sense for that market, they don't have to be an exact conversion:
+   - **USD**: `$29.00`/month, `$290.00`/year *(or your own USD pricing)*
+   - **GBP**: `£25.00`/month, `£250.00`/year
+   - **EUR**: `€27.00`/month, `€270.00`/year
 
-For **each** of the two prices: **Payment links** → **+ New** → pick the price, then
-under **After payment** choose **Don't show confirmation page** and set the redirect URL to:
+## 2. Create a Payment Link per new price
+
+For **each** new price (USD/GBP/EUR × monthly/annual — 6 in total):
+**Payment links** → **+ New** → pick the price, then under **After payment** choose
+**Don't show confirmation page** and set the redirect URL to:
 
 ```
 https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html?upgraded=1
 ```
 
-Copy both link URLs (they look like `https://buy.stripe.com/test_...`).
+This redirect URL is the same for every currency/plan (and matches the existing AUD
+links) — copy each resulting link (`https://buy.stripe.com/test_...`).
 
 ## 3. Put the links into the app
 
-In `config.js`:
+In `config.js`'s `upgradeUrls`, keyed by currency (leave a currency's `monthly`/`annual`
+as `''` until you've created that currency's links — the app falls back to AUD, the
+already-configured default):
 
 ```js
-upgradeUrl:       'https://buy.stripe.com/test_XXXX',  // $29/month link
-upgradeUrlAnnual: 'https://buy.stripe.com/test_YYYY',  // $290/year link
+upgradeUrls: {
+  AUD: { monthly: 'https://buy.stripe.com/test_fZu14n...', annual: 'https://buy.stripe.com/test_cNi3c...' }, // already set
+  USD: { monthly: 'PASTE HERE', annual: 'PASTE HERE' },
+  GBP: { monthly: 'PASTE HERE', annual: 'PASTE HERE' },
+  EUR: { monthly: 'PASTE HERE', annual: 'PASTE HERE' }
+}
 ```
 
 The app automatically appends `client_reference_id` (the Supabase user id) and
@@ -78,11 +96,70 @@ https://vfixdchbkmqryfhirphx.supabase.co/functions/v1/stripe-webhook
 5. To test cancellation: Stripe Dashboard → Customers → cancel the subscription →
    the account drops back to Free
 
+## 7. Turn on self-service cancellation (Stripe Customer Portal)
+
+The app's Account view has a **Manage subscription** button that opens Stripe's
+hosted Customer Portal, where operators can update their payment method, view
+invoices, or cancel — without emailing you.
+
+1. Stripe Dashboard → **Settings** → **Billing** → **Customer portal**
+2. Under **Subscriptions**, make sure **Customers can cancel subscriptions** is
+   turned on (it's on by default in test mode, but double-check — this is what
+   makes cancellation actually self-service instead of just informational)
+3. Save. No link to copy here — the app requests a portal session per-user via
+   the `create-portal-session` edge function below.
+
+## 8. Add the Stripe secret key to Supabase
+
+Unlike the webhook (which only *verifies* incoming Stripe events), the two new
+functions below *call* Stripe's API — creating a portal session, cancelling a
+subscription — so they need your actual secret key, not just the webhook secret.
+
+Supabase Dashboard → **Edge Functions** → **Secrets** → add
+`STRIPE_SECRET_KEY` = your Stripe **secret key** (`sk_test_...` in test mode).
+**Never** commit this key anywhere in the repo — it belongs only in this secret.
+
+## 9. Deploy the account-management functions
+
+Two new functions: `supabase/functions/create-portal-session` (Manage
+subscription) and `supabase/functions/delete-account` (Delete account).
+
+**Important — opposite of the webhook**: leave **"Enforce JWT verification" ON**
+for both of these. They act on behalf of whoever calls them, using that
+caller's own Supabase session to identify them — unlike the webhook, which
+Stripe calls unauthenticated and which verifies itself via signature instead.
+
+```sh
+supabase functions deploy create-portal-session --project-ref vfixdchbkmqryfhirphx
+supabase functions deploy delete-account --project-ref vfixdchbkmqryfhirphx
+```
+
+(Omit `--no-verify-jwt` — that flag is specific to the webhook.) If deploying via
+the dashboard editor instead, just don't touch the JWT verification toggle; it
+defaults to on.
+
+## 10. Test both flows
+
+**Manage subscription**: sign in as a Pro user → 👤 Account → **Manage
+subscription** → confirm it opens the Stripe portal for the right customer,
+that cancelling there actually cancels (not just "scheduled" with no way to
+confirm), and that returning to the app eventually shows Free once the
+subscription period ends (the existing webhook's `customer.subscription.deleted`
+handling covers that automatically — no changes needed there).
+
+**Delete account**: sign in as a **test** user with an active subscription →
+👤 Account → **Delete account** → confirm → check in Stripe that the
+subscription was cancelled immediately (not left running), and in Supabase
+**Authentication → Users** that the user is gone (and that their `stocktakes`/
+`stocktake_items` rows are gone too, via the cascade deletes in `schema.sql`).
+
 ## Notes
 
 - **Never** put the `sk_...` secret key in this repo or the website. Only Payment
   Link URLs (safe) and the publishable `pk_...` key (also safe, and currently not
-  even needed) may appear in frontend code.
+  even needed) may appear in frontend code. The new `STRIPE_SECRET_KEY` used by
+  `create-portal-session`/`delete-account` lives only in Supabase's Edge Function
+  secrets (§8) — it is never sent to the browser.
 - **Native apps** (see `NATIVE-SETUP.md`): the redirect URL above doesn't need to
   change. On iOS/Android the checkout opens in an in-app browser tab, so that
   `?upgraded=1` page loads there rather than in the app's own screen — the app
