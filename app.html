@@ -183,9 +183,15 @@
   .empty { text-align: center; color: var(--text-faint); padding: 32px 16px; }
 
   /* ---- Scan view ---- */
+  /* The view itself scrolls as one unit (matching #home-view/#account-view)
+     rather than pinning the camera above an independently-scrolling list —
+     so scrolling to review earlier scans scrolls the camera away too, and
+     .subheader stays sticky so Back/the stocktake name are still reachable. */
+  #scan-view { overflow-y: auto; }
   .subheader {
     display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface);
     border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
   }
   .subheader .name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .subheader .count-badge { font-size: 0.78rem; color: var(--text-dim); white-space: nowrap; }
@@ -213,7 +219,7 @@
   #manual-row { display: flex; gap: 8px; padding: 0 12px 10px; background: var(--surface); }
   #filter-row { padding: 8px 12px; background: var(--surface); }
 
-  #list { flex: 1; overflow-y: auto; padding: 8px 12px calc(16px + env(safe-area-inset-bottom)); }
+  #list { padding: 8px 12px calc(16px + env(safe-area-inset-bottom)); }
   .item {
     display: flex; align-items: center; gap: 10px;
     background: var(--surface); border-radius: 12px; padding: 12px; margin-bottom: 8px;
