@@ -60,7 +60,25 @@
     padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: middle;
   }
   #acct-note { font-size: 0.75rem; color: #6b7280; line-height: 1.5; margin-top: 10px; }
-  #logout-btn, #manage-sub-btn, #delete-account-btn { width: 100%; margin-top: 4px; }
+  #logout-btn, #manage-sub-btn { width: 100%; margin-top: 4px; }
+
+  .acct-country-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .acct-country-row span { font-size: 0.95rem; }
+
+  .link-btn {
+    background: transparent; color: #60a5fa; padding: 4px 0; font-size: 0.85rem;
+    font-weight: 600; width: auto; text-decoration: underline;
+  }
+  .link-btn:active { opacity: 0.7; }
+
+  .acct-footer-note { margin-top: 24px; padding: 0 4px; }
+  .acct-footer-text { font-size: 0.75rem; color: #6b7280; line-height: 1.5; margin-bottom: 4px; }
+
+  #delete-account-btn {
+    background: transparent; color: #9ca3af; font-weight: 400; font-size: 0.8rem;
+    padding: 4px 0; width: auto; align-self: flex-start; text-decoration: underline;
+  }
+  #delete-account-btn:active { opacity: 0.7; }
 
   .view { display: none; flex: 1; flex-direction: column; min-height: 0; }
   .view.active { display: flex; }
@@ -246,8 +264,11 @@
   <div class="acct-card">
     <h3>Signed in as</h3>
     <div class="acct-email" id="acct-email"></div>
-    <label for="acct-country">Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
-    <select id="acct-country"></select>
+    <label>Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
+    <div class="acct-country-row">
+      <span id="acct-country-display"></span>
+      <button id="change-region-btn" class="link-btn">Change region</button>
+    </div>
   </div>
   <div class="acct-card">
     <h3>Subscription</h3>
@@ -275,11 +296,23 @@
     </div>
   </div>
   <button id="logout-btn" class="danger">Log out</button>
-  <div class="acct-card">
-    <h3>Danger zone</h3>
-    <div class="plan-desc">Permanently delete your account, all stocktakes, and your subscription.
-      This can't be undone.</div>
-    <button id="delete-account-btn" class="danger">Delete account</button>
+  <div class="acct-footer-note">
+    <div class="acct-footer-text">Permanently delete your account, all stocktakes, and your subscription. This can't be undone.</div>
+    <button id="delete-account-btn">Delete account</button>
+  </div>
+</div>
+
+<!-- ===== Change region confirmation ===== -->
+<div id="region-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Change your region?</div>
+    <p class="upgrade-text">This changes which currency you're billed in for future upgrades.
+      You can only do this once every 30 days.</p>
+    <select id="acct-country"></select>
+    <div class="dialog-actions">
+      <button id="region-cancel" class="flex">Cancel</button>
+      <button id="region-confirm" class="primary flex">Save region</button>
+    </div>
   </div>
 </div>
 
@@ -407,7 +440,7 @@
 
   var FREE_LIMIT = 3;       // distinct products per stocktake on the free plan
   var isPro = false;
-  var currentUser = null;   // {id, email, country}
+  var currentUser = null;   // {id, email, country, countryChangedAt}
   var currentTake = null;   // {id, name, ...}
   var items = [];           // items of currentTake: [{id, barcode, qty, first_scanned, last_scanned}]
   var filterQuery = '';     // lowercased substring filter on items' barcode
@@ -438,6 +471,10 @@
   // in config.js. Used both for unmapped/unset countries and as the fallback
   // when a mapped currency's links haven't been set up yet.
   var DEFAULT_CURRENCY = 'AUD';
+  // Server-enforced too (see the trigger in schema.sql) — this client-side
+  // copy is only used to give a friendly "come back on <date>" message
+  // instead of a rejected request; it's not the actual security boundary.
+  var COUNTRY_CHANGE_COOLDOWN_DAYS = 30;
 
   function fillCountrySelect(select, includePlaceholder) {
     COUNTRIES.forEach(function (c) {
@@ -449,6 +486,26 @@
   }
   fillCountrySelect($('auth-country'), true);
   fillCountrySelect($('acct-country'), true);
+
+  function countryLabel(code) {
+    if (!code) return 'Not set';
+    var match = COUNTRIES.find(function (c) { return c[0] === code; });
+    return match ? match[1] : code;
+  }
+  function renderCountryDisplay() {
+    $('acct-country-display').textContent = countryLabel(currentUser && currentUser.country);
+  }
+  // Client-side mirror of the trigger's cooldown check, for a friendly
+  // message before making a request the server would reject anyway.
+  function nextCountryChangeDate() {
+    var changed = currentUser && currentUser.countryChangedAt ? new Date(currentUser.countryChangedAt) : null;
+    if (!changed) return null;
+    return new Date(changed.getTime() + COUNTRY_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000);
+  }
+  function countryChangeEligible() {
+    var next = nextCountryChangeDate();
+    return !next || Date.now() >= next.getTime();
+  }
 
   function toast(msg, bg) {
     var t = $('toast');
@@ -541,10 +598,11 @@
   // the app resumes from the in-app Stripe checkout browser tab.
   function refreshProStatus(cb) {
     if (!currentUser) return;
-    sb.from('profiles').select('is_pro, country').eq('id', currentUser.id).maybeSingle().then(function (res) {
+    sb.from('profiles').select('is_pro, country, country_changed_at').eq('id', currentUser.id).maybeSingle().then(function (res) {
       if (!res.error && res.data) {
         isPro = !!res.data.is_pro;
         currentUser.country = res.data.country || '';
+        currentUser.countryChangedAt = res.data.country_changed_at || null;
         renderPlan();
       }
       if (cb) cb();
@@ -632,13 +690,13 @@
 
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
-    $('acct-country').value = currentUser.country || '';
+    renderCountryDisplay();
     renderPlan();
     renderUpgradePrices();
     showView('account');
     // Refresh the plan from the server so a just-completed upgrade shows up
     refreshProStatus(function () {
-      $('acct-country').value = currentUser.country || '';
+      renderCountryDisplay();
       renderUpgradePrices();
     });
   }
@@ -648,13 +706,36 @@
   }
   $('account-btn').onclick = function () { if (currentUser) openAccount(); };
   $('acct-back').onclick = function () { loadTakes(); };
-  $('acct-country').onchange = function () {
+
+  // ---- Change region (billing country) ----
+  $('change-region-btn').onclick = function () {
+    if (!currentUser) return;
+    if (!countryChangeEligible()) {
+      toast('You can change your region again on ' + nextCountryChangeDate().toLocaleDateString(), '#b91c1c');
+      return;
+    }
+    $('acct-country').value = currentUser.country || '';
+    $('region-overlay').classList.add('open');
+  };
+  $('region-cancel').onclick = function () {
+    if (currentUser) $('acct-country').value = currentUser.country || '';
+    $('region-overlay').classList.remove('open');
+  };
+  $('region-confirm').onclick = function () {
+    if (!currentUser) return;
     var country = $('acct-country').value;
+    if (!country) { toast('Choose a country', '#b91c1c'); return; }
+    if (country === currentUser.country) { $('region-overlay').classList.remove('open'); return; }
+    $('region-confirm').disabled = true;
     sb.from('profiles').update({ country: country }).eq('id', currentUser.id).then(function (res) {
+      $('region-confirm').disabled = false;
       if (res.error) { fail(res.error, 'Could not save country'); return; }
       currentUser.country = country;
+      currentUser.countryChangedAt = new Date().toISOString();
+      renderCountryDisplay();
       renderUpgradePrices();
-      toast('Country updated');
+      $('region-overlay').classList.remove('open');
+      toast('Region updated');
     });
   };
 

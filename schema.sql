@@ -19,6 +19,11 @@ alter table public.profiles add column if not exists stripe_customer_id text;
 -- COUNTRY_CURRENCY table.
 alter table public.profiles add column if not exists country text;
 
+-- When country last changed. Drives the 30-day change cooldown below — a
+-- Free user shouldn't be able to hop to a cheaper-currency country right
+-- before upgrading, then hop back. Stamped by the trigger, not the client.
+alter table public.profiles add column if not exists country_changed_at timestamptz;
+
 alter table public.profiles enable row level security;
 
 drop policy if exists "read own profile" on public.profiles;
@@ -38,6 +43,29 @@ create policy "update own country" on public.profiles
   for update using (auth.uid() = id) with check (auth.uid() = id);
 revoke update on public.profiles from authenticated;
 grant update (country) on public.profiles to authenticated;
+
+-- Enforces the 30-day country-change cooldown server-side (the app's own
+-- check is just a friendly heads-up — this is the actual boundary, so it
+-- can't be bypassed by calling the API directly). security definer because
+-- the client is only granted UPDATE on the `country` column above, not
+-- `country_changed_at` — the trigger stamps that regardless.
+create or replace function public.enforce_country_cooldown()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.country is distinct from old.country then
+    if old.country_changed_at is not null
+       and old.country_changed_at > now() - interval '30 days' then
+      raise exception 'Country can only be changed once every 30 days.';
+    end if;
+    new.country_changed_at := now();
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists on_profile_country_change on public.profiles;
+create trigger on_profile_country_change
+  before update on public.profiles
+  for each row execute function public.enforce_country_cooldown();
 
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$

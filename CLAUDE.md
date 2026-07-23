@@ -15,12 +15,20 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - `schema.sql` — idempotent; the whole DB: `profiles` (with `is_pro`, `stripe_customer_id`,
   `country`), `stocktakes`, `stocktake_items`, triggers, RLS. The free-plan limit (3 distinct
   products per stocktake) is enforced BOTH client-side and by the RLS insert policy.
-- Checkout currency: operators pick a country at signup (or later in 👤 Account), stored as
-  `profiles.country`. `app.html`'s `COUNTRY_CURRENCY` maps it to a currency, which selects
-  which entry of `config.js`'s `upgradeUrls` map `goUpgrade()` opens (falls back to
-  `DEFAULT_CURRENCY`, currently AUD — the only currency guaranteed to have real links — if
+- Checkout currency: operators pick a country at signup, or change it later in 👤 Account via
+  the "Change region" confirm dialog (not an always-open `<select>` — that's deliberate, see
+  below). Stored as `profiles.country`. `app.html`'s `COUNTRY_CURRENCY` maps it to a currency,
+  which selects which entry of `config.js`'s `upgradeUrls` map `goUpgrade()` opens (falls back
+  to `DEFAULT_CURRENCY`, currently AUD — the only currency guaranteed to have real links — if
   the mapped currency has none configured yet). `profiles.country` is client-writable — see
   the column-scoped GRANT in `schema.sql` — but `is_pro`/`stripe_customer_id` are not.
+- Country changes are rate-limited to once per 30 days — a `before update` trigger
+  (`enforce_country_cooldown` in `schema.sql`) stamps `profiles.country_changed_at` and
+  rejects a change if the last one was too recent. This is enforced in Postgres, not just the
+  app, specifically so a Free user can't hop to a cheaper-currency country right before
+  upgrading and hop back after. `app.html`'s `countryChangeEligible()` is only a client-side
+  heads-up (shows the actual next-eligible date before bothering to make a request) — the
+  trigger is the real boundary.
 - `supabase/functions/stripe-webhook/index.ts` — Deno edge function (deployed in Supabase
   under the name **`super-stripewebhooks`**, note the different name!) that flips
   `profiles.is_pro` on `checkout.session.completed` / `customer.subscription.deleted`.
