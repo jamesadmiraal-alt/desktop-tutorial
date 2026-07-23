@@ -178,6 +178,7 @@
   .stocktake .info { flex: 1; min-width: 0; }
   .stocktake .name { font-weight: 600; font-size: 1.05rem; }
   .stocktake .meta { font-size: 0.75rem; color: var(--text-dim); margin-top: 3px; }
+  .stocktake .more { background: transparent; color: var(--text-dim); font-size: 1.3rem; padding: 8px; }
   .stocktake .del { background: transparent; color: var(--delete-icon); font-size: 1.1rem; padding: 8px; }
   .empty { text-align: center; color: var(--text-faint); padding: 32px 16px; }
 
@@ -212,7 +213,7 @@
   #manual-row { display: flex; gap: 8px; padding: 0 12px 10px; background: var(--surface); }
   #filter-row { padding: 8px 12px; background: var(--surface); }
 
-  #list { flex: 1; overflow-y: auto; padding: 8px 12px 90px; }
+  #list { flex: 1; overflow-y: auto; padding: 8px 12px calc(16px + env(safe-area-inset-bottom)); }
   .item {
     display: flex; align-items: center; gap: 10px;
     background: var(--surface); border-radius: 12px; padding: 12px; margin-bottom: 8px;
@@ -229,14 +230,6 @@
   }
   .item .del { background: transparent; color: var(--delete-icon); font-size: 1.2rem; padding: 8px; }
 
-  footer {
-    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
-    width: 100%; max-width: 640px;
-    display: none; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-    background: var(--surface); border-top: 1px solid var(--border); z-index: 10;
-  }
-  footer.active { display: flex; }
-
   /* ---- Modals ---- */
   .overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 50;
@@ -252,6 +245,7 @@
   .upgrade-text { color: var(--text-body); font-size: 0.9rem; line-height: 1.5; margin: 10px 0 14px; }
   #name-input { margin: 12px 0 14px; }
   .dialog-actions { display: flex; gap: 8px; }
+  .action-sheet { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 
   #toast {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
@@ -423,11 +417,19 @@
   <div id="list"></div>
 </div>
 
-<footer id="scan-footer">
-  <button id="export-csv" class="success flex">⬇ Export CSV</button>
-  <button id="share" class="flex">Share</button>
-  <button id="clear" class="danger">Clear</button>
-</footer>
+<!-- ===== Stocktake actions (Export/Share/Clear) — reached from the Home
+     list via each row's ⋯ button, not while a stocktake is being scanned ===== -->
+<div id="take-actions-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title" id="take-actions-title">Stocktake</div>
+    <div class="action-sheet">
+      <button id="take-export" class="success">⬇ Export CSV</button>
+      <button id="take-share">Share</button>
+      <button id="take-clear" class="danger">Clear items</button>
+      <button id="take-actions-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
 
 <!-- ===== Quantity dialog ===== -->
 <div id="qty-overlay" class="overlay">
@@ -618,7 +620,6 @@
     ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
-    $('scan-footer').classList.toggle('active', name === 'scan');
     $('account-btn').style.display = currentUser ? '' : 'none';
     $('user-badge').textContent = currentUser ? currentUser.email : '';
     if (name !== 'scan') stopScanner();
@@ -887,6 +888,13 @@
       var meta = document.createElement('div'); meta.className = 'meta';
       meta.textContent = takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString();
       info.appendChild(nm); info.appendChild(meta);
+      var more = document.createElement('button');
+      more.className = 'more'; more.textContent = '⋯';
+      more.setAttribute('aria-label', 'Export, share, or clear this stocktake');
+      more.onclick = function (e) {
+        e.stopPropagation();
+        openTakeActions(t);
+      };
       var del = document.createElement('button');
       del.className = 'del'; del.textContent = '✕';
       del.onclick = function (e) {
@@ -900,7 +908,7 @@
           });
         }
       };
-      row.appendChild(info); row.appendChild(del);
+      row.appendChild(info); row.appendChild(more); row.appendChild(del);
       row.onclick = function () { openTake(t); };
       listEl.appendChild(row);
     });
@@ -1259,63 +1267,92 @@
     renderItems();
   });
 
-  // ---- Export ----
+  // ---- Stocktake actions (Export/Share/Clear) ----
+  // Reached from a Home row's ⋯ button — not while a stocktake is open for
+  // scanning, so these work on demand against whichever stocktake's dialog
+  // is currently open (actionsTake), fetching its items fresh each time
+  // rather than relying on the scan view's live `items` array.
   function csvEscape(v) {
     v = String(v);
     return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   }
 
-  function buildCsv() {
+  function buildCsv(take, takeItems) {
     var rows = [['stocktake', 'barcode', 'qty', 'first_scanned', 'last_scanned']];
-    items.forEach(function (it) {
-      rows.push([currentTake.name, it.barcode, it.qty, it.first_scanned, it.last_scanned]);
+    takeItems.forEach(function (it) {
+      rows.push([take.name, it.barcode, it.qty, it.first_scanned, it.last_scanned]);
     });
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
 
-  function fileName() {
+  function fileName(take) {
     var d = new Date();
     var pad = function (n) { return String(n).padStart(2, '0'); };
-    var slug = currentTake.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'stocktake';
+    var slug = take.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'stocktake';
     return 'barscan-' + slug + '-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
            '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.csv';
   }
 
-  $('export-csv').onclick = function () {
-    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
-    var blob = new Blob(['﻿' + buildCsv()], { type: 'text/csv;charset=utf-8' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = fileName();
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
-    toast('CSV downloaded');
+  function fetchTakeItems(takeId, cb) {
+    sb.from('stocktake_items').select('*').eq('stocktake_id', takeId).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not load items'); return; }
+      cb(res.data);
+    });
+  }
+
+  var actionsTake = null; // which stocktake the actions dialog currently targets
+  function openTakeActions(t) {
+    actionsTake = t;
+    $('take-actions-title').textContent = t.name;
+    $('take-actions-overlay').classList.add('open');
+  }
+  $('take-actions-cancel').onclick = function () { $('take-actions-overlay').classList.remove('open'); };
+
+  $('take-export').onclick = function () {
+    fetchTakeItems(actionsTake.id, function (takeItems) {
+      if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+      var blob = new Blob(['﻿' + buildCsv(actionsTake, takeItems)], { type: 'text/csv;charset=utf-8' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fileName(actionsTake);
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+      toast('CSV downloaded');
+      $('take-actions-overlay').classList.remove('open');
+    });
   };
 
-  $('share').onclick = function () {
-    if (!items.length) { toast('Nothing to export yet', '#b91c1c'); return; }
-    var csv = '﻿' + buildCsv();
-    var file = new File([csv], fileName(), { type: 'text/csv' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file], title: 'Barscan export: ' + currentTake.name }).catch(function () {});
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(buildCsv()).then(
-        function () { toast('CSV copied to clipboard'); },
-        function () { toast('Copy failed — use Export CSV', '#b91c1c'); }
-      );
-    } else {
-      toast('Sharing not supported — use Export CSV', '#b91c1c');
-    }
+  $('take-share').onclick = function () {
+    fetchTakeItems(actionsTake.id, function (takeItems) {
+      if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+      var csv = buildCsv(actionsTake, takeItems);
+      var file = new File(['﻿' + csv], fileName(actionsTake), { type: 'text/csv' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: 'Barscan export: ' + actionsTake.name }).catch(function () {});
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(csv).then(
+          function () { toast('CSV copied to clipboard'); },
+          function () { toast('Copy failed — use Export CSV', '#b91c1c'); }
+        );
+      } else {
+        toast('Sharing not supported — use Export CSV', '#b91c1c');
+      }
+      $('take-actions-overlay').classList.remove('open');
+    });
   };
 
-  $('clear').onclick = function () {
-    if (!items.length) return;
-    if (!confirm('Delete all ' + items.length + ' scanned items in "' + currentTake.name + '"? Export first if you need the data.')) return;
-    sb.from('stocktake_items').delete().eq('stocktake_id', currentTake.id).then(function (res) {
-      if (res.error) { fail(res.error, 'Clear failed'); return; }
-      items = [];
-      renderItems();
+  $('take-clear').onclick = function () {
+    fetchTakeItems(actionsTake.id, function (takeItems) {
+      if (!takeItems.length) { toast('Nothing to clear', '#b91c1c'); $('take-actions-overlay').classList.remove('open'); return; }
+      if (!confirm('Delete all ' + takeItems.length + ' scanned items in "' + actionsTake.name + '"? Export first if you need the data.')) return;
+      sb.from('stocktake_items').delete().eq('stocktake_id', actionsTake.id).then(function (res) {
+        if (res.error) { fail(res.error, 'Clear failed'); return; }
+        $('take-actions-overlay').classList.remove('open');
+        actionsTake.stocktake_items = [];
+        actionsTake.updated_at = new Date().toISOString();
+        renderHome();
+      });
     });
   };
 
