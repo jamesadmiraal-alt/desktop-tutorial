@@ -44,6 +44,17 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - Barcode scanning: native `BarcodeDetector` when available (Android Chrome), else the
   vendored zxing-wasm ponyfill (`barcode-detector.iife.js` + `zxing_reader.wasm`).
   Do not reintroduce a `qrbox`-style scan region — it silently breaks QR decoding.
+- Light/dark mode (`app.html` only — `index.html` doesn't have a toggle): every themed
+  color is a CSS custom property on `:root`, overridden under `:root[data-theme="light"]`
+  (dark is the default/original palette). New UI must use `var(--token)`, never a raw hex,
+  or it'll only render correctly in one theme. The scanner viewport (`#reader-wrap` and
+  its children) is a deliberate exception — always dark in both themes, since it sits
+  against a live camera feed. A tiny synchronous script at the very top of `<head>` sets
+  `data-theme` before first paint (avoids a flash of the wrong theme); `applyTheme()` in
+  the main script handles the toggle click, `localStorage` persistence, `<meta
+  name=theme-color>`, and the native status bar style. Default is the OS's
+  `prefers-color-scheme` until the operator explicitly toggles, after which their choice
+  always wins over the OS.
 
 ## Native apps (iOS/Android)
 
