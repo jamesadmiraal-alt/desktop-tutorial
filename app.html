@@ -162,6 +162,11 @@
   .auth-tabs button { flex: 1; background: var(--bg); color: var(--text-dim); }
   .auth-tabs button.on { background: var(--accent); color: var(--on-accent); }
   .auth-card label, .acct-card label { display: block; font-size: 0.8rem; color: var(--text-dim); margin: 10px 0 4px; }
+  #login-extras { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+  .auth-card label.checkbox-row {
+    display: flex; align-items: center; gap: 6px; margin: 0;
+    font-size: 0.85rem; font-weight: 400; text-transform: none; color: var(--text-dim);
+  }
   #auth-submit { width: 100%; margin-top: 18px; }
   .auth-note { font-size: 0.72rem; color: var(--text-faint); margin-top: 14px; text-align: center; line-height: 1.4; }
   .setup-card code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 0.85em; }
@@ -295,10 +300,18 @@
       <button id="tab-login" class="on">Log in</button>
       <button id="tab-signup">Sign up</button>
     </div>
+    <div id="signup-name-row" style="display:none">
+      <label for="auth-name">Name <small style="color:#9ca3af">(for stocktake records)</small></label>
+      <input id="auth-name" type="text" autocomplete="name">
+    </div>
     <label for="auth-email">Email</label>
     <input id="auth-email" type="email" autocomplete="email" autocapitalize="none" inputmode="email">
     <label for="auth-pass">Password</label>
     <input id="auth-pass" type="password" autocomplete="current-password">
+    <div id="login-extras">
+      <label id="remember-row" class="checkbox-row"><input id="remember-me" type="checkbox" checked><span>Remember me</span></label>
+      <button id="forgot-pass-btn" class="link-btn">Forgot password?</button>
+    </div>
     <div id="confirm-row" style="display:none">
       <label for="auth-pass2">Confirm password</label>
       <input id="auth-pass2" type="password" autocomplete="new-password">
@@ -312,6 +325,20 @@
   </div>
 </div>
 
+<!-- ===== Set a new password (arrived via a password-reset email link) ===== -->
+<div id="reset-password-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Set a new password</div>
+    <p class="upgrade-text">You're signed in via your password reset link. Choose a new password below, or close this to keep your current one.</p>
+    <input id="reset-pass1" type="password" placeholder="New password" autocomplete="new-password">
+    <input id="reset-pass2" type="password" placeholder="Confirm new password" autocomplete="new-password" style="margin-top:10px">
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="reset-pass-cancel" class="flex">Not now</button>
+      <button id="reset-pass-save" class="primary flex">Save password</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Account ===== -->
 <div id="account-view" class="view">
   <div class="subheader" style="margin:-16px -12px 14px">
@@ -321,6 +348,7 @@
   <div class="acct-card">
     <h3>Signed in as</h3>
     <div class="acct-email" id="acct-email"></div>
+    <div class="plan-desc" id="acct-name" style="margin-top:2px"></div>
     <label>Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
     <div class="acct-country-row">
       <span id="acct-country-display"></span>
@@ -389,8 +417,10 @@
 <!-- ===== Home: stocktake list ===== -->
 <div id="home-view" class="view">
   <button id="new-stocktake" class="primary">＋ New stocktake</button>
-  <h2>Saved stocktakes</h2>
-  <div id="stocktake-list"></div>
+  <h2>In Progress</h2>
+  <div id="stocktake-list-inprogress"></div>
+  <h2 id="completed-heading" style="display:none">Completed</h2>
+  <div id="stocktake-list-completed"></div>
 </div>
 
 <!-- ===== Scan view ===== -->
@@ -402,7 +432,7 @@
   </div>
   <div id="reader-wrap">
     <div id="reader"></div>
-    <div id="scanner-off">Camera is off. Tap <b>Start camera</b> to begin scanning.<br>
+    <div id="scanner-off">Camera is off. Tap <b>📷 Scan</b> to begin scanning.<br>
       <small>Camera access requires HTTPS and permission from your browser.</small>
     </div>
     <div id="cam-tools">
@@ -411,7 +441,7 @@
     </div>
   </div>
   <div class="controls">
-    <button id="toggle-cam" class="primary flex">▶ Start camera</button>
+    <button id="toggle-cam" class="primary flex">📷 Scan</button>
   </div>
   <div id="manual-row">
     <input id="manual-input" type="text" placeholder="Or type a barcode…" autocomplete="off">
@@ -541,7 +571,7 @@
 
   var FREE_LIMIT = 3;       // distinct products per stocktake on the free plan
   var isPro = false;
-  var currentUser = null;   // {id, email, country, countryChangedAt}
+  var currentUser = null;   // {id, email, name, country, countryChangedAt}
   var currentTake = null;   // {id, name, ...}
   var items = [];           // items of currentTake: [{id, barcode, qty, first_scanned, last_scanned}]
   var filterQuery = '';     // lowercased substring filter on items' barcode
@@ -645,14 +675,35 @@
   }
 
   if (!configured) { showView('setup'); return; }
-  var sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+
+  // "Remember me": Supabase's default (localStorage) already persists the
+  // session indefinitely, so that's the checked/default state. Unchecking
+  // it switches the session to sessionStorage instead (cleared when the
+  // tab/browser closes) — supabase-js reads/writes through this adapter on
+  // every call, and rememberMe is set right before sign-in, so the tokens
+  // land in the right place. barscan-remember is a tiny, non-sensitive
+  // preference flag (always in localStorage) recording *which* storage to
+  // read from on the next page load.
+  var rememberMe = (function () {
+    try { return localStorage.getItem('barscan-remember') !== '0'; } catch (e) { return true; }
+  })();
+  var dynamicStorage = {
+    getItem: function (k) { try { return (rememberMe ? localStorage : sessionStorage).getItem(k); } catch (e) { return null; } },
+    setItem: function (k, v) { try { (rememberMe ? localStorage : sessionStorage).setItem(k, v); } catch (e) {} },
+    removeItem: function (k) { try { (rememberMe ? localStorage : sessionStorage).removeItem(k); } catch (e) {} }
+  };
+  var sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
+    auth: { storage: dynamicStorage }
+  });
 
   // ---- Auth ----
   function setAuthMode(mode) {
     authMode = mode;
     $('tab-login').classList.toggle('on', mode === 'login');
     $('tab-signup').classList.toggle('on', mode === 'signup');
+    $('signup-name-row').style.display = mode === 'signup' ? '' : 'none';
     $('confirm-row').style.display = mode === 'signup' ? '' : 'none';
+    $('login-extras').style.display = mode === 'login' ? '' : 'none';
     $('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
     $('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
   }
@@ -666,11 +717,13 @@
     $('auth-submit').disabled = true;
     var done = function () { $('auth-submit').disabled = false; };
     if (authMode === 'signup') {
+      var name = $('auth-name').value.trim();
+      if (!name) { toast('Enter your name', '#b91c1c'); done(); return; }
       if (pw.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); done(); return; }
       if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
       var country = $('auth-country').value;
       if (!country) { toast('Choose your country', '#b91c1c'); done(); return; }
-      sb.auth.signUp({ email: email, password: pw, options: { data: { country: country } } }).then(function (res) {
+      sb.auth.signUp({ email: email, password: pw, options: { data: { country: country, full_name: name } } }).then(function (res) {
         done();
         if (res.error) { fail(res.error, 'Sign up failed'); return; }
         if (res.data.session) {
@@ -682,6 +735,8 @@
         }
       });
     } else {
+      rememberMe = $('remember-me').checked;
+      try { localStorage.setItem('barscan-remember', rememberMe ? '1' : '0'); } catch (e) {}
       sb.auth.signInWithPassword({ email: email, password: pw }).then(function (res) {
         done();
         if (res.error) { fail(res.error, 'Login failed'); return; }
@@ -693,16 +748,51 @@
   $('auth-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter' && authMode === 'login') submitAuth(); });
   $('auth-pass2').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAuth(); });
 
+  // ---- Forgot / reset password ----
+  $('forgot-pass-btn').onclick = function () {
+    var email = $('auth-email').value.trim();
+    if (!email) { toast('Enter your email above first', '#b91c1c'); return; }
+    $('forgot-pass-btn').disabled = true;
+    sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname }).then(function (res) {
+      $('forgot-pass-btn').disabled = false;
+      if (res.error) { fail(res.error, 'Could not send reset email'); return; }
+      toast('Password reset email sent — check your inbox');
+    });
+  };
+  // Supabase signs the user in via the recovery link and fires this event;
+  // enterApp() runs as normal (they're validly authenticated) and this just
+  // additionally offers to set a new password on top of that.
+  sb.auth.onAuthStateChange(function (event, session) {
+    if (event === 'PASSWORD_RECOVERY') {
+      $('reset-pass1').value = ''; $('reset-pass2').value = '';
+      $('reset-password-overlay').classList.add('open');
+    }
+  });
+  $('reset-pass-cancel').onclick = function () { $('reset-password-overlay').classList.remove('open'); };
+  $('reset-pass-save').onclick = function () {
+    var p1 = $('reset-pass1').value, p2 = $('reset-pass2').value;
+    if (p1.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); return; }
+    if (p1 !== p2) { toast('Passwords do not match', '#b91c1c'); return; }
+    $('reset-pass-save').disabled = true;
+    sb.auth.updateUser({ password: p1 }).then(function (res) {
+      $('reset-pass-save').disabled = false;
+      if (res.error) { fail(res.error, 'Could not update password'); return; }
+      $('reset-password-overlay').classList.remove('open');
+      toast('Password updated');
+    });
+  };
+
   // Re-checks the Pro flag from the server and re-renders anywhere it's shown.
   // Called on login, whenever the Account view opens, and (native only) when
   // the app resumes from the in-app Stripe checkout browser tab.
   function refreshProStatus(cb) {
     if (!currentUser) return;
-    sb.from('profiles').select('is_pro, country, country_changed_at').eq('id', currentUser.id).maybeSingle().then(function (res) {
+    sb.from('profiles').select('is_pro, country, country_changed_at, full_name').eq('id', currentUser.id).maybeSingle().then(function (res) {
       if (!res.error && res.data) {
         isPro = !!res.data.is_pro;
         currentUser.country = res.data.country || '';
         currentUser.countryChangedAt = res.data.country_changed_at || null;
+        currentUser.name = res.data.full_name || '';
         renderPlan();
       }
       if (cb) cb();
@@ -790,12 +880,14 @@
 
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
+    $('acct-name').textContent = currentUser.name || '';
     renderCountryDisplay();
     renderPlan();
     renderUpgradePrices();
     showView('account');
     // Refresh the plan from the server so a just-completed upgrade shows up
     refreshProStatus(function () {
+      $('acct-name').textContent = currentUser.name || '';
       renderCountryDisplay();
       renderUpgradePrices();
     });
@@ -880,9 +972,11 @@
 
   function loadTakes() {
     showView('home');
-    $('stocktake-list').innerHTML = '<div class="empty">Loading…</div>';
+    $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
+    $('stocktake-list-completed').innerHTML = '';
+    $('completed-heading').style.display = 'none';
     sb.from('stocktakes')
-      .select('id,name,created_at,updated_at,stocktake_items(qty)')
+      .select('id,name,status,created_at,updated_at,stocktake_items(qty)')
       .order('updated_at', { ascending: false })
       .then(function (res) {
         if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
@@ -891,46 +985,62 @@
       });
   }
 
+  function renderTakeRow(t) {
+    var row = document.createElement('div');
+    row.className = 'stocktake';
+    var info = document.createElement('div');
+    info.className = 'info';
+    var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = t.name;
+    var meta = document.createElement('div'); meta.className = 'meta';
+    meta.textContent = takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString();
+    info.appendChild(nm); info.appendChild(meta);
+    var more = document.createElement('button');
+    more.className = 'more'; more.textContent = '⋯';
+    more.setAttribute('aria-label', 'Export, share, or clear this stocktake');
+    more.onclick = function (e) {
+      e.stopPropagation();
+      openTakeActions(t);
+    };
+    var del = document.createElement('button');
+    del.className = 'del'; del.textContent = '✕';
+    del.onclick = function (e) {
+      e.stopPropagation();
+      var n = (t.stocktake_items || []).length;
+      if (confirm('Delete stocktake "' + t.name + '" and its ' + n + ' items? Export first if you need the data.')) {
+        sb.from('stocktakes').delete().eq('id', t.id).then(function (res) {
+          if (res.error) { fail(res.error, 'Delete failed'); return; }
+          takes.splice(takes.indexOf(t), 1);
+          renderHome();
+        });
+      }
+    };
+    row.appendChild(info); row.appendChild(more); row.appendChild(del);
+    row.onclick = function () { openTake(t); };
+    return row;
+  }
+
   function renderHome() {
-    var listEl = $('stocktake-list');
+    var inProgressEl = $('stocktake-list-inprogress');
+    var completedEl = $('stocktake-list-completed');
     if (!takes.length) {
-      listEl.innerHTML = '<div class="empty">No stocktakes yet.<br>Create one to start scanning.</div>';
+      inProgressEl.innerHTML = '<div class="empty">No stocktakes yet.<br>Create one to start scanning.</div>';
+      completedEl.innerHTML = '';
+      $('completed-heading').style.display = 'none';
       return;
     }
-    listEl.innerHTML = '';
-    takes.forEach(function (t) {
-      var row = document.createElement('div');
-      row.className = 'stocktake';
-      var info = document.createElement('div');
-      info.className = 'info';
-      var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = t.name;
-      var meta = document.createElement('div'); meta.className = 'meta';
-      meta.textContent = takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString();
-      info.appendChild(nm); info.appendChild(meta);
-      var more = document.createElement('button');
-      more.className = 'more'; more.textContent = '⋯';
-      more.setAttribute('aria-label', 'Export, share, or clear this stocktake');
-      more.onclick = function (e) {
-        e.stopPropagation();
-        openTakeActions(t);
-      };
-      var del = document.createElement('button');
-      del.className = 'del'; del.textContent = '✕';
-      del.onclick = function (e) {
-        e.stopPropagation();
-        var n = (t.stocktake_items || []).length;
-        if (confirm('Delete stocktake "' + t.name + '" and its ' + n + ' items? Export first if you need the data.')) {
-          sb.from('stocktakes').delete().eq('id', t.id).then(function (res) {
-            if (res.error) { fail(res.error, 'Delete failed'); return; }
-            takes.splice(takes.indexOf(t), 1);
-            renderHome();
-          });
-        }
-      };
-      row.appendChild(info); row.appendChild(more); row.appendChild(del);
-      row.onclick = function () { openTake(t); };
-      listEl.appendChild(row);
-    });
+    var inProgress = takes.filter(function (t) { return t.status !== 'completed'; });
+    var completed = takes.filter(function (t) { return t.status === 'completed'; });
+
+    inProgressEl.innerHTML = '';
+    if (!inProgress.length) {
+      inProgressEl.innerHTML = '<div class="empty">No stocktakes in progress.<br>Create one to start scanning.</div>';
+    } else {
+      inProgress.forEach(function (t) { inProgressEl.appendChild(renderTakeRow(t)); });
+    }
+
+    completedEl.innerHTML = '';
+    $('completed-heading').style.display = completed.length ? '' : 'none';
+    completed.forEach(function (t) { completedEl.appendChild(renderTakeRow(t)); });
   }
 
   $('new-stocktake').onclick = function () {
@@ -1242,7 +1352,7 @@
       setupCamTools();
       scanTimer = setInterval(detectFrame, 66); // ~15 decode attempts/sec
       $('scanner-off').style.display = 'none';
-      $('toggle-cam').textContent = '⏸ Stop camera';
+      $('toggle-cam').textContent = '⏸ Stop';
       $('toggle-cam').classList.remove('primary');
     }).catch(function (err) {
       if (err && err.aborted) return;
@@ -1262,7 +1372,7 @@
     $('torch-btn').classList.remove('avail', 'lit');
     $('zoom-range').classList.remove('avail');
     $('scanner-off').style.display = 'block';
-    $('toggle-cam').textContent = '▶ Start camera';
+    $('toggle-cam').textContent = '📷 Scan';
     $('toggle-cam').classList.add('primary');
   }
 
@@ -1368,6 +1478,16 @@
       downloadCsv(builder(actionsTake, takeItems), fileName(actionsTake, suffix));
       toast('CSV downloaded');
       $('export-format-overlay').classList.remove('open');
+      // Any successful export marks the stocktake Completed, moving it out
+      // of In Progress on Home — it can still be reopened/scanned into
+      // afterward, that just won't move it back automatically.
+      if (actionsTake.status !== 'completed') {
+        sb.from('stocktakes').update({ status: 'completed' }).eq('id', actionsTake.id).then(function (res) {
+          if (res.error) { fail(res.error, 'Could not update stocktake status'); return; }
+          actionsTake.status = 'completed';
+          renderHome();
+        });
+      }
     });
   }
   $('export-full').onclick = function () { exportWithFormat(buildCsv, ''); };

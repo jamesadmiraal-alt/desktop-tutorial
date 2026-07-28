@@ -24,6 +24,10 @@ alter table public.profiles add column if not exists country text;
 -- before upgrading, then hop back. Stamped by the trigger, not the client.
 alter table public.profiles add column if not exists country_changed_at timestamptz;
 
+-- Operator's name, set at signup — for audit/history reference (who did a
+-- stocktake, shown alongside it). Purely a display field, not validated.
+alter table public.profiles add column if not exists full_name text;
+
 alter table public.profiles enable row level security;
 
 drop policy if exists "read own profile" on public.profiles;
@@ -70,8 +74,8 @@ create trigger on_profile_country_change
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.profiles (id, country)
-  values (new.id, new.raw_user_meta_data->>'country')
+  insert into public.profiles (id, country, full_name)
+  values (new.id, new.raw_user_meta_data->>'country', new.raw_user_meta_data->>'full_name')
   on conflict do nothing;
   return new;
 end $$;
@@ -92,6 +96,12 @@ create table if not exists public.stocktakes (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- 'in_progress' | 'completed' — the app sets this to 'completed' when a
+-- stocktake is exported (any format); Home groups the list by it. Not
+-- constrained at the DB level (same lighter-weight approach as `country`
+-- above) — the app is the only writer of this column.
+alter table public.stocktakes add column if not exists status text not null default 'in_progress';
 
 create table if not exists public.stocktake_items (
   id uuid primary key default gen_random_uuid(),
