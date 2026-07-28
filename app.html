@@ -296,32 +296,54 @@
     <div class="logo">🍾</div>
     <h2>Barscan</h2>
     <div class="sub">Stocktaking for hospitality</div>
-    <div class="auth-tabs">
-      <button id="tab-login" class="on">Log in</button>
-      <button id="tab-signup">Sign up</button>
+    <div id="auth-credentials">
+      <div class="auth-tabs">
+        <button id="tab-login" class="on">Log in</button>
+        <button id="tab-signup">Sign up</button>
+      </div>
+      <div id="signup-name-row" style="display:none">
+        <label for="auth-name">Name <small style="color:#9ca3af">(for stocktake records)</small></label>
+        <input id="auth-name" type="text" autocomplete="name">
+      </div>
+      <label for="auth-email">Email</label>
+      <input id="auth-email" type="email" autocomplete="email" autocapitalize="none" inputmode="email">
+      <label for="auth-pass">Password</label>
+      <input id="auth-pass" type="password" autocomplete="current-password">
+      <div id="login-extras">
+        <label id="remember-row" class="checkbox-row"><input id="remember-me" type="checkbox" checked><span>Remember me</span></label>
+        <button id="forgot-pass-btn" class="link-btn">Forgot password?</button>
+      </div>
+      <div id="confirm-row" style="display:none">
+        <label for="auth-pass2">Confirm password</label>
+        <input id="auth-pass2" type="password" autocomplete="new-password">
+      </div>
     </div>
-    <div id="signup-name-row" style="display:none">
-      <label for="auth-name">Name <small style="color:#9ca3af">(for stocktake records)</small></label>
-      <input id="auth-name" type="text" autocomplete="name">
+    <!-- Signup-only, and also shown on its own (auth-credentials hidden)
+         when a signed-in user has no organisation yet — e.g. a retry after
+         create_organisation()/join_organisation() failed right after
+         signup. See showOrgSetupPrompt(). -->
+    <div id="org-mode-row" style="display:none">
+      <div class="auth-tabs">
+        <button id="org-mode-create" class="on" type="button">Create organisation</button>
+        <button id="org-mode-join" type="button">Join with code</button>
+      </div>
     </div>
-    <label for="auth-email">Email</label>
-    <input id="auth-email" type="email" autocomplete="email" autocapitalize="none" inputmode="email">
-    <label for="auth-pass">Password</label>
-    <input id="auth-pass" type="password" autocomplete="current-password">
-    <div id="login-extras">
-      <label id="remember-row" class="checkbox-row"><input id="remember-me" type="checkbox" checked><span>Remember me</span></label>
-      <button id="forgot-pass-btn" class="link-btn">Forgot password?</button>
+    <div id="org-create-row" style="display:none">
+      <label for="org-name">Organisation name</label>
+      <input id="org-name" type="text" placeholder="e.g. The Local Bar">
+      <label for="org-country">Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
+      <select id="org-country" autocomplete="country"></select>
     </div>
-    <div id="confirm-row" style="display:none">
-      <label for="auth-pass2">Confirm password</label>
-      <input id="auth-pass2" type="password" autocomplete="new-password">
-      <label for="auth-country">Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
-      <select id="auth-country" autocomplete="country"></select>
+    <div id="org-join-row" style="display:none">
+      <label for="org-join-code">Organisation code</label>
+      <input id="org-join-code" type="text" autocapitalize="none" placeholder="Code from your manager">
+      <label for="org-daily-code">Today's code</label>
+      <input id="org-daily-code" type="text" autocapitalize="none" placeholder="Shown live on the admin screen today">
     </div>
     <button id="auth-submit" class="primary">Log in</button>
     <div class="auth-note">Your stocktakes are stored in the cloud and sync across devices —
       log in with the same account anywhere to continue.<br>
-      Free plan: up to 3 products per stocktake · <a href="index.html#pricing" style="color:#60a5fa">Pro $29/month per user</a></div>
+      Free plan: up to 3 products per stocktake · <a href="index.html#pricing" style="color:#60a5fa">Pro from $29/month</a></div>
   </div>
 </div>
 
@@ -349,13 +371,18 @@
     <h3>Signed in as</h3>
     <div class="acct-email" id="acct-email"></div>
     <div class="plan-desc" id="acct-name" style="margin-top:2px"></div>
-    <label>Country <small style="color:#9ca3af">(sets your billing currency)</small></label>
+  </div>
+  <div class="acct-card">
+    <h3>Organisation</h3>
+    <div class="acct-email" id="acct-org-name"></div>
+    <div class="plan-desc" id="acct-org-role" style="margin-top:2px"></div>
+    <label>Billing country <small style="color:#9ca3af">(sets checkout currency)</small></label>
     <div class="acct-country-row">
       <span id="acct-country-display"></span>
       <button id="change-region-btn" class="link-btn">Change region</button>
     </div>
   </div>
-  <div class="acct-card">
+  <div class="acct-card" id="acct-subscription-card">
     <h3>Subscription</h3>
     <div id="acct-plan-free">
       <span class="plan-badge free">Free plan</span>
@@ -520,7 +547,11 @@
 <div id="name-overlay" class="overlay">
   <div class="dialog">
     <div class="title">New stocktake</div>
-    <input id="name-input" type="text" placeholder="Name, e.g. Location A – July" maxlength="60">
+    <div id="name-location-row" style="display:none">
+      <label for="name-location">Location</label>
+      <select id="name-location"></select>
+    </div>
+    <input id="name-input" type="text" placeholder="Name, e.g. Main Bar – July" maxlength="60">
     <div class="dialog-actions">
       <button id="name-cancel" class="flex">Cancel</button>
       <button id="name-ok" class="primary flex">Create</button>
@@ -570,8 +601,10 @@
                    cfg.supabaseAnonKey && cfg.supabaseAnonKey.indexOf('YOUR-') === -1;
 
   var FREE_LIMIT = 3;       // distinct products per stocktake on the free plan
-  var isPro = false;
-  var currentUser = null;   // {id, email, name, country, countryChangedAt}
+  var isPaidTier = false;   // true when currentOrg.planTier is 'single' or 'multi' — org-level, replaces the old per-user is_pro
+  var currentUser = null;   // {id, email, name}
+  var currentOrg = null;    // {id, name, role, planTier, country, countryChangedAt, exportFormat}
+  var locations = [];       // this org's pre-created venues: [{id, name}]
   var currentTake = null;   // {id, name, ...}
   var items = [];           // items of currentTake: [{id, barcode, qty, first_scanned, last_scanned}]
   var filterQuery = '';     // lowercased substring filter on items' barcode
@@ -580,6 +613,12 @@
   var pendingCode = null;
   var lastScan = { code: null, at: 0 };
   var authMode = 'login';
+  var orgSignupMode = 'create';  // 'create' | 'join' — which org-setup fields are shown at signup
+  // True whenever a signed-in user doesn't have an organisation yet — either
+  // mid-signup (create_organisation()/join_organisation() hasn't run yet or
+  // just failed and needs a retry) or defensively if a login ever finds no
+  // membership. Swaps the auth view down to just the org-setup fields.
+  var needsOrgSetup = false;
 
   // Countries offered at signup/Account, and which Stripe checkout currency
   // each maps to (config.js's upgradeUrls). Anything not listed here — plus
@@ -615,7 +654,7 @@
       select.appendChild(opt);
     });
   }
-  fillCountrySelect($('auth-country'), true);
+  fillCountrySelect($('org-country'), true);
   fillCountrySelect($('acct-country'), true);
 
   function countryLabel(code) {
@@ -624,12 +663,12 @@
     return match ? match[1] : code;
   }
   function renderCountryDisplay() {
-    $('acct-country-display').textContent = countryLabel(currentUser && currentUser.country);
+    $('acct-country-display').textContent = countryLabel(currentOrg && currentOrg.country);
   }
   // Client-side mirror of the trigger's cooldown check, for a friendly
   // message before making a request the server would reject anyway.
   function nextCountryChangeDate() {
-    var changed = currentUser && currentUser.countryChangedAt ? new Date(currentUser.countryChangedAt) : null;
+    var changed = currentOrg && currentOrg.countryChangedAt ? new Date(currentOrg.countryChangedAt) : null;
     if (!changed) return null;
     return new Date(changed.getTime() + COUNTRY_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000);
   }
@@ -669,7 +708,7 @@
     ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
-    $('account-btn').style.display = currentUser ? '' : 'none';
+    $('account-btn').style.display = (currentUser && !needsOrgSetup) ? '' : 'none';
     $('user-badge').textContent = currentUser ? currentUser.email : '';
     if (name !== 'scan') stopScanner();
   }
@@ -697,6 +736,22 @@
   });
 
   // ---- Auth ----
+  // Which of org-create-row/org-join-row is shown, based on orgSignupMode —
+  // shared by the normal signup flow and showOrgSetupPrompt()'s retry flow.
+  function setOrgRowsVisible(show) {
+    $('org-create-row').style.display = show && orgSignupMode === 'create' ? '' : 'none';
+    $('org-join-row').style.display = show && orgSignupMode === 'join' ? '' : 'none';
+  }
+  function setOrgSignupMode(mode) {
+    orgSignupMode = mode;
+    $('org-mode-create').classList.toggle('on', mode === 'create');
+    $('org-mode-join').classList.toggle('on', mode === 'join');
+    setOrgRowsVisible(true);
+  }
+  $('org-mode-create').onclick = function () { setOrgSignupMode('create'); };
+  $('org-mode-join').onclick = function () { setOrgSignupMode('join'); };
+  setOrgSignupMode('create');
+
   function setAuthMode(mode) {
     authMode = mode;
     $('tab-login').classList.toggle('on', mode === 'login');
@@ -704,13 +759,70 @@
     $('signup-name-row').style.display = mode === 'signup' ? '' : 'none';
     $('confirm-row').style.display = mode === 'signup' ? '' : 'none';
     $('login-extras').style.display = mode === 'login' ? '' : 'none';
+    $('org-mode-row').style.display = mode === 'signup' ? '' : 'none';
+    setOrgRowsVisible(mode === 'signup');
     $('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
     $('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
   }
   $('tab-login').onclick = function () { setAuthMode('login'); };
   $('tab-signup').onclick = function () { setAuthMode('signup'); };
 
+  function validateOrgFields() {
+    if (orgSignupMode === 'create') {
+      if (!$('org-name').value.trim()) return 'Enter your organisation name';
+      if (!$('org-country').value) return 'Choose your country';
+    } else {
+      if (!$('org-join-code').value.trim()) return 'Enter the organisation code';
+      if (!$('org-daily-code').value.trim()) return "Enter today's code";
+    }
+    return null;
+  }
+
+  // Shows just the org-create/join fields, hiding email/password — used
+  // right after a fresh signUp() (fields are already filled in from the
+  // signup form, this just gets the UI into the right shape for a retry if
+  // the RPC below fails) and defensively if a login ever finds no
+  // membership at all.
+  function showOrgSetupPrompt() {
+    needsOrgSetup = true;
+    $('auth-credentials').style.display = 'none';
+    $('account-btn').style.display = 'none';
+    $('org-mode-row').style.display = '';
+    setOrgRowsVisible(true);
+    $('auth-submit').textContent = 'Continue';
+    showView('auth');
+  }
+
+  // Calls create_organisation()/join_organisation() (see schema.sql) using
+  // whatever's currently in the org-create/join fields. Deliberately a
+  // separate step from signUp() (see schema.sql's own comment on this) so a
+  // bad invite code or name doesn't waste the signup itself — failure here
+  // just re-shows the same toast-and-retry form.
+  function completeOrgSetup() {
+    var validation = validateOrgFields();
+    if (validation) { toast(validation, '#b91c1c'); return; }
+    $('auth-submit').disabled = true;
+    var rpcCall = orgSignupMode === 'create'
+      ? sb.rpc('create_organisation', { org_name: $('org-name').value.trim(), org_country: $('org-country').value })
+      : sb.rpc('join_organisation', { p_join_code: $('org-join-code').value.trim(), p_daily_code: $('org-daily-code').value.trim() });
+    rpcCall.then(function (res) {
+      $('auth-submit').disabled = false;
+      if (res.error) { fail(res.error, 'Could not set up organisation'); return; }
+      needsOrgSetup = false;
+      toast('Account created — welcome!');
+      finishLogin();
+    });
+  }
+
+  function finishLogin() {
+    refreshOrgStatus(function () {
+      loadLocations();
+      loadTakes();
+    });
+  }
+
   function submitAuth() {
+    if (needsOrgSetup) { completeOrgSetup(); return; }
     var email = $('auth-email').value.trim();
     var pw = $('auth-pass').value;
     if (!email || !pw) { toast('Enter an email and password', '#b91c1c'); return; }
@@ -721,14 +833,16 @@
       if (!name) { toast('Enter your name', '#b91c1c'); done(); return; }
       if (pw.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); done(); return; }
       if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
-      var country = $('auth-country').value;
-      if (!country) { toast('Choose your country', '#b91c1c'); done(); return; }
-      sb.auth.signUp({ email: email, password: pw, options: { data: { country: country, full_name: name } } }).then(function (res) {
+      var orgValidation = validateOrgFields();
+      if (orgValidation) { toast(orgValidation, '#b91c1c'); done(); return; }
+      sb.auth.signUp({ email: email, password: pw, options: { data: { full_name: name } } }).then(function (res) {
         done();
         if (res.error) { fail(res.error, 'Sign up failed'); return; }
         if (res.data.session) {
-          enterApp(res.data.session.user);
-          toast('Account created — welcome!');
+          currentUser = { id: res.data.session.user.id, email: res.data.session.user.email, name: name };
+          $('auth-pass').value = ''; $('auth-pass2').value = '';
+          showOrgSetupPrompt();
+          completeOrgSetup();
         } else {
           toast('Check your email to confirm your account, then log in', '#2563eb');
           setAuthMode('login');
@@ -782,29 +896,52 @@
     });
   };
 
-  // Re-checks the Pro flag from the server and re-renders anywhere it's shown.
-  // Called on login, whenever the Account view opens, and (native only) when
-  // the app resumes from the in-app Stripe checkout browser tab.
-  function refreshProStatus(cb) {
+  // Re-checks the org/plan/role from the server and re-renders anywhere it's
+  // shown. Called on login, whenever the Account view opens, and (native
+  // only) when the app resumes from the in-app Stripe checkout browser tab.
+  // Two independent queries (profile is personal, org is shared) rather than
+  // one join, since a user with no membership yet still has a valid profile.
+  function refreshOrgStatus(cb) {
     if (!currentUser) return;
-    sb.from('profiles').select('is_pro, country, country_changed_at, full_name').eq('id', currentUser.id).maybeSingle().then(function (res) {
-      if (!res.error && res.data) {
-        isPro = !!res.data.is_pro;
-        currentUser.country = res.data.country || '';
-        currentUser.countryChangedAt = res.data.country_changed_at || null;
-        currentUser.name = res.data.full_name || '';
-        renderPlan();
+    Promise.all([
+      sb.from('profiles').select('full_name').eq('id', currentUser.id).maybeSingle(),
+      sb.from('memberships')
+        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format)')
+        .eq('user_id', currentUser.id).maybeSingle()
+    ]).then(function (results) {
+      var profileRes = results[0], memberRes = results[1];
+      if (!profileRes.error && profileRes.data) {
+        currentUser.name = profileRes.data.full_name || '';
       }
+      if (!memberRes.error && memberRes.data && memberRes.data.organisations) {
+        var org = memberRes.data.organisations;
+        currentOrg = {
+          id: org.id, name: org.name, role: memberRes.data.role,
+          planTier: org.plan_tier, country: org.country || '',
+          countryChangedAt: org.country_changed_at || null,
+          exportFormat: org.export_format
+        };
+        isPaidTier = currentOrg.planTier !== 'free';
+      } else {
+        currentOrg = null;
+      }
+      renderPlan();
       if (cb) cb();
     });
   }
 
   function enterApp(user) {
-    currentUser = { id: user.id, email: user.email };
+    currentUser = { id: user.id, email: user.email, name: '' };
     $('auth-pass').value = ''; $('auth-pass2').value = '';
-    isPro = false;
-    refreshProStatus();
-    loadTakes();
+    isPaidTier = false;
+    refreshOrgStatus(function () {
+      // Defensive: a normal login always has a membership already (created
+      // during signup) — this only fires if that somehow never completed,
+      // or membership was later removed.
+      if (!currentOrg) { showOrgSetupPrompt(); return; }
+      loadLocations();
+      loadTakes();
+    });
   }
 
   // ---- Upgrade (free plan limit) & account ----
@@ -814,7 +951,7 @@
   // country), falling back to DEFAULT_CURRENCY if that currency isn't
   // configured yet.
   function upgradeLink(plan) {
-    var currency = (currentUser && COUNTRY_CURRENCY[currentUser.country]) || DEFAULT_CURRENCY;
+    var currency = (currentOrg && COUNTRY_CURRENCY[currentOrg.country]) || DEFAULT_CURRENCY;
     var links = (cfg.upgradeUrls || {});
     var byCurrency = links[currency] || {};
     var byDefault = links[DEFAULT_CURRENCY] || {};
@@ -827,7 +964,7 @@
   // the Payment Link itself already did (upgradeLink()); this keeps the
   // shown price consistent with what Stripe will actually charge.
   function renderUpgradePrices() {
-    var currency = (currentUser && COUNTRY_CURRENCY[currentUser.country]) || DEFAULT_CURRENCY;
+    var currency = (currentOrg && COUNTRY_CURRENCY[currentOrg.country]) || DEFAULT_CURRENCY;
     var links = (cfg.upgradeUrls || {});
     var info = links[currency] || links[DEFAULT_CURRENCY] || {};
     var symbol = info.symbol || '$';
@@ -841,7 +978,7 @@
   }
   // window.open('_blank') isn't reliable inside a native WebView; open an
   // in-app browser tab instead. Used for both Stripe checkout and the
-  // billing portal — refreshProStatus() on app resume (native) or the
+  // billing portal — refreshOrgStatus() on app resume (native) or the
   // upgraded=1/billing_updated=1 boot handling (web) is what picks up
   // whatever changed once the user comes back.
   function openExternal(url) {
@@ -850,11 +987,15 @@
   }
   function goUpgrade(plan) {
     var url = upgradeLink(plan);
-    // On a real checkout link (Stripe Payment Link), identify the paying user
-    // so the webhook can activate Pro on the right account automatically.
-    if (/^https?:\/\//.test(url) && currentUser) {
+    // On a real checkout link (Stripe Payment Link), identify the paying org
+    // (not the user — billing is org-scoped) so the webhook can activate the
+    // right organisation automatically. NOTE: the webhook itself doesn't yet
+    // know how to read this as an org id or detect which tier was purchased
+    // — that's Phase D. Until then this link works as a plain checkout, but
+    // won't automatically flip anything server-side.
+    if (/^https?:\/\//.test(url) && currentOrg) {
       url += (url.indexOf('?') === -1 ? '?' : '&') +
-        'client_reference_id=' + encodeURIComponent(currentUser.id) +
+        'client_reference_id=' + encodeURIComponent(currentOrg.id) +
         '&prefilled_email=' + encodeURIComponent(currentUser.email);
     }
     openExternal(url);
@@ -878,52 +1019,65 @@
     return error && /row-level security|policy/i.test(error.message || '');
   }
 
+  function roleLabel(role) {
+    return role === 'owner' ? 'Owner' : role === 'manager' ? 'Manager' : 'Staff';
+  }
+  // Billing/region controls are owner-only — a staff member shouldn't be
+  // able to change the org's checkout currency or open its billing portal.
+  function renderOrgAccountInfo() {
+    $('acct-org-name').textContent = currentOrg ? currentOrg.name : '';
+    $('acct-org-role').textContent = currentOrg ? roleLabel(currentOrg.role) : '';
+    var isOwner = !!(currentOrg && currentOrg.role === 'owner');
+    $('change-region-btn').style.display = isOwner ? '' : 'none';
+    $('acct-subscription-card').style.display = isOwner ? '' : 'none';
+    renderCountryDisplay();
+  }
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
     $('acct-name').textContent = currentUser.name || '';
-    renderCountryDisplay();
+    renderOrgAccountInfo();
     renderPlan();
     renderUpgradePrices();
     showView('account');
-    // Refresh the plan from the server so a just-completed upgrade shows up
-    refreshProStatus(function () {
+    // Refresh the org/plan from the server so a just-completed upgrade shows up
+    refreshOrgStatus(function () {
       $('acct-name').textContent = currentUser.name || '';
-      renderCountryDisplay();
+      renderOrgAccountInfo();
       renderUpgradePrices();
     });
   }
   function renderPlan() {
-    $('acct-plan-free').style.display = isPro ? 'none' : '';
-    $('acct-plan-pro').style.display = isPro ? '' : 'none';
+    $('acct-plan-free').style.display = isPaidTier ? 'none' : '';
+    $('acct-plan-pro').style.display = isPaidTier ? '' : 'none';
   }
   $('account-btn').onclick = function () { if (currentUser) openAccount(); };
   $('acct-back').onclick = function () { loadTakes(); };
 
-  // ---- Change region (billing country) ----
+  // ---- Change region (billing country) — owner only ----
   $('change-region-btn').onclick = function () {
-    if (!currentUser) return;
+    if (!currentOrg || currentOrg.role !== 'owner') return;
     if (!countryChangeEligible()) {
       toast('You can change your region again on ' + nextCountryChangeDate().toLocaleDateString(), '#b91c1c');
       return;
     }
-    $('acct-country').value = currentUser.country || '';
+    $('acct-country').value = currentOrg.country || '';
     $('region-overlay').classList.add('open');
   };
   $('region-cancel').onclick = function () {
-    if (currentUser) $('acct-country').value = currentUser.country || '';
+    if (currentOrg) $('acct-country').value = currentOrg.country || '';
     $('region-overlay').classList.remove('open');
   };
   $('region-confirm').onclick = function () {
-    if (!currentUser) return;
+    if (!currentOrg) return;
     var country = $('acct-country').value;
     if (!country) { toast('Choose a country', '#b91c1c'); return; }
-    if (country === currentUser.country) { $('region-overlay').classList.remove('open'); return; }
+    if (country === currentOrg.country) { $('region-overlay').classList.remove('open'); return; }
     $('region-confirm').disabled = true;
-    sb.from('profiles').update({ country: country }).eq('id', currentUser.id).then(function (res) {
+    sb.from('organisations').update({ country: country }).eq('id', currentOrg.id).then(function (res) {
       $('region-confirm').disabled = false;
       if (res.error) { fail(res.error, 'Could not save country'); return; }
-      currentUser.country = country;
-      currentUser.countryChangedAt = new Date().toISOString();
+      currentOrg.country = country;
+      currentOrg.countryChangedAt = new Date().toISOString();
       renderCountryDisplay();
       renderUpgradePrices();
       $('region-overlay').classList.remove('open');
@@ -931,9 +1085,15 @@
     });
   };
 
+  function resetAuthUiState() {
+    needsOrgSetup = false;
+    $('auth-credentials').style.display = '';
+    setOrgSignupMode('create');
+  }
   $('logout-btn').onclick = function () {
     sb.auth.signOut().then(function () {
-      currentUser = null; currentTake = null; items = [];
+      currentUser = null; currentOrg = null; currentTake = null; items = []; locations = [];
+      resetAuthUiState();
       setAuthMode('login');
       showView('auth');
     });
@@ -953,7 +1113,8 @@
       $('delete-overlay').classList.remove('open');
       $('delete-confirm').disabled = false;
       sb.auth.signOut().then(function () {
-        currentUser = null; currentTake = null; items = [];
+        currentUser = null; currentOrg = null; currentTake = null; items = []; locations = [];
+        resetAuthUiState();
         setAuthMode('login');
         showView('auth');
         toast('Your account has been deleted');
@@ -970,13 +1131,22 @@
     return list.length + ' items · ' + qty + ' total qty';
   }
 
+  // This org's pre-created venues — fetched once per login/resume, needed
+  // before "New stocktake" can offer a location picker.
+  function loadLocations(cb) {
+    sb.from('locations').select('id,name').order('name').then(function (res) {
+      if (!res.error) locations = res.data || [];
+      if (cb) cb();
+    });
+  }
+
   function loadTakes() {
     showView('home');
     $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
     $('stocktake-list-completed').innerHTML = '';
     $('completed-heading').style.display = 'none';
     sb.from('stocktakes')
-      .select('id,name,status,created_at,updated_at,stocktake_items(qty)')
+      .select('id,name,status,created_at,updated_at,locations(name),stocktake_items(qty)')
       .order('updated_at', { ascending: false })
       .then(function (res) {
         if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
@@ -992,7 +1162,10 @@
     info.className = 'info';
     var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = t.name;
     var meta = document.createElement('div'); meta.className = 'meta';
-    meta.textContent = takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString();
+    // Only show which venue once there's more than one — keeps the solo/
+    // single-location case identical to before this feature existed.
+    var locPrefix = (locations.length > 1 && t.locations && t.locations.name) ? t.locations.name + ' · ' : '';
+    meta.textContent = locPrefix + takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString();
     info.appendChild(nm); info.appendChild(meta);
     var more = document.createElement('button');
     more.className = 'more'; more.textContent = '⋯';
@@ -1043,8 +1216,31 @@
     completed.forEach(function (t) { completedEl.appendChild(renderTakeRow(t)); });
   }
 
+  // Suggests "<location> – <today's date>" as a starting point for the name
+  // — editable, not enforced, so repeat counts at the same venue stay
+  // distinguishable (e.g. "Main Bar – Weekly count").
+  function suggestTakeName(locId) {
+    var loc = locations.find(function (l) { return l.id === locId; });
+    return loc ? (loc.name + ' – ' + new Date().toLocaleDateString()) : '';
+  }
+  $('name-location').onchange = function () {
+    $('name-input').value = suggestTakeName($('name-location').value);
+  };
   $('new-stocktake').onclick = function () {
-    $('name-input').value = '';
+    if (!locations.length) { toast('No locations set up yet — ask your organisation owner', '#b91c1c'); return; }
+    if (locations.length > 1) {
+      $('name-location-row').style.display = '';
+      $('name-location').innerHTML = '';
+      locations.forEach(function (l) {
+        var opt = document.createElement('option');
+        opt.value = l.id; opt.textContent = l.name;
+        $('name-location').appendChild(opt);
+      });
+      $('name-location').value = locations[0].id;
+    } else {
+      $('name-location-row').style.display = 'none';
+    }
+    $('name-input').value = suggestTakeName(locations[0].id);
     $('name-overlay').classList.add('open');
     setTimeout(function () { $('name-input').focus(); }, 50);
   };
@@ -1052,8 +1248,10 @@
   function createTake() {
     var name = $('name-input').value.trim();
     if (!name) { toast('Enter a name for the stocktake', '#b91c1c'); return; }
+    var locationId = locations.length > 1 ? $('name-location').value : (locations[0] && locations[0].id);
+    if (!locationId) { toast('Choose a location', '#b91c1c'); return; }
     $('name-ok').disabled = true;
-    sb.from('stocktakes').insert({ name: name }).select().single().then(function (res) {
+    sb.from('stocktakes').insert({ name: name, location_id: locationId }).select().single().then(function (res) {
       $('name-ok').disabled = false;
       if (res.error) { fail(res.error, 'Could not create stocktake'); return; }
       $('name-overlay').classList.remove('open');
@@ -1161,7 +1359,7 @@
   // ---- Quantity dialog ----
   function openQtyDialog(code, isEdit) {
     var existing = items.find(function (it) { return it.barcode === code; });
-    if (!existing && !isPro && items.length >= FREE_LIMIT) { openUpgrade(); return; }
+    if (!existing && !isPaidTier && items.length >= FREE_LIMIT) { openUpgrade(); return; }
     pendingCode = code;
     dialogOpen = true;
     $('qty-code').textContent = code;
@@ -1551,7 +1749,7 @@
     // The app never sees the Stripe Payment Link's https redirect natively
     // (it lands in the separate in-app browser tab opened by goUpgrade, not
     // this WebView) — resuming from foreground is the signal to re-check.
-    App.addListener('resume', function () { refreshProStatus(); });
+    App.addListener('resume', function () { refreshOrgStatus(); });
 
     // Release the camera when the OS backgrounds the app instead of leaving
     // the stream running (startScanner/stopScanner otherwise only react to

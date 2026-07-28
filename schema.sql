@@ -1,58 +1,209 @@
--- Barscan schema for Supabase
+-- Barscan schema for Supabase — organisation-based multi-tenant model
 -- Run this once in your Supabase project: Dashboard -> SQL Editor -> New query -> paste -> Run
--- (Safe to re-run: statements are idempotent.)
+--
+-- THIS IS A CLEAN REPLACEMENT of the earlier per-user schema, not an additive
+-- migration: it drops and recreates every app table. That's deliberate (see
+-- the planning doc) — there is no production data to preserve. If that ever
+-- stops being true, do NOT re-run this file as-is; write a real migration
+-- instead (add-column-with-backfill), since running this against a live org
+-- would delete all of it.
 
--- ---- Profiles: one row per user, holds the Pro subscription flag ----
-create table if not exists public.profiles (
+-- ---- Profiles: one row per user, personal identity only ----
+-- No billing/plan fields here any more — those are now on `organisations`,
+-- since billing is org-scoped, not user-scoped. See `organisations` below.
+drop table if exists public.stocktake_items cascade;
+drop table if exists public.stocktakes cascade;
+drop table if exists public.memberships cascade;
+drop table if exists public.locations cascade;
+drop table if exists public.organisations cascade;
+drop table if exists public.profiles cascade;
+
+create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  is_pro boolean not null default false,
+  full_name text,   -- set at signup, for audit/history reference (who did a stocktake)
   created_at timestamptz not null default now()
 );
 
--- Link to the Stripe customer so subscription cancellations can be matched
--- back to the right account (written by the stripe-webhook edge function)
-alter table public.profiles add column if not exists stripe_customer_id text;
-
--- Operator's country, set at signup (or later in Account) — used client-side
--- to pick which currency's Stripe Payment Link to open. Not validated against
--- a fixed list here; the app only ever writes the short codes from its own
--- COUNTRY_CURRENCY table.
-alter table public.profiles add column if not exists country text;
-
--- When country last changed. Drives the 30-day change cooldown below — a
--- Free user shouldn't be able to hop to a cheaper-currency country right
--- before upgrading, then hop back. Stamped by the trigger, not the client.
-alter table public.profiles add column if not exists country_changed_at timestamptz;
-
--- Operator's name, set at signup — for audit/history reference (who did a
--- stocktake, shown alongside it). Purely a display field, not validated.
-alter table public.profiles add column if not exists full_name text;
-
 alter table public.profiles enable row level security;
 
-drop policy if exists "read own profile" on public.profiles;
 create policy "read own profile" on public.profiles
   for select using (auth.uid() = id);
--- No insert policy for clients: profiles are created by the trigger below.
--- is_pro/stripe_customer_id are flipped only by you (dashboard/service
--- role/Stripe webhook) — see the column-scoped update policy below, which
--- deliberately does NOT open those columns up to clients.
+-- No insert/update policy for clients: the row is created by the
+-- handle_new_user() trigger below and there's currently no edit-name UI.
 
--- Let users set/update their own country (for checkout currency) without
--- opening up is_pro/stripe_customer_id to client writes: the policy allows
--- updating your own row, but the GRANT below restricts *which* columns the
--- authenticated role may actually write — both are enforced by Postgres.
-drop policy if exists "update own country" on public.profiles;
-create policy "update own country" on public.profiles
-  for update using (auth.uid() = id) with check (auth.uid() = id);
-revoke update on public.profiles from authenticated;
-grant update (country) on public.profiles to authenticated;
+-- ---- Organisations: the billing/tenant entity. Every stocktake and every
+-- location belongs to one of these, not to a user. ----
+create table public.organisations (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  logo_url text,
+  export_format text not null default 'full'
+    check (export_format in ('full', 'myob', 'lightspeed')),
+  plan_tier text not null default 'free'
+    check (plan_tier in ('free', 'single', 'multi')),
 
--- Enforces the 30-day country-change cooldown server-side (the app's own
--- check is just a friendly heads-up — this is the actual boundary, so it
--- can't be bypassed by calling the API directly). security definer because
--- the client is only granted UPDATE on the `country` column above, not
--- `country_changed_at` — the trigger stamps that regardless.
+  -- Billing country, moved here from profiles.country — it's what currency
+  -- checkout uses, and checkout is now an org-level action. Same 30-day
+  -- change cooldown as before, just re-pointed (see enforce_country_cooldown
+  -- below); only meaningful once the org actually has billing to protect.
+  country text,
+  country_changed_at timestamptz,
+
+  -- Written only by the stripe-webhook edge function / by hand in the
+  -- dashboard — never client-writable (see the column-scoped GRANT below).
+  stripe_customer_id text,
+  stripe_subscription_id text,
+  -- The subscription item whose `quantity` tracks this org's location
+  -- count for the multi-venue tier (first location included in the base
+  -- price, each additional one billed via Stripe's graduated pricing).
+  -- Irrelevant/null for free and single-venue orgs.
+  stripe_subscription_item_id text,
+
+  -- Durable, owner-rotatable — one half of the two-factor join code.
+  join_code text not null unique,
+  -- The other half: changes daily, only ever shown live in admin.html.
+  -- Lazily regenerated by get_daily_code() below rather than a cron job —
+  -- null/stale until the first time someone with owner/manager role opens
+  -- the roster screen on a given day.
+  daily_code text,
+  daily_code_date date,
+
+  -- Bumped whenever the owner opens the roster screen; lets admin.html
+  -- highlight memberships created after that (new-member notification,
+  -- with no email/push infrastructure needed).
+  roster_last_viewed_at timestamptz,
+
+  created_at timestamptz not null default now()
+);
+
+-- ---- Locations: pre-created venues staff scan against. Staff can only
+-- start stocktakes at locations that already exist here (enforced in the
+-- stocktakes insert policy below), not invent their own on the fly. ----
+create table public.locations (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.organisations(id) on delete cascade,
+  name text not null,
+  created_at timestamptz not null default now(),
+  unique (org_id, name)
+);
+
+-- ---- Memberships: who belongs to which org, and with what role.
+-- unique(user_id) enforces one org per user (deliberate simplification —
+-- no active-org switcher needed; see the planning doc for the tradeoff). ----
+create table public.memberships (
+  org_id uuid not null references public.organisations(id) on delete cascade,
+  user_id uuid not null unique references auth.users(id) on delete cascade,
+  role text not null default 'staff'
+    check (role in ('owner', 'manager', 'staff')),
+  created_at timestamptz not null default now(),
+  primary key (org_id, user_id)
+);
+
+-- ---- Helper functions used throughout RLS below ----
+-- security definer (like the existing enforce_country_cooldown/
+-- handle_new_user pattern) specifically to avoid RLS recursion: a policy on
+-- `memberships` that queried `memberships` directly to know who's asking
+-- would otherwise need to evaluate its own RLS to answer that query.
+create or replace function public.my_org_id()
+returns uuid language sql stable security definer set search_path = public as $$
+  select org_id from public.memberships where user_id = auth.uid();
+$$;
+
+create or replace function public.my_role()
+returns text language sql stable security definer set search_path = public as $$
+  select role from public.memberships where user_id = auth.uid();
+$$;
+
+-- ---- Stocktakes ----
+create table public.stocktakes (
+  id uuid primary key default gen_random_uuid(),
+  -- Denormalized alongside location_id (rather than only derivable via a
+  -- join) so every RLS policy below is a flat equality check, not a join —
+  -- standard multi-tenant RLS practice. Defaults via my_org_id() the same
+  -- way the old schema defaulted user_id via auth.uid() — the client never
+  -- needs to pass this explicitly.
+  org_id uuid not null default public.my_org_id() references public.organisations(id) on delete cascade,
+  -- Must be one of the org's pre-created locations (checked in the insert
+  -- policy below, since a plain FK can't also verify same-org). No default:
+  -- the operator has to actively choose a location.
+  location_id uuid not null references public.locations(id) on delete restrict,
+  -- Audit only, not a security predicate — `on delete set null` so a staff
+  -- member's account deletion doesn't take the org's stocktake with it.
+  created_by uuid references auth.users(id) on delete set null default auth.uid(),
+  name text not null,
+  -- 'in_progress' | 'completed' — deliberately unconstrained (unlike
+  -- plan_tier/role above) matching the original schema's lighter-weight
+  -- approach here: the app is the only writer, flips it to 'completed' on
+  -- first successful export.
+  status text not null default 'in_progress',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.stocktake_items (
+  id uuid primary key default gen_random_uuid(),
+  stocktake_id uuid not null references public.stocktakes(id) on delete cascade,
+  org_id uuid not null default public.my_org_id() references public.organisations(id) on delete cascade,
+  -- Who scanned this barcode in, and who last touched its qty — genuinely
+  -- meaningful attribution now that any org member can write into any of
+  -- the org's stocktakes (unlike the old user_id, which was always
+  -- identical to the stocktake's own owner and so wasn't really usable as
+  -- "who scanned this"). Neither is a security predicate; both `on delete
+  -- set null` so departing staff don't take data with them.
+  scanned_by uuid references auth.users(id) on delete set null default auth.uid(),
+  last_scanned_by uuid references auth.users(id) on delete set null default auth.uid(),
+  barcode text not null,
+  qty integer not null check (qty >= 1),
+  first_scanned timestamptz not null default now(),
+  last_scanned timestamptz not null default now(),
+  unique (stocktake_id, barcode)
+);
+
+create index stocktakes_org_idx on public.stocktakes (org_id, updated_at desc);
+create index stocktakes_location_idx on public.stocktakes (location_id);
+create index items_stocktake_idx on public.stocktake_items (stocktake_id);
+create index items_org_idx on public.stocktake_items (org_id);
+
+-- Keep the parent stocktake's updated_at fresh whenever its items change
+create or replace function public.touch_stocktake()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  update public.stocktakes
+     set updated_at = now()
+   where id = coalesce(new.stocktake_id, old.stocktake_id);
+  return coalesce(new, old);
+end $$;
+
+create trigger touch_stocktake_on_items
+  after insert or update or delete on public.stocktake_items
+  for each row execute function public.touch_stocktake();
+
+-- ---- Bootstrapping: profile row + org country-change cooldown ----
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id, full_name)
+  values (new.id, new.raw_user_meta_data->>'full_name')
+  on conflict do nothing;
+  return new;
+end $$;
+
+-- auth.users itself is never dropped (Supabase-managed), so unlike every
+-- other trigger in this file its old version survives a re-run and has to
+-- be dropped explicitly — including the very first time this runs against
+-- your current live project, which already has the old schema's copy.
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- Enforces the 30-day billing-country-change cooldown server-side (an
+-- owner shouldn't be able to hop the org to a cheap-currency country right
+-- before upgrading, then hop back) — re-pointed from profiles to
+-- organisations, otherwise identical to the original. security definer
+-- because the client is only granted UPDATE on the `country` column (see
+-- the GRANT below), not `country_changed_at` — the trigger stamps that
+-- regardless.
 create or replace function public.enforce_country_cooldown()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
@@ -66,106 +217,236 @@ begin
   return new;
 end $$;
 
-drop trigger if exists on_profile_country_change on public.profiles;
-create trigger on_profile_country_change
-  before update on public.profiles
+create trigger on_org_country_change
+  before update on public.organisations
   for each row execute function public.enforce_country_cooldown();
 
-create or replace function public.handle_new_user()
-returns trigger language plpgsql security definer set search_path = public as $$
+-- ---- Signup RPCs ----
+-- Deliberately NOT done inside handle_new_user(): if org-creation or a bad
+-- invite code failed inside that trigger, the whole auth.users insert would
+-- roll back and signUp() would fail with an opaque Postgres error. Calling
+-- these as an explicit second step after signUp() succeeds means a failure
+-- here is recoverable — the account already exists, the user just retries
+-- this step with a clear error.
+--
+-- Neither of these needs to touch Stripe: billing scales with location
+-- count, not staff count, so joining an org (at any tier) has no billing
+-- side effect. That's also why both can be plain security-definer SQL
+-- functions rather than Edge Functions — see create_location/remove_location
+-- (not in this file; Edge Functions, Phase D) for where the Stripe-calling
+-- logic actually lives.
+
+create or replace function public.create_organisation(org_name text, org_country text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  new_org_id uuid;
 begin
-  insert into public.profiles (id, country, full_name)
-  values (new.id, new.raw_user_meta_data->>'country', new.raw_user_meta_data->>'full_name')
-  on conflict do nothing;
-  return new;
+  if exists (select 1 from public.memberships where user_id = auth.uid()) then
+    raise exception 'You already belong to an organisation.';
+  end if;
+  if org_name is null or length(trim(org_name)) = 0 then
+    raise exception 'Organisation name is required.';
+  end if;
+
+  insert into public.organisations (name, country, join_code)
+  values (trim(org_name), org_country, substr(md5(random()::text || clock_timestamp()::text), 1, 8))
+  returning id into new_org_id;
+
+  -- Every org starts with one location, free on every tier — this is what
+  -- makes a solo signup behave exactly like today's single-user app.
+  insert into public.locations (org_id, name) values (new_org_id, 'Main');
+
+  insert into public.memberships (org_id, user_id, role) values (new_org_id, auth.uid(), 'owner');
+
+  return new_org_id;
 end $$;
 
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
-
--- Backfill profiles for any users that signed up before this table existed
-insert into public.profiles (id) select id from auth.users on conflict do nothing;
-
--- ---- Stocktakes ----
-create table if not exists public.stocktakes (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
-  name text not null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
--- 'in_progress' | 'completed' — the app sets this to 'completed' when a
--- stocktake is exported (any format); Home groups the list by it. Not
--- constrained at the DB level (same lighter-weight approach as `country`
--- above) — the app is the only writer of this column.
-alter table public.stocktakes add column if not exists status text not null default 'in_progress';
-
-create table if not exists public.stocktake_items (
-  id uuid primary key default gen_random_uuid(),
-  stocktake_id uuid not null references public.stocktakes(id) on delete cascade,
-  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
-  barcode text not null,
-  qty integer not null check (qty >= 1),
-  first_scanned timestamptz not null default now(),
-  last_scanned timestamptz not null default now(),
-  unique (stocktake_id, barcode)
-);
-
-create index if not exists stocktakes_user_idx on public.stocktakes (user_id, updated_at desc);
-create index if not exists items_stocktake_idx on public.stocktake_items (stocktake_id);
-
--- Keep the parent stocktake's updated_at fresh whenever its items change
-create or replace function public.touch_stocktake()
-returns trigger language plpgsql security definer set search_path = public as $$
+create or replace function public.join_organisation(p_join_code text, p_daily_code text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  target_org public.organisations%rowtype;
 begin
-  update public.stocktakes
-     set updated_at = now()
-   where id = coalesce(new.stocktake_id, old.stocktake_id);
-  return coalesce(new, old);
+  if exists (select 1 from public.memberships where user_id = auth.uid()) then
+    raise exception 'You already belong to an organisation.';
+  end if;
+
+  select * into target_org from public.organisations where join_code = p_join_code;
+  if target_org.id is null then
+    raise exception 'Invalid organisation code.';
+  end if;
+  if target_org.daily_code is null
+     or target_org.daily_code_date is distinct from current_date
+     or target_org.daily_code is distinct from p_daily_code then
+    raise exception 'Invalid or expired daily code.';
+  end if;
+
+  insert into public.memberships (org_id, user_id, role) values (target_org.id, auth.uid(), 'staff');
+
+  return target_org.id;
 end $$;
 
-drop trigger if exists touch_stocktake_on_items on public.stocktake_items;
-create trigger touch_stocktake_on_items
-  after insert or update or delete on public.stocktake_items
-  for each row execute function public.touch_stocktake();
+-- Lazy daily-code rotation — called by admin.html whenever the roster/join
+-- screen is opened, rather than a pg_cron job (avoids depending on an
+-- extension just to rotate a code once a day). Owner/manager only.
+create or replace function public.get_daily_code()
+returns text language plpgsql security definer set search_path = public as $$
+declare
+  v_org_id uuid := public.my_org_id();
+  v_code text;
+  v_date date;
+begin
+  if public.my_role() not in ('owner', 'manager') then
+    raise exception 'Only owners and managers can view the daily code.';
+  end if;
+
+  select daily_code, daily_code_date into v_code, v_date
+    from public.organisations where id = v_org_id;
+
+  if v_date is distinct from current_date then
+    v_code := substr(md5(random()::text || clock_timestamp()::text), 1, 6);
+    update public.organisations
+       set daily_code = v_code, daily_code_date = current_date
+     where id = v_org_id;
+  end if;
+
+  return v_code;
+end $$;
+
+-- Postgres grants EXECUTE on new functions to PUBLIC by default, so these
+-- are likely redundant — but this repo has never called an RPC function
+-- before now (nothing in app.html today uses `.rpc()`), so making it
+-- explicit rather than relying on an unverified default.
+grant execute on function public.create_organisation(text, text) to authenticated;
+grant execute on function public.join_organisation(text, text) to authenticated;
+grant execute on function public.get_daily_code() to authenticated;
 
 -- ---- Row Level Security ----
+
+alter table public.organisations enable row level security;
+alter table public.locations enable row level security;
+alter table public.memberships enable row level security;
 alter table public.stocktakes enable row level security;
 alter table public.stocktake_items enable row level security;
 
-drop policy if exists "own stocktakes" on public.stocktakes;
-create policy "own stocktakes" on public.stocktakes
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+-- organisations: read/update own org only; plan_tier/stripe_* stay
+-- service-role/webhook-only, same pattern as is_pro was untouchable by
+-- clients in the old schema.
+create policy "read own org" on public.organisations
+  for select using (id = public.my_org_id());
 
--- Items: read/update/delete own rows freely; INSERT enforces the free-plan
--- limit server-side — free users can hold at most 3 distinct products per
--- stocktake, Pro users (profiles.is_pro) are unlimited.
-drop policy if exists "own items" on public.stocktake_items;
-drop policy if exists "select own items" on public.stocktake_items;
-drop policy if exists "update own items" on public.stocktake_items;
-drop policy if exists "delete own items" on public.stocktake_items;
-drop policy if exists "insert own items" on public.stocktake_items;
+create policy "owner update org" on public.organisations
+  for update using (id = public.my_org_id() and public.my_role() = 'owner')
+  with check (id = public.my_org_id() and public.my_role() = 'owner');
 
-create policy "select own items" on public.stocktake_items
-  for select using (auth.uid() = user_id);
-create policy "update own items" on public.stocktake_items
-  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
-create policy "delete own items" on public.stocktake_items
-  for delete using (auth.uid() = user_id);
-create policy "insert own items" on public.stocktake_items
+revoke update on public.organisations from authenticated;
+grant update (name, logo_url, export_format, join_code, country, roster_last_viewed_at)
+  on public.organisations to authenticated;
+-- No insert policy: organisations are only ever created via
+-- create_organisation() above (security definer, bypasses RLS).
+
+-- locations: any org member reads; owner/manager manage. The FIRST
+-- location for an org (created alongside it, or the first one an
+-- owner/manager adds on free/single) is a plain RLS-gated insert; adding a
+-- 2nd+ location to a multi-tier org should go through the create_location
+-- Edge Function instead (Phase D) so the Stripe subscription quantity gets
+-- incremented first — a plain Postgres policy can't make that outbound
+-- call. This policy still needs to be structurally correct on its own,
+-- since RLS is the real boundary regardless of which client code path is
+-- used to reach it.
+create policy "read org locations" on public.locations
+  for select using (org_id = public.my_org_id());
+
+create policy "owner manager update locations" on public.locations
+  for update using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'))
+  with check (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+create policy "owner manager insert locations" on public.locations
   for insert with check (
-    auth.uid() = user_id
+    org_id = public.my_org_id()
+    and public.my_role() in ('owner', 'manager')
     and (
-      coalesce((select p.is_pro from public.profiles p where p.id = auth.uid()), false)
+      (select plan_tier from public.organisations where id = locations.org_id) = 'multi'
+      or (select count(*) from public.locations where org_id = locations.org_id) = 0
+    )
+  );
+
+create policy "owner manager delete locations" on public.locations
+  for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- memberships: any org member can see the roster; only the owner changes
+-- roles or removes staff. No insert policy — only create_organisation()/
+-- join_organisation() insert rows here (both security definer).
+create policy "read org memberships" on public.memberships
+  for select using (org_id = public.my_org_id());
+
+create policy "owner update memberships" on public.memberships
+  for update using (org_id = public.my_org_id() and public.my_role() = 'owner')
+  with check (org_id = public.my_org_id() and public.my_role() = 'owner');
+
+create policy "owner delete memberships" on public.memberships
+  for delete using (org_id = public.my_org_id() and public.my_role() = 'owner');
+
+-- stocktakes: any org member reads/creates/updates; only owner/manager can
+-- delete one outright (staff can still clear its items — see
+-- stocktake_items delete below). This is a deliberate tightening from the
+-- old single-user model, where the sole owner could always delete their
+-- own stocktake — once other people's work can be sitting inside it,
+-- letting any staff member delete the whole thing is a real footgun.
+create policy "read org stocktakes" on public.stocktakes
+  for select using (org_id = public.my_org_id());
+
+create policy "org members insert stocktakes" on public.stocktakes
+  for insert with check (
+    org_id = public.my_org_id()
+    and exists (
+      select 1 from public.locations l
+       where l.id = stocktakes.location_id and l.org_id = stocktakes.org_id
+    )
+  );
+
+create policy "org members update stocktakes" on public.stocktakes
+  for update using (org_id = public.my_org_id())
+  with check (org_id = public.my_org_id());
+
+create policy "owner manager delete stocktakes" on public.stocktakes
+  for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- stocktake_items: any org member can read/insert/update/delete within
+-- their org's stocktakes. The insert check additionally verifies
+-- stocktake_id actually belongs to a stocktake in the SAME org as the
+-- item's own org_id — without this, a client could satisfy
+-- `org_id = my_org_id()` while pointing stocktake_id at a different org's
+-- stocktake, writing items into someone else's tenant. Free-plan limit
+-- (3 distinct products per stocktake) is re-pointed from profiles.is_pro
+-- to organisations.plan_tier but otherwise unchanged — remember
+-- FREE_LIMIT in app.html has to stay in sync with the `< 3` below.
+create policy "read org items" on public.stocktake_items
+  for select using (org_id = public.my_org_id());
+
+create policy "org members insert items" on public.stocktake_items
+  for insert with check (
+    org_id = public.my_org_id()
+    and exists (
+      select 1 from public.stocktakes s
+       where s.id = stocktake_items.stocktake_id and s.org_id = stocktake_items.org_id
+    )
+    and (
+      (select plan_tier from public.organisations where id = stocktake_items.org_id) != 'free'
       or (select count(*) from public.stocktake_items i
             where i.stocktake_id = stocktake_items.stocktake_id) < 3
     )
   );
 
--- ---- Upgrading a user to Pro ----
--- Until payments are automated (e.g. a Stripe webhook), flip the flag manually:
---   update public.profiles set is_pro = true
---    where id = (select id from auth.users where email = 'person@example.com');
+create policy "org members update items" on public.stocktake_items
+  for update using (org_id = public.my_org_id())
+  with check (org_id = public.my_org_id());
+
+create policy "org members delete items" on public.stocktake_items
+  for delete using (org_id = public.my_org_id());
+
+-- ---- Upgrading an org's plan ----
+-- Until the new Stripe wiring (Phase D) is live, flip the tier manually:
+--   update public.organisations set plan_tier = 'single'
+--    where id = (select org_id from public.memberships m
+--                  join auth.users u on u.id = m.user_id
+--                 where u.email = 'person@example.com');
