@@ -429,10 +429,23 @@
   <div class="dialog">
     <div class="title" id="take-actions-title">Stocktake</div>
     <div class="action-sheet">
-      <button id="take-export" class="success">⬇ Export CSV</button>
+      <button id="take-export" class="success">⬇ Export ▾</button>
       <button id="take-share">Share</button>
       <button id="take-clear" class="danger">Clear items</button>
       <button id="take-actions-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Export format picker — opened from "Export ▾" above ===== -->
+<div id="export-format-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Export format</div>
+    <div class="action-sheet">
+      <button id="export-full">Full CSV (Barscan)</button>
+      <button id="export-myob">MYOB</button>
+      <button id="export-lightspeed">Lightspeed</button>
+      <button id="export-format-cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -1291,12 +1304,39 @@
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
 
-  function fileName(take) {
+  // Rigid two-column presets some hospitality POS/inventory systems expect
+  // on import, instead of Barscan's own 5-column export. Same (take,
+  // takeItems) signature as buildCsv() so all three can share one export
+  // path below; `take` is unused by these two but kept for that symmetry.
+  function buildMyobCsv(take, takeItems) {
+    // No header row. MYOB Exo Business treats the imported quantity as an
+    // ADDITIVE stock adjustment on their end, not an absolute replace — so
+    // this just exports the raw counted qty per item, no special handling.
+    var rows = takeItems.map(function (it) { return [it.barcode, it.qty]; });
+    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
+  }
+  function buildLightspeedCsv(take, takeItems) {
+    var rows = [['ID', 'Count']];
+    takeItems.forEach(function (it) { rows.push([it.barcode, it.qty]); });
+    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
+  }
+
+  function fileName(take, suffix) {
     var d = new Date();
     var pad = function (n) { return String(n).padStart(2, '0'); };
     var slug = take.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'stocktake';
     return 'barscan-' + slug + '-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
-           '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.csv';
+           '-' + pad(d.getHours()) + pad(d.getMinutes()) + (suffix ? '-' + suffix : '') + '.csv';
+  }
+
+  function downloadCsv(csvText, filename) {
+    var blob = new Blob(['﻿' + csvText], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
 
   function fetchTakeItems(takeId, cb) {
@@ -1314,20 +1354,25 @@
   }
   $('take-actions-cancel').onclick = function () { $('take-actions-overlay').classList.remove('open'); };
 
+  // "Export ▾" opens the format picker instead of exporting directly —
+  // Full CSV (Barscan)/MYOB/Lightspeed all funnel through exportWithFormat().
   $('take-export').onclick = function () {
+    $('take-actions-overlay').classList.remove('open');
+    $('export-format-overlay').classList.add('open');
+  };
+  $('export-format-cancel').onclick = function () { $('export-format-overlay').classList.remove('open'); };
+
+  function exportWithFormat(builder, suffix) {
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
-      var blob = new Blob(['﻿' + buildCsv(actionsTake, takeItems)], { type: 'text/csv;charset=utf-8' });
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = fileName(actionsTake);
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+      downloadCsv(builder(actionsTake, takeItems), fileName(actionsTake, suffix));
       toast('CSV downloaded');
-      $('take-actions-overlay').classList.remove('open');
+      $('export-format-overlay').classList.remove('open');
     });
-  };
+  }
+  $('export-full').onclick = function () { exportWithFormat(buildCsv, ''); };
+  $('export-myob').onclick = function () { exportWithFormat(buildMyobCsv, 'myob'); };
+  $('export-lightspeed').onclick = function () { exportWithFormat(buildLightspeedCsv, 'lightspeed'); };
 
   $('take-share').onclick = function () {
     fetchTakeItems(actionsTake.id, function (takeItems) {
