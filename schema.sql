@@ -25,22 +25,10 @@ create table public.profiles (
 );
 
 alter table public.profiles enable row level security;
-
--- Own profile, plus any teammate's — needed so "started by X" can show a
--- name on a shared stocktake, and the org roster can show who's who. Not
--- sensitive: display names are the kind of thing already visible to
--- teammates in any team tool. my_org_id()/my_role() can't be reused directly
--- here (they're about the CALLER's own org; this check is "does the ROW
--- being read belong to someone in my org").
-create policy "read own or org profile" on public.profiles
-  for select using (
-    auth.uid() = id
-    or exists (
-      select 1 from public.memberships mine
-        join public.memberships theirs on theirs.org_id = mine.org_id
-       where mine.user_id = auth.uid() and theirs.user_id = profiles.id
-    )
-  );
+-- The actual "read own or org profile" policy is created further down,
+-- after public.memberships exists — it references that table in a
+-- subquery, and CREATE POLICY validates its SQL immediately, so it can't
+-- be declared before the table it depends on exists yet.
 -- No insert/update policy for clients: the row is created by the
 -- handle_new_user() trigger below and there's currently no edit-name UI.
 
@@ -111,6 +99,23 @@ create table public.memberships (
   created_at timestamptz not null default now(),
   primary key (org_id, user_id)
 );
+
+-- Own profile, plus any teammate's — needed so "started by X" can show a
+-- name on a shared stocktake, and the org roster can show who's who. Not
+-- sensitive: display names are the kind of thing already visible to
+-- teammates in any team tool. Declared here (not up with the rest of
+-- profiles' setup above) because it references this table, and CREATE
+-- POLICY validates its SQL immediately — it can't be declared before the
+-- table it depends on exists.
+create policy "read own or org profile" on public.profiles
+  for select using (
+    auth.uid() = id
+    or exists (
+      select 1 from public.memberships mine
+        join public.memberships theirs on theirs.org_id = mine.org_id
+       where mine.user_id = auth.uid() and theirs.user_id = profiles.id
+    )
+  );
 
 -- ---- Helper functions used throughout RLS below ----
 -- security definer (like the existing enforce_country_cooldown/
