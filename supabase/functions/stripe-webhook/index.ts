@@ -17,14 +17,19 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
-// Maps a Stripe Price id to which plan_tier it represents. Update this (and
-// redeploy) every time a new single/multi-venue Payment Link is created in
-// the Stripe Dashboard — see STRIPE-SETUP.md's Phase D section. PLACEHOLDER:
-// fill in the real price ids once the products/prices exist.
+// Maps a Stripe Price id to which plan_tier it represents. Doesn't need to
+// know about billing period at all — monthly and annual are just two
+// different prices mapping to the same tier, Stripe handles the amount/
+// interval on its own. Update this (and redeploy) every time a new
+// single/multi-venue Payment Link is created in the Stripe Dashboard — see
+// STRIPE-SETUP.md's Phase D section. PLACEHOLDER: fill in the real price
+// ids once the products/prices exist.
 const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
-  // "price_XXXXXXXXXXXXXX_AUD_SINGLE": "single",
-  // "price_XXXXXXXXXXXXXX_AUD_MULTI":  "multi",
-  // ...one entry per currency per tier (8 total)
+  // "price_XXXXXXXXXXXXXX_AUD_SINGLE_MONTHLY": "single",
+  // "price_XXXXXXXXXXXXXX_AUD_SINGLE_ANNUAL":  "single",
+  // "price_XXXXXXXXXXXXXX_AUD_MULTI_MONTHLY":  "multi",
+  // "price_XXXXXXXXXXXXXX_AUD_MULTI_ANNUAL":   "multi",
+  // ...one entry per currency per tier per period (16 total)
 };
 
 const encoder = new TextEncoder();

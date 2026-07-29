@@ -7,65 +7,78 @@ is needed.
 Billing is **organisation-scoped**, not per-user (see the org-model planning doc):
 an organisation is on the **Free**, **Single-venue** ($29/mo flat), or **Multi-venue**
 ($59/mo base + $29/mo per venue beyond the first, via Stripe's native graduated
-pricing) plan. Everything below happens in the Stripe **sandbox/test** dashboard
-first. When you go live, repeat the same steps in live mode and swap the
-URLs/secrets.
+pricing) plan, each also offered **monthly or annually** (a "Bill annually" toggle
+in the app swaps between them — annual is priced at 10x the monthly amount, i.e.
+2 months free, matching the app's copy). Everything below happens in the Stripe
+**sandbox/test** dashboard first. When you go live, repeat the same steps in live
+mode and swap the URLs/secrets.
 
 ## 1. Create the two products and their prices (Stripe Dashboard)
 
 Barscan picks a Stripe Payment Link based on the organisation's country (set when
 the org is created, editable by the owner in 👤 Account → Change region) — see
 `COUNTRY_CURRENCY` in `app.html`. Today that maps to four currencies: **AUD**
-(default/home currency), **USD**, **GBP**, **EUR**. Monthly billing only — no
-annual option for the org tiers (keeps the manual link count in check; add it
-later if you want).
+(default/home currency), **USD**, **GBP**, **EUR**. Two tiers × four currencies ×
+two billing periods = **16 prices** total — tedious, but each one is quick.
 
 1. Stripe Dashboard → **Product catalog** → **+ Add product** → create
-   **Barscan Single-venue**. Add **one recurring monthly price per currency**
-   (flat, not tiered) — reuse whatever amounts make sense per market, they don't
-   need to be an exact conversion: **AUD** $29, **USD** $27, **GBP** £25,
-   **EUR** €27 (or your own numbers).
-2. **+ Add product** again → create **Barscan Multi-venue**. For each currency,
-   add a **recurring monthly price using Stripe's tiered/graduated pricing**
-   (when adding the price, choose pricing model → "Tiered", tiers mode →
+   **Barscan Single-venue**. Add **one flat recurring price per currency per
+   period** (8 prices: 4 currencies × monthly/annual) — reuse whatever amounts
+   make sense per market, they don't need to be an exact conversion:
+   | Currency | Monthly | Annual |
+   |---|---|---|
+   | AUD | $29 | $290 |
+   | USD | $27 | $270 |
+   | GBP | £25 | £250 |
+   | EUR | €27 | €270 |
+2. **+ Add product** again → create **Barscan Multi-venue**. For each currency
+   **and** each period (8 more prices), add a recurring price using Stripe's
+   tiered/graduated pricing (pricing model → "Tiered", tiers mode →
    "Graduated"), with exactly two tiers:
-   - **Tier 1**: up to **1** unit, **flat fee** $59 (AUD; pick your own amounts
-     for the others, same latitude as above)
-   - **Tier 2**: up to **∞**, **$29 per unit**
+   - **Tier 1**: up to **1** unit, **flat fee** — $59/mo or $590/yr (AUD; scale
+     the other currencies the same way you did for Single-venue above)
+   - **Tier 2**: up to **∞**, **per-unit** — $29/mo or $290/yr
 
-   This produces a total of $59 + $29 × (quantity − 1) — quantity tracks the
-   org's location count, kept in sync automatically by the `create-location`/
-   `remove-location` Edge Functions (§9).
+   This produces a total of `base + perVenue × (quantity − 1)` — quantity
+   tracks the org's location count, kept in sync automatically by the
+   `create-location`/`remove-location` Edge Functions (§9).
 3. (The old single "Barscan Pro" product from before the org-tier rework, if it
    still exists, isn't used by any current code — safe to leave alone or archive.)
 
-## 2. Create a Payment Link per price (8 total)
+## 2. Create a Payment Link per price (16 total)
 
-For **each** price (2 products × 4 currencies): **Payment links** → **+ New** →
-pick the price, then under **After payment** choose **Don't show confirmation
-page** and set the redirect URL to:
+For **each** price: **Payment links** → **+ New** → pick the price, then under
+**After payment** choose **Don't show confirmation page** and set the redirect
+URL to:
 
 ```
 https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html?upgraded=1
 ```
 
-Copy each resulting link (`https://buy.stripe.com/test_...`).
+Copy each resulting link (`https://buy.stripe.com/test_...`). Keep track of which
+is which (currency/tier/period) — you'll need that mapping for both steps below.
 
 ## 3. Put the links into the app
 
-In `config.js`'s `upgradeUrls`, keyed by currency then by tier (leave a tier's
-`link` as `''` until you've created that price/link — the app falls back to AUD,
-the already-configured default):
+In `config.js`'s `upgradeUrls`, keyed by currency → tier → period (leave a
+period's `link` as `''` until you've created that price/link — the app falls
+back to AUD, the already-configured default):
 
 ```js
 upgradeUrls: {
   AUD: {
-    single: { link: 'PASTE HERE', symbol: 'A$', price: '29' },
-    multi:  { link: 'PASTE HERE', symbol: 'A$', basePrice: '59', perVenuePrice: '29' }
+    single: {
+      symbol: 'A$',
+      monthly: { link: 'PASTE HERE', price: '29' },
+      annual:  { link: 'PASTE HERE', price: '290' }
+    },
+    multi: {
+      symbol: 'A$',
+      monthly: { link: 'PASTE HERE', basePrice: '59', perVenuePrice: '29' },
+      annual:  { link: 'PASTE HERE', basePrice: '590', perVenuePrice: '290' }
+    }
   },
-  USD: { single: { link: 'PASTE HERE', symbol: '$', price: '27' }, multi: { link: 'PASTE HERE', symbol: '$', basePrice: '54', perVenuePrice: '27' } },
-  GBP: { single: { link: 'PASTE HERE', symbol: '£', price: '25' }, multi: { link: 'PASTE HERE', symbol: '£', basePrice: '50', perVenuePrice: '25' } },
-  EUR: { single: { link: 'PASTE HERE', symbol: '€', price: '27' }, multi: { link: 'PASTE HERE', symbol: '€', basePrice: '54', perVenuePrice: '27' } }
+  USD: { /* same shape */ }, GBP: { /* same shape */ }, EUR: { /* same shape */ }
 }
 ```
 
@@ -76,20 +89,30 @@ knows which org to upgrade.
 ## 4. Fill in the webhook's price → tier map
 
 `supabase/functions/stripe-webhook/index.ts` has a `PRICE_TIER_MAP` near the top,
-currently empty (placeholder). For each of the 8 prices created in §1, find its
+currently empty (placeholder). For each of the 16 prices created in §1, find its
 Price ID (Stripe Dashboard → Product catalog → the product → the price → copy
-the ID, looks like `price_1AbCdE...`) and add an entry:
+the ID, looks like `price_1AbCdE...`) and add an entry — the map only needs to
+know the **tier**, not the billing period (monthly/annual are just two prices
+that both mean the same tier; Stripe handles the amount/interval on its own):
 
 ```ts
 const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
-  "price_...AUD_SINGLE...": "single",
-  "price_...AUD_MULTI...":  "multi",
-  "price_...USD_SINGLE...": "single",
-  "price_...USD_MULTI...":  "multi",
-  "price_...GBP_SINGLE...": "single",
-  "price_...GBP_MULTI...":  "multi",
-  "price_...EUR_SINGLE...": "single",
-  "price_...EUR_MULTI...":  "multi",
+  "price_...AUD_SINGLE_MONTHLY...": "single",
+  "price_...AUD_SINGLE_ANNUAL...":  "single",
+  "price_...AUD_MULTI_MONTHLY...":  "multi",
+  "price_...AUD_MULTI_ANNUAL...":   "multi",
+  "price_...USD_SINGLE_MONTHLY...": "single",
+  "price_...USD_SINGLE_ANNUAL...":  "single",
+  "price_...USD_MULTI_MONTHLY...":  "multi",
+  "price_...USD_MULTI_ANNUAL...":   "multi",
+  "price_...GBP_SINGLE_MONTHLY...": "single",
+  "price_...GBP_SINGLE_ANNUAL...":  "single",
+  "price_...GBP_MULTI_MONTHLY...":  "multi",
+  "price_...GBP_MULTI_ANNUAL...":   "multi",
+  "price_...EUR_SINGLE_MONTHLY...": "single",
+  "price_...EUR_SINGLE_ANNUAL...":  "single",
+  "price_...EUR_MULTI_MONTHLY...":  "multi",
+  "price_...EUR_MULTI_ANNUAL...":   "multi",
 };
 ```
 

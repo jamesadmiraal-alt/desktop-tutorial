@@ -163,8 +163,8 @@
   .auth-tabs button.on { background: var(--accent); color: var(--on-accent); }
   .auth-card label, .acct-card label { display: block; font-size: 0.8rem; color: var(--text-dim); margin: 10px 0 4px; }
   #login-extras { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
-  .auth-card label.checkbox-row {
-    display: flex; align-items: center; gap: 6px; margin: 0;
+  .auth-card label.checkbox-row, .acct-card label.checkbox-row, .dialog label.checkbox-row {
+    display: flex; align-items: center; gap: 6px; margin: 0 0 10px;
     font-size: 0.85rem; font-weight: 400; text-transform: none; color: var(--text-dim);
   }
   #auth-submit { width: 100%; margin-top: 18px; }
@@ -392,6 +392,7 @@
     <div id="acct-plan-free">
       <span class="plan-badge free">Free plan</span>
       <div class="plan-desc">1 location, up to 3 products per stocktake. Upgrade for more.</div>
+      <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="single">
         <span><span class="opt-name">Single-venue</span>
           <div class="opt-sub">1 location, unlimited products</div></span>
@@ -408,7 +409,8 @@
       <span class="plan-badge pro">Single-venue plan</span>
       <div class="plan-desc">1 location, unlimited products per stocktake.</div>
       <button id="manage-sub-btn-single" class="manage-sub-btn">Manage subscription</button>
-      <button class="upgrade-opt" data-tier="multi" style="margin-top:10px">
+      <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
+      <button class="upgrade-opt" data-tier="multi">
         <span><span class="opt-name">Upgrade to Multi-venue</span>
           <div class="opt-sub">Unlimited locations</div></span>
         <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
@@ -543,6 +545,7 @@
     <div class="title">🍾 Free plan limit reached</div>
     <p class="upgrade-text">The free version counts up to <b>3 products per stocktake</b>.
       Upgrade for unlimited products.</p>
+    <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
     <button class="upgrade-opt" data-tier="single">
       <span><span class="opt-name">Single-venue</span>
         <div class="opt-sub">1 location, unlimited products</div></span>
@@ -978,33 +981,52 @@
   // country), falling back to DEFAULT_CURRENCY if that currency isn't
   // configured yet.
   // tier is 'single' or 'multi' — see config.js's upgradeUrls[currency][tier] shape.
+  // Shared across every "Bill annually" checkbox (Free/Single account cards,
+  // free-limit dialog) — flipping any one of them updates them all and
+  // re-renders every visible price/link to match.
+  var billAnnually = false;
+  function setBillAnnually(val) {
+    billAnnually = val;
+    document.querySelectorAll('.bill-annually-toggle').forEach(function (cb) { cb.checked = val; });
+    renderUpgradePrices();
+  }
+  document.querySelectorAll('.bill-annually-toggle').forEach(function (cb) {
+    cb.onchange = function () { setBillAnnually(cb.checked); };
+  });
+
   function upgradeLink(tier) {
     var currency = (currentOrg && COUNTRY_CURRENCY[currentOrg.country]) || DEFAULT_CURRENCY;
     var links = (cfg.upgradeUrls || {});
     var byCurrency = links[currency] || {};
     var byDefault = links[DEFAULT_CURRENCY] || {};
-    var entry = byCurrency[tier] || byDefault[tier] || {};
+    var period = billAnnually ? 'annual' : 'monthly';
+    var tierInfo = byCurrency[tier] || byDefault[tier] || {};
+    var entry = tierInfo[period] || {};
     return entry.link || 'index.html#pricing';
   }
   // Updates the displayed "$29/mo" style price on every upgrade button (both
-  // in Account and the free-limit dialog) to match the operator's currency —
-  // the Payment Link itself already did (upgradeLink()); this keeps the
-  // shown price consistent with what Stripe will actually charge.
+  // in Account and the free-limit dialog) to match the operator's currency
+  // and the "Bill annually" toggle state — the Payment Link itself already
+  // did (upgradeLink()); this keeps the shown price consistent with what
+  // Stripe will actually charge.
   function renderUpgradePrices() {
     var currency = (currentOrg && COUNTRY_CURRENCY[currentOrg.country]) || DEFAULT_CURRENCY;
     var links = (cfg.upgradeUrls || {});
     var info = links[currency] || links[DEFAULT_CURRENCY] || {};
+    var period = billAnnually ? 'annual' : 'monthly';
+    var unit = billAnnually ? '/yr' : '/mo';
     document.querySelectorAll('.upgrade-opt').forEach(function (b) {
       var priceEl = b.querySelector('.opt-price');
       if (!priceEl) return;
       var tier = b.dataset.tier;
-      var entry = info[tier] || {};
-      var symbol = entry.symbol || '$';
+      var tierInfo = info[tier] || {};
+      var symbol = tierInfo.symbol || '$';
+      var entry = tierInfo[period] || {};
       if (tier === 'multi') {
-        priceEl.innerHTML = symbol + (entry.basePrice || '59') + '<small>/mo</small><br>' +
-          '<small>+' + symbol + (entry.perVenuePrice || '29') + '/mo per extra venue</small>';
+        priceEl.innerHTML = symbol + (entry.basePrice || (billAnnually ? '590' : '59')) + '<small>' + unit + '</small><br>' +
+          '<small>+' + symbol + (entry.perVenuePrice || (billAnnually ? '290' : '29')) + unit + ' per extra venue</small>';
       } else {
-        priceEl.innerHTML = symbol + (entry.price || '29') + '<small>/mo</small>';
+        priceEl.innerHTML = symbol + (entry.price || (billAnnually ? '290' : '29')) + '<small>' + unit + '</small>';
       }
     });
   }

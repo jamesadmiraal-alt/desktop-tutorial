@@ -6,30 +6,65 @@ window.BARSCAN_CONFIG = {
   supabaseUrl: 'https://vfixdchbkmqryfhirphx.supabase.co',
   supabaseAnonKey: 'sb_publishable_juhiIJWl7qvSj4hL_7JQcA_wEoNVgi6',
   // Where the in-app upgrade buttons send people, keyed by currency (chosen
-  // from the organisation's country — see COUNTRY_CURRENCY in app.html) and
-  // then by tier ('single' flat, 'multi' base+per-venue). goUpgrade() falls
-  // back to AUD (the home/default currency — see DEFAULT_CURRENCY in
-  // app.html) for any currency left with empty links below.
+  // from the organisation's country — see COUNTRY_CURRENCY in app.html),
+  // then by tier ('single' flat, 'multi' base+per-venue), then by billing
+  // period ('monthly'/'annual' — see the "Bill annually" toggle in
+  // app.html). goUpgrade() falls back to AUD (the home/default currency —
+  // see DEFAULT_CURRENCY in app.html) for any currency left with empty
+  // links below.
   // symbol/price(s) drive the displayed price (renderUpgradePrices() in
   // app.html) — keep them in sync with the actual Stripe price amounts.
   // PLACEHOLDER — see STRIPE-SETUP.md's Phase D section for how to create
-  // the real products/prices/Payment Links and paste the results in here.
+  // the real products/prices/Payment Links (16 total: 2 tiers x 4
+  // currencies x 2 periods) and paste the results in here.
   upgradeUrls: {
     AUD: {
-      single: { link: '', symbol: 'A$', price: '29' },
-      multi:  { link: '', symbol: 'A$', basePrice: '59', perVenuePrice: '29' }
+      single: {
+        symbol: 'A$',
+        monthly: { link: '', price: '29' },
+        annual:  { link: '', price: '290' }
+      },
+      multi: {
+        symbol: 'A$',
+        monthly: { link: '', basePrice: '59', perVenuePrice: '29' },
+        annual:  { link: '', basePrice: '590', perVenuePrice: '290' }
+      }
     },
     USD: {
-      single: { link: '', symbol: '$', price: '27' },
-      multi:  { link: '', symbol: '$', basePrice: '54', perVenuePrice: '27' }
+      single: {
+        symbol: '$',
+        monthly: { link: '', price: '27' },
+        annual:  { link: '', price: '270' }
+      },
+      multi: {
+        symbol: '$',
+        monthly: { link: '', basePrice: '54', perVenuePrice: '27' },
+        annual:  { link: '', basePrice: '540', perVenuePrice: '270' }
+      }
     },
     GBP: {
-      single: { link: '', symbol: '£', price: '25' },
-      multi:  { link: '', symbol: '£', basePrice: '50', perVenuePrice: '25' }
+      single: {
+        symbol: '£',
+        monthly: { link: '', price: '25' },
+        annual:  { link: '', price: '250' }
+      },
+      multi: {
+        symbol: '£',
+        monthly: { link: '', basePrice: '50', perVenuePrice: '25' },
+        annual:  { link: '', basePrice: '500', perVenuePrice: '250' }
+      }
     },
     EUR: {
-      single: { link: '', symbol: '€', price: '27' },
-      multi:  { link: '', symbol: '€', basePrice: '54', perVenuePrice: '27' }
+      single: {
+        symbol: '€',
+        monthly: { link: '', price: '27' },
+        annual:  { link: '', price: '270' }
+      },
+      multi: {
+        symbol: '€',
+        monthly: { link: '', basePrice: '54', perVenuePrice: '27' },
+        annual:  { link: '', basePrice: '540', perVenuePrice: '270' }
+      }
     }
   }
 };
