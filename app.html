@@ -321,7 +321,10 @@
     <!-- Signup-only, and also shown on its own (auth-credentials hidden)
          when a signed-in user has no organisation yet — e.g. a retry after
          create_organisation()/join_organisation() failed right after
-         signup. See showOrgSetupPrompt(). -->
+         signup, or (org-setup-note below) a login where email confirmation
+         meant the org never got created at signup time in the first place.
+         See showOrgSetupPrompt(). -->
+    <div id="org-setup-note" class="auth-note" style="display:none">You're signed in — just need to finish setting up your organisation below.</div>
     <div id="org-mode-row" style="display:none">
       <div class="auth-tabs">
         <button id="org-mode-create" class="on" type="button">Create organisation</button>
@@ -778,15 +781,21 @@
     return null;
   }
 
-  // Shows just the org-create/join fields, hiding email/password — used
-  // right after a fresh signUp() (fields are already filled in from the
-  // signup form, this just gets the UI into the right shape for a retry if
-  // the RPC below fails) and defensively if a login ever finds no
-  // membership at all.
-  function showOrgSetupPrompt() {
+  // Shows just the org-create/join fields, hiding email/password — used in
+  // two situations: (a) right after a fresh signUp() with an immediate
+  // session (fields are already filled in from the signup form, this just
+  // gets the UI into the right shape for a retry if the RPC below fails),
+  // and (b) after a real login that finds no membership at all — most
+  // commonly because email confirmation was required, so signUp() never
+  // returned a session and this step never ran back at signup time; the
+  // fields are empty here since it's a fresh page load, not a resumed form,
+  // so `fromLogin` shows an explanatory note instead of silently swapping
+  // the login form for an unexplained one.
+  function showOrgSetupPrompt(fromLogin) {
     needsOrgSetup = true;
     $('auth-credentials').style.display = 'none';
     $('account-btn').style.display = 'none';
+    $('org-setup-note').style.display = fromLogin ? '' : 'none';
     $('org-mode-row').style.display = '';
     setOrgRowsVisible(true);
     $('auth-submit').textContent = 'Continue';
@@ -935,10 +944,11 @@
     $('auth-pass').value = ''; $('auth-pass2').value = '';
     isPaidTier = false;
     refreshOrgStatus(function () {
-      // Defensive: a normal login always has a membership already (created
-      // during signup) — this only fires if that somehow never completed,
-      // or membership was later removed.
-      if (!currentOrg) { showOrgSetupPrompt(); return; }
+      // Not just defensive: this is the normal path whenever email
+      // confirmation was required at signup, since signUp() then returns no
+      // session and completeOrgSetup() never got to run — the org gets
+      // created here instead, on first login, rather than back at signup.
+      if (!currentOrg) { showOrgSetupPrompt(true); return; }
       loadLocations();
       loadTakes();
     });
@@ -1088,6 +1098,8 @@
   function resetAuthUiState() {
     needsOrgSetup = false;
     $('auth-credentials').style.display = '';
+    $('org-setup-note').style.display = 'none';
+    $('org-mode-row').style.display = 'none';
     setOrgSignupMode('create');
   }
   $('logout-btn').onclick = function () {
