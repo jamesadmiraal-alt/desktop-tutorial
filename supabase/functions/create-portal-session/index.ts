@@ -3,8 +3,11 @@
 // Called by the app's "Manage subscription" button. Identifies the caller
 // from their own Supabase session (unlike stripe-webhook, this function
 // keeps "Enforce JWT verification" ON — see STRIPE-SETUP.md), looks up their
-// Stripe customer, and returns a Stripe-hosted Customer Portal session URL
-// where they can view invoices, update payment method, or cancel.
+// ORGANISATION's Stripe customer (billing is org-scoped, not per-user — see
+// the org-model planning doc), and returns a Stripe-hosted Customer Portal
+// session URL where they can view invoices, update payment method, or
+// cancel. Owner-only: a staff/manager member shouldn't be able to open the
+// org's billing portal.
 //
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   STRIPE_SECRET_KEY  - the "sk_..." secret key (test mode to start)
@@ -67,12 +70,27 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const profileRes = await db(`profiles?id=eq.${encodeURIComponent(user.id)}&select=stripe_customer_id`);
-    const profiles = await profileRes.json();
-    const customerId = profiles?.[0]?.stripe_customer_id;
+    const memberRes = await db(
+      `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role,organisations(stripe_customer_id)`,
+    );
+    const members = await memberRes.json();
+    const membership = members?.[0];
+    if (!membership) {
+      return new Response(
+        JSON.stringify({ error: "You don't belong to an organisation yet." }),
+        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    if (membership.role !== "owner") {
+      return new Response(
+        JSON.stringify({ error: "Only the organisation owner can manage billing." }),
+        { status: 403, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    const customerId = membership.organisations?.stripe_customer_id;
     if (!customerId) {
       return new Response(
-        JSON.stringify({ error: "No billing account found for this user yet." }),
+        JSON.stringify({ error: "No billing account found for this organisation yet." }),
         { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
       );
     }

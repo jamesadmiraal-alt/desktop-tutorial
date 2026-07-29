@@ -113,7 +113,7 @@
     padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: middle;
   }
   #acct-note { font-size: 0.75rem; color: var(--text-faint); line-height: 1.5; margin-top: 10px; }
-  #logout-btn, #manage-sub-btn { width: 100%; margin-top: 4px; }
+  #logout-btn, .manage-sub-btn { width: 100%; margin-top: 4px; }
 
   .acct-country-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .acct-country-row span { font-size: 0.95rem; }
@@ -391,23 +391,34 @@
     <h3>Subscription</h3>
     <div id="acct-plan-free">
       <span class="plan-badge free">Free plan</span>
-      <div class="plan-desc">Count up to 3 products per stocktake. Upgrade to Pro for unlimited products.</div>
-      <button class="upgrade-opt" data-plan="monthly">
-        <span><span class="opt-name">Pro Monthly</span>
-          <div class="opt-sub">Billed monthly, cancel anytime</div></span>
+      <div class="plan-desc">1 location, up to 3 products per stocktake. Upgrade for more.</div>
+      <button class="upgrade-opt" data-tier="single">
+        <span><span class="opt-name">Single-venue</span>
+          <div class="opt-sub">1 location, unlimited products</div></span>
         <span class="opt-price">$29<small>/mo</small></span>
       </button>
-      <button class="upgrade-opt best" data-plan="annual">
-        <span><span class="opt-name">Pro Annual<span class="save-tag">2 MONTHS FREE</span></span>
-          <div class="opt-sub">12 months for the price of 10</div></span>
-        <span class="opt-price">$290<small>/yr</small></span>
+      <button class="upgrade-opt best" data-tier="multi">
+        <span><span class="opt-name">Multi-venue</span>
+          <div class="opt-sub">Unlimited locations, unlimited products</div></span>
+        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
       </button>
-      <div id="acct-note">After payment your account is upgraded to Pro. Questions? Reply to your welcome email.</div>
+      <div id="acct-note">After payment your organisation is upgraded automatically. Questions? Reply to your welcome email.</div>
     </div>
-    <div id="acct-plan-pro" style="display:none">
-      <span class="plan-badge pro">Pro plan</span>
-      <div class="plan-desc">Unlimited products per stocktake. Thanks for supporting Barscan!</div>
-      <button id="manage-sub-btn">Manage subscription</button>
+    <div id="acct-plan-single" style="display:none">
+      <span class="plan-badge pro">Single-venue plan</span>
+      <div class="plan-desc">1 location, unlimited products per stocktake.</div>
+      <button id="manage-sub-btn-single" class="manage-sub-btn">Manage subscription</button>
+      <button class="upgrade-opt" data-tier="multi" style="margin-top:10px">
+        <span><span class="opt-name">Upgrade to Multi-venue</span>
+          <div class="opt-sub">Unlimited locations</div></span>
+        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
+      </button>
+      <div id="acct-note">Thanks for supporting Barscan!</div>
+    </div>
+    <div id="acct-plan-multi" style="display:none">
+      <span class="plan-badge pro">Multi-venue plan</span>
+      <div class="plan-desc">Unlimited locations and products. Add or remove venues any time from the admin console — billing adjusts automatically.</div>
+      <button id="manage-sub-btn-multi" class="manage-sub-btn">Manage subscription</button>
       <div id="acct-note">Update your payment method, view invoices, or cancel — handled securely by Stripe.
         Trouble with the button above? Reply to your welcome email.</div>
     </div>
@@ -531,16 +542,16 @@
   <div class="dialog">
     <div class="title">🍾 Free plan limit reached</div>
     <p class="upgrade-text">The free version counts up to <b>3 products per stocktake</b>.
-      Upgrade to <b>Barscan&nbsp;Pro</b> for unlimited products.</p>
-    <button class="upgrade-opt" data-plan="monthly">
-      <span><span class="opt-name">Pro Monthly</span>
-        <div class="opt-sub">Billed monthly, cancel anytime</div></span>
+      Upgrade for unlimited products.</p>
+    <button class="upgrade-opt" data-tier="single">
+      <span><span class="opt-name">Single-venue</span>
+        <div class="opt-sub">1 location, unlimited products</div></span>
       <span class="opt-price">$29<small>/mo</small></span>
     </button>
-    <button class="upgrade-opt best" data-plan="annual">
-      <span><span class="opt-name">Pro Annual<span class="save-tag">2 MONTHS FREE</span></span>
-        <div class="opt-sub">12 months for the price of 10</div></span>
-      <span class="opt-price">$290<small>/yr</small></span>
+    <button class="upgrade-opt best" data-tier="multi">
+      <span><span class="opt-name">Multi-venue</span>
+        <div class="opt-sub">Unlimited locations, unlimited products</div></span>
+      <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
     </button>
     <div class="dialog-actions" style="margin-top:12px">
       <button id="upgrade-later" class="flex">Not now</button>
@@ -966,14 +977,14 @@
   // Picks the Payment Link matching the operator's currency (from their
   // country), falling back to DEFAULT_CURRENCY if that currency isn't
   // configured yet.
-  function upgradeLink(plan) {
+  // tier is 'single' or 'multi' — see config.js's upgradeUrls[currency][tier] shape.
+  function upgradeLink(tier) {
     var currency = (currentOrg && COUNTRY_CURRENCY[currentOrg.country]) || DEFAULT_CURRENCY;
     var links = (cfg.upgradeUrls || {});
     var byCurrency = links[currency] || {};
     var byDefault = links[DEFAULT_CURRENCY] || {};
-    return (plan === 'annual' ? byCurrency.annual : byCurrency.monthly) ||
-           (plan === 'annual' ? byDefault.annual : byDefault.monthly) ||
-           'index.html#pricing';
+    var entry = byCurrency[tier] || byDefault[tier] || {};
+    return entry.link || 'index.html#pricing';
   }
   // Updates the displayed "$29/mo" style price on every upgrade button (both
   // in Account and the free-limit dialog) to match the operator's currency —
@@ -983,13 +994,18 @@
     var currency = (currentOrg && COUNTRY_CURRENCY[currentOrg.country]) || DEFAULT_CURRENCY;
     var links = (cfg.upgradeUrls || {});
     var info = links[currency] || links[DEFAULT_CURRENCY] || {};
-    var symbol = info.symbol || '$';
     document.querySelectorAll('.upgrade-opt').forEach(function (b) {
       var priceEl = b.querySelector('.opt-price');
       if (!priceEl) return;
-      var isAnnual = b.dataset.plan === 'annual';
-      var amount = (isAnnual ? info.annualPrice : info.monthlyPrice) || (isAnnual ? '290' : '29');
-      priceEl.innerHTML = symbol + amount + '<small>' + (isAnnual ? '/yr' : '/mo') + '</small>';
+      var tier = b.dataset.tier;
+      var entry = info[tier] || {};
+      var symbol = entry.symbol || '$';
+      if (tier === 'multi') {
+        priceEl.innerHTML = symbol + (entry.basePrice || '59') + '<small>/mo</small><br>' +
+          '<small>+' + symbol + (entry.perVenuePrice || '29') + '/mo per extra venue</small>';
+      } else {
+        priceEl.innerHTML = symbol + (entry.price || '29') + '<small>/mo</small>';
+      }
     });
   }
   // window.open('_blank') isn't reliable inside a native WebView; open an
@@ -1024,9 +1040,10 @@
     openExternal(url);
   }
   function openBillingPortal() {
-    $('manage-sub-btn').disabled = true;
+    var btns = document.querySelectorAll('.manage-sub-btn');
+    btns.forEach(function (b) { b.disabled = true; });
     sb.functions.invoke('create-portal-session').then(function (res) {
-      $('manage-sub-btn').disabled = false;
+      btns.forEach(function (b) { b.disabled = false; });
       if (res.error || !res.data || !res.data.url) {
         toast('Could not open billing portal — reply to your welcome email instead', '#b91c1c');
         return;
@@ -1034,9 +1051,9 @@
       openExternal(res.data.url);
     });
   }
-  $('manage-sub-btn').onclick = openBillingPortal;
+  document.querySelectorAll('.manage-sub-btn').forEach(function (b) { b.onclick = openBillingPortal; });
   document.querySelectorAll('.upgrade-opt').forEach(function (b) {
-    b.onclick = function () { goUpgrade(b.dataset.plan); };
+    b.onclick = function () { goUpgrade(b.dataset.tier); };
   });
   function isLimitError(error) {
     return error && /row-level security|policy/i.test(error.message || '');
@@ -1075,8 +1092,10 @@
     });
   }
   function renderPlan() {
-    $('acct-plan-free').style.display = isPaidTier ? 'none' : '';
-    $('acct-plan-pro').style.display = isPaidTier ? '' : 'none';
+    var tier = currentOrg ? currentOrg.planTier : 'free';
+    $('acct-plan-free').style.display = tier === 'free' ? '' : 'none';
+    $('acct-plan-single').style.display = tier === 'single' ? '' : 'none';
+    $('acct-plan-multi').style.display = tier === 'multi' ? '' : 'none';
   }
   $('account-btn').onclick = function () { if (currentUser) openAccount(); };
   $('acct-back').onclick = function () { loadTakes(); };

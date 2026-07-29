@@ -87,6 +87,7 @@
   .loc-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .loc-row:last-child { border-bottom: none; }
   .loc-row input { flex: 1; }
+  .loc-row button { flex: none; padding: 8px 12px; background: transparent; color: var(--danger); }
   #locations-list:empty::after { content: 'No locations yet.'; color: var(--text-dim); font-size: 0.85rem; }
 
   .roster-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -266,6 +267,10 @@
   function renderLocations(locations) {
     var list = $('locations-list');
     list.innerHTML = '';
+    // Remove is only offered once there's more than one location — never
+    // true on free/single tier (capped at 1), so this is effectively
+    // multi-tier-only without needing an explicit tier check here.
+    var canRemove = locations.length > 1;
     locations.forEach(function (loc) {
       var row = document.createElement('div');
       row.className = 'loc-row';
@@ -282,6 +287,25 @@
         });
       });
       row.appendChild(input);
+      if (canRemove) {
+        var removeBtn = document.createElement('button');
+        removeBtn.textContent = '✕';
+        removeBtn.title = 'Remove location';
+        removeBtn.onclick = function () {
+          if (!confirm('Remove location "' + loc.name + '"? Stocktakes already at this location keep their history, but this location itself can only be removed once it has no stocktakes.')) return;
+          removeBtn.disabled = true;
+          sb.functions.invoke('remove-location', { body: { locationId: loc.id } }).then(function (res) {
+            removeBtn.disabled = false;
+            if (res.error || !res.data || res.data.error) {
+              fail(res.error, (res.data && res.data.error) || 'Could not remove location');
+              return;
+            }
+            loadLocations();
+            toast('Location removed');
+          });
+        };
+        row.appendChild(removeBtn);
+      }
       list.appendChild(row);
     });
     // Mirrors the RLS insert policy on locations (schema.sql): free/single
@@ -302,7 +326,18 @@
     var name = $('new-location-name').value.trim();
     if (!name) { toast('Enter a location name', '#b91c1c'); return; }
     $('add-location-btn').disabled = true;
-    sb.from('locations').insert({ name: name }).then(function (res) {
+    // The org's first location (free/single tier, or a fresh multi-tier org
+    // with none yet) is a plain insert — no billing consequence. Adding a
+    // 2nd+ location on multi-tier goes through the Edge Function instead,
+    // since that has to bump the Stripe subscription quantity first.
+    var useEdgeFunction = currentOrg.planTier === 'multi' && $('locations-list').children.length >= 1;
+    var request = useEdgeFunction
+      ? sb.functions.invoke('create-location', { body: { name: name } }).then(function (res) {
+          if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+          return res;
+        })
+      : sb.from('locations').insert({ name: name });
+    request.then(function (res) {
       $('add-location-btn').disabled = false;
       if (res.error) { fail(res.error, 'Could not add location'); return; }
       $('new-location-name').value = '';

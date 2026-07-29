@@ -2,10 +2,23 @@
 //
 // Called by the app's "Delete account" confirmation. Identifies the caller
 // from their own Supabase session (keeps "Enforce JWT verification" ON, same
-// as create-portal-session — see STRIPE-SETUP.md), immediately cancels any
-// active Stripe subscription so they're never billed again, then deletes the
-// Supabase user. profiles/stocktakes/stocktake_items all cascade-delete off
-// auth.users (see schema.sql) so no separate cleanup is needed here.
+// as create-portal-session — see STRIPE-SETUP.md).
+//
+// Billing (and org data — locations/stocktakes/stocktake_items) is org-
+// scoped, not per-user, so this is no longer a plain "cancel my subscription,
+// delete me, let the FKs cascade" flow (profiles/stocktakes/stocktake_items
+// don't cascade from auth.users any more — created_by/scanned_by are
+// `on delete set null`, deliberately, so a departing user doesn't take the
+// org's data with them — see schema.sql). Three cases, based on the caller's
+// membership:
+//   1. Sole member of their org (any role) — this IS "delete my whole org":
+//      cancel its Stripe subscription if any, then delete the organisations
+//      row (cascades locations/stocktakes/stocktake_items), then the user.
+//   2. Sole owner with other members still present — blocked. They need to
+//      promote a co-owner (or remove the other members) first.
+//   3. Anything else (departing staff/manager, or an owner with a
+//      co-owner) — just delete the user; their membership cascades away
+//      with them, the org and its Stripe subscription are untouched.
 //
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   STRIPE_SECRET_KEY  - the "sk_..." secret key (test mode to start)
@@ -84,10 +97,48 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const profileRes = await db(`profiles?id=eq.${encodeURIComponent(user.id)}&select=stripe_customer_id`);
-    const profiles = await profileRes.json();
-    const customerId = profiles?.[0]?.stripe_customer_id;
-    if (customerId) await cancelActiveSubscriptions(customerId);
+    const memberRes = await db(`memberships?user_id=eq.${encodeURIComponent(user.id)}&select=org_id,role`);
+    const members = await memberRes.json();
+    const membership = members?.[0];
+
+    if (membership) {
+      const orgMembersRes = await db(
+        `memberships?org_id=eq.${encodeURIComponent(membership.org_id)}&select=user_id,role`,
+      );
+      const orgMembers: { user_id: string; role: string }[] = await orgMembersRes.json();
+
+      if (orgMembers.length === 1) {
+        // Sole member — deleting the account means dissolving the org too.
+        const orgRes = await db(
+          `organisations?id=eq.${encodeURIComponent(membership.org_id)}&select=stripe_customer_id`,
+        );
+        const orgs = await orgRes.json();
+        const customerId = orgs?.[0]?.stripe_customer_id;
+        if (customerId) await cancelActiveSubscriptions(customerId);
+
+        const orgDeleteRes = await db(`organisations?id=eq.${encodeURIComponent(membership.org_id)}`, {
+          method: "DELETE",
+        });
+        if (!orgDeleteRes.ok) {
+          throw new Error(`organisation delete failed: ${orgDeleteRes.status} ${await orgDeleteRes.text()}`);
+        }
+      } else if (membership.role === "owner") {
+        const hasOtherOwner = orgMembers.some((m) => m.user_id !== user.id && m.role === "owner");
+        if (!hasOtherOwner) {
+          return new Response(
+            JSON.stringify({
+              error:
+                "You're the only owner of this organisation — promote a teammate to owner first, or remove the other members, before deleting your account.",
+            }),
+            { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+          );
+        }
+      }
+      // else: departing staff/manager, or an owner with a co-owner —
+      // nothing else to do; deleting the user below removes their
+      // membership via cascade, and the org's subscription (if any) was
+      // never theirs to touch.
+    }
 
     const admin = createClient(SUPABASE_URL, SERVICE_KEY);
     const { error: deleteError } = await admin.auth.admin.deleteUser(user.id);
