@@ -325,6 +325,7 @@
          meant the org never got created at signup time in the first place.
          See showOrgSetupPrompt(). -->
     <div id="org-setup-note" class="auth-note" style="display:none">You're signed in — just need to finish setting up your organisation below.</div>
+    <button id="org-setup-logout" class="link-btn" style="display:none">Not you? Log out</button>
     <div id="org-mode-row" style="display:none">
       <div class="auth-tabs">
         <button id="org-mode-create" class="on" type="button">Create organisation</button>
@@ -796,6 +797,10 @@
     $('auth-credentials').style.display = 'none';
     $('account-btn').style.display = 'none';
     $('org-setup-note').style.display = fromLogin ? '' : 'none';
+    // Whichever way we got here, this screen has no email/password fields
+    // to get back to — without this, a signed-in user with no org yet (or
+    // the wrong account) has no way to log out and start over.
+    $('org-setup-logout').style.display = '';
     $('org-mode-row').style.display = '';
     setOrgRowsVisible(true);
     $('auth-submit').textContent = 'Continue';
@@ -1099,17 +1104,20 @@
     needsOrgSetup = false;
     $('auth-credentials').style.display = '';
     $('org-setup-note').style.display = 'none';
+    $('org-setup-logout').style.display = 'none';
     $('org-mode-row').style.display = 'none';
     setOrgSignupMode('create');
   }
-  $('logout-btn').onclick = function () {
+  function doLogout() {
     sb.auth.signOut().then(function () {
       currentUser = null; currentOrg = null; currentTake = null; items = []; locations = [];
       resetAuthUiState();
       setAuthMode('login');
       showView('auth');
     });
-  };
+  }
+  $('logout-btn').onclick = doLogout;
+  $('org-setup-logout').onclick = doLogout;
 
   // ---- Delete account ----
   $('delete-account-btn').onclick = function () { $('delete-overlay').classList.add('open'); };
