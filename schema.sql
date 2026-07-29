@@ -26,8 +26,21 @@ create table public.profiles (
 
 alter table public.profiles enable row level security;
 
-create policy "read own profile" on public.profiles
-  for select using (auth.uid() = id);
+-- Own profile, plus any teammate's — needed so "started by X" can show a
+-- name on a shared stocktake, and the org roster can show who's who. Not
+-- sensitive: display names are the kind of thing already visible to
+-- teammates in any team tool. my_org_id()/my_role() can't be reused directly
+-- here (they're about the CALLER's own org; this check is "does the ROW
+-- being read belong to someone in my org").
+create policy "read own or org profile" on public.profiles
+  for select using (
+    auth.uid() = id
+    or exists (
+      select 1 from public.memberships mine
+        join public.memberships theirs on theirs.org_id = mine.org_id
+       where mine.user_id = auth.uid() and theirs.user_id = profiles.id
+    )
+  );
 -- No insert/update policy for clients: the row is created by the
 -- handle_new_user() trigger below and there's currently no edit-name UI.
 
@@ -312,6 +325,27 @@ begin
   return v_code;
 end $$;
 
+-- Roster for admin.html — owner/manager only. auth.users isn't exposed to
+-- the client via PostgREST at all (not just RLS-restricted), so this is the
+-- only way to show a member's email alongside their role; security definer
+-- lets it read auth.users safely without exposing the whole table.
+create or replace function public.list_org_members()
+returns table (user_id uuid, email text, full_name text, role text, joined_at timestamptz)
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() not in ('owner', 'manager') then
+    raise exception 'Only owners and managers can view the roster.';
+  end if;
+
+  return query
+    select m.user_id, u.email::text, p.full_name, m.role, m.created_at
+      from public.memberships m
+      join auth.users u on u.id = m.user_id
+      left join public.profiles p on p.id = m.user_id
+     where m.org_id = public.my_org_id()
+     order by m.created_at asc;
+end $$;
+
 -- Postgres grants EXECUTE on new functions to PUBLIC by default, so these
 -- are likely redundant — but this repo has never called an RPC function
 -- before now (nothing in app.html today uses `.rpc()`), so making it
@@ -319,6 +353,7 @@ end $$;
 grant execute on function public.create_organisation(text, text) to authenticated;
 grant execute on function public.join_organisation(text, text) to authenticated;
 grant execute on function public.get_daily_code() to authenticated;
+grant execute on function public.list_org_members() to authenticated;
 
 -- ---- Row Level Security ----
 

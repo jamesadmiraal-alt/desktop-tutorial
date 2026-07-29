@@ -1160,19 +1160,37 @@
     });
   }
 
+  var creatorNames = {}; // { userId: fullName } — see loadCreatorNames() below
+
   function loadTakes() {
     showView('home');
     $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
     $('stocktake-list-completed').innerHTML = '';
     $('completed-heading').style.display = 'none';
     sb.from('stocktakes')
-      .select('id,name,status,created_at,updated_at,locations(name),stocktake_items(qty)')
+      .select('id,name,status,created_at,updated_at,created_by,locations(name),stocktake_items(qty)')
       .order('updated_at', { ascending: false })
       .then(function (res) {
         if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
         takes = res.data;
-        renderHome();
+        loadCreatorNames(renderHome);
       });
+  }
+
+  // stocktakes.created_by references auth.users, not profiles — there's no
+  // FK directly between stocktakes and profiles for PostgREST to embed a
+  // nested profiles(full_name) select, so names for "Started by X" are
+  // fetched separately and merged in client-side instead.
+  function loadCreatorNames(cb) {
+    var ids = [];
+    takes.forEach(function (t) {
+      if (t.created_by && ids.indexOf(t.created_by) === -1) ids.push(t.created_by);
+    });
+    if (!ids.length) { cb(); return; }
+    sb.from('profiles').select('id,full_name').in('id', ids).then(function (res) {
+      if (!res.error) (res.data || []).forEach(function (p) { creatorNames[p.id] = p.full_name; });
+      cb();
+    });
   }
 
   function renderTakeRow(t) {
@@ -1185,7 +1203,8 @@
     // Only show which venue once there's more than one — keeps the solo/
     // single-location case identical to before this feature existed.
     var locPrefix = (locations.length > 1 && t.locations && t.locations.name) ? t.locations.name + ' · ' : '';
-    meta.textContent = locPrefix + takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString();
+    var startedBy = (t.created_by && creatorNames[t.created_by]) ? ' · Started by ' + creatorNames[t.created_by] : '';
+    meta.textContent = locPrefix + takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString() + startedBy;
     info.appendChild(nm); info.appendChild(meta);
     var more = document.createElement('button');
     more.className = 'more'; more.textContent = '⋯';

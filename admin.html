@@ -89,6 +89,15 @@
   .loc-row input { flex: 1; }
   #locations-list:empty::after { content: 'No locations yet.'; color: var(--text-dim); font-size: 0.85rem; }
 
+  .roster-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .roster-row:last-child { border-bottom: none; }
+  .roster-row .who { flex: 1; min-width: 0; }
+  .roster-row .who .name { font-weight: 600; }
+  .roster-row .who .email { font-size: 0.8rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .roster-row select { width: auto; padding: 8px 10px; font-size: 0.85rem; }
+  .new-badge { background: var(--accent); color: var(--on-accent); font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
+  #roster-list:empty::after { content: 'No members yet.'; color: var(--text-dim); font-size: 0.85rem; }
+
   button {
     border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
     padding: 11px 14px; cursor: pointer; color: var(--btn-neutral-text); background: var(--btn-neutral-bg);
@@ -171,6 +180,11 @@
   </div>
 
   <div class="card">
+    <h2>Team</h2>
+    <div id="roster-list"></div>
+  </div>
+
+  <div class="card">
     <h2>Join code</h2>
     <p class="hint">Durable — share it with a new hire along with today's code below. Rotating it invalidates the old one immediately.</p>
     <div class="code-box" id="join-code-display">&nbsp;</div>
@@ -218,7 +232,8 @@
   // on, since both point at the same Supabase project/origin.
   var sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
 
-  var currentOrg = null; // {id, name, planTier, joinCode}
+  var currentOrg = null;  // {id, name, planTier, joinCode, rosterLastViewedAt}
+  var currentUserId = null;
 
   function toast(msg, bg) {
     var t = $('toast');
@@ -313,10 +328,86 @@
     });
   }
 
+  // ---- Team roster ----
+  function renderRoster(members) {
+    var list = $('roster-list');
+    list.innerHTML = '';
+    var lastViewed = currentOrg.rosterLastViewedAt ? new Date(currentOrg.rosterLastViewedAt) : null;
+    members.forEach(function (m) {
+      var isSelf = m.user_id === currentUserId;
+      var row = document.createElement('div');
+      row.className = 'roster-row';
+
+      var who = document.createElement('div');
+      who.className = 'who';
+      var nameEl = document.createElement('div');
+      nameEl.className = 'name';
+      nameEl.textContent = m.full_name || '(no name)';
+      if (lastViewed && new Date(m.joined_at) > lastViewed) {
+        var badge = document.createElement('span');
+        badge.className = 'new-badge'; badge.textContent = 'NEW';
+        nameEl.appendChild(badge);
+      }
+      var emailEl = document.createElement('div');
+      emailEl.className = 'email'; emailEl.textContent = m.email + (isSelf ? ' (you)' : '');
+      who.appendChild(nameEl); who.appendChild(emailEl);
+
+      var roleSelect = document.createElement('select');
+      ['owner', 'manager', 'staff'].forEach(function (r) {
+        var opt = document.createElement('option');
+        opt.value = r; opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
+        if (r === m.role) opt.selected = true;
+        roleSelect.appendChild(opt);
+      });
+      // Can't change your own role here — avoids a self-demotion accidentally
+      // leaving the org without an owner able to fix it back.
+      roleSelect.disabled = isSelf;
+      roleSelect.onchange = function () {
+        sb.from('memberships').update({ role: roleSelect.value })
+          .eq('org_id', currentOrg.id).eq('user_id', m.user_id).then(function (res) {
+            if (res.error) { fail(res.error, 'Could not change role'); roleSelect.value = m.role; return; }
+            m.role = roleSelect.value;
+            toast('Role updated');
+          });
+      };
+
+      var removeBtn = document.createElement('button');
+      removeBtn.textContent = '✕';
+      removeBtn.disabled = isSelf;
+      removeBtn.title = isSelf ? "Can't remove yourself here" : 'Remove from organisation';
+      removeBtn.onclick = function () {
+        if (!confirm('Remove ' + (m.full_name || m.email) + ' from the organisation?')) return;
+        sb.from('memberships').delete()
+          .eq('org_id', currentOrg.id).eq('user_id', m.user_id).then(function (res) {
+            if (res.error) { fail(res.error, 'Could not remove member'); return; }
+            loadRoster();
+            toast('Member removed');
+          });
+      };
+
+      row.appendChild(who); row.appendChild(roleSelect); row.appendChild(removeBtn);
+      list.appendChild(row);
+    });
+  }
+
+  function loadRoster() {
+    sb.rpc('list_org_members').then(function (res) {
+      if (res.error) { fail(res.error, 'Could not load team'); return; }
+      renderRoster(res.data || []);
+      // Mark as viewed now that these members have been shown — next
+      // load's "NEW" badges only cover whoever joined after this moment.
+      var viewedAt = new Date().toISOString();
+      sb.from('organisations').update({ roster_last_viewed_at: viewedAt }).eq('id', currentOrg.id).then(function () {
+        currentOrg.rosterLastViewedAt = viewedAt;
+      });
+    });
+  }
+
   // ---- Auth ----
   function checkAccessAndEnter(user) {
+    currentUserId = user.id;
     sb.from('memberships')
-      .select('role, organisations(id, name, plan_tier, join_code)')
+      .select('role, organisations(id, name, plan_tier, join_code, roster_last_viewed_at)')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(function (res) {
@@ -326,10 +417,14 @@
           showView('denied');
           return;
         }
-        currentOrg = { id: org.id, name: org.name, planTier: org.plan_tier, joinCode: org.join_code };
+        currentOrg = {
+          id: org.id, name: org.name, planTier: org.plan_tier, joinCode: org.join_code,
+          rosterLastViewedAt: org.roster_last_viewed_at
+        };
         showView('admin');
         renderOrg();
         loadLocations();
+        loadRoster();
         loadDailyCode();
       });
   }
