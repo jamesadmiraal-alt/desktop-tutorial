@@ -385,6 +385,7 @@
       <span id="acct-country-display"></span>
       <button id="change-region-btn" class="link-btn">Change region</button>
     </div>
+    <button id="open-admin-btn" class="link-btn" style="display:none;margin-top:10px">Manage staff, locations & plan →</button>
   </div>
   <div class="acct-card" id="acct-subscription-card">
     <h3>Subscription</h3>
@@ -1000,6 +1001,13 @@
     if (isNative) Capacitor.Plugins.Browser.open({ url: url });
     else window.open(url, '_blank');
   }
+  // admin.html isn't shipped into the native app (prepare-native.js's file
+  // whitelist doesn't include it, deliberately — see the org-model planning
+  // doc), so a relative link would 404 inside the native WebView. Always use
+  // the deployed absolute URL through openExternal() instead, same as the
+  // Stripe checkout/billing-portal links above.
+  var ADMIN_URL = 'https://jamesadmiraal-alt.github.io/desktop-tutorial/admin.html';
+  $('open-admin-btn').onclick = function () { openExternal(ADMIN_URL); };
   function goUpgrade(plan) {
     var url = upgradeLink(plan);
     // On a real checkout link (Stripe Payment Link), identify the paying org
@@ -1043,8 +1051,13 @@
     $('acct-org-name').textContent = currentOrg ? currentOrg.name : '';
     $('acct-org-role').textContent = currentOrg ? roleLabel(currentOrg.role) : '';
     var isOwner = !!(currentOrg && currentOrg.role === 'owner');
+    var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
     $('change-region-btn').style.display = isOwner ? '' : 'none';
     $('acct-subscription-card').style.display = isOwner ? '' : 'none';
+    // admin.html's own access gate is owner/manager too — matches that here
+    // rather than owner-only like billing, since staff/location management
+    // isn't an owner-exclusive action.
+    $('open-admin-btn').style.display = canManage ? '' : 'none';
     renderCountryDisplay();
   }
   function openAccount() {
