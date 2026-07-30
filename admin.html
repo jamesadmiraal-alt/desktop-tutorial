@@ -155,8 +155,8 @@
 
 <div id="denied-view" class="wrap" style="display:none">
   <div class="card" style="max-width:420px;margin:60px auto;text-align:center">
-    <h2 style="text-transform:none;font-size:1.1rem;color:var(--text);margin-bottom:10px">No access</h2>
-    <p class="hint" style="margin-bottom:0">This console is only available to organisation owners and managers. Ask your organisation's owner for access, or log out and sign in with a different account.</p>
+    <h2 id="denied-title" style="text-transform:none;font-size:1.1rem;color:var(--text);margin-bottom:10px">No access</h2>
+    <p class="hint" id="denied-text" style="margin-bottom:0">This console is only available to organisation owners and managers. Ask your organisation's owner for access, or log out and sign in with a different account.</p>
   </div>
 </div>
 
@@ -449,6 +449,16 @@
         var role = res.data && res.data.role;
         var org = res.data && res.data.organisations;
         if (res.error || !org || (role !== 'owner' && role !== 'manager')) {
+          $('denied-title').textContent = 'No access';
+          $('denied-text').textContent = "This console is only available to organisation owners and managers. Ask your organisation's owner for access, or log out and sign in with a different account.";
+          showView('denied');
+          return;
+        }
+        // No free tier — a brand-new org is 'pending' until checkout
+        // completes (see schema.sql), with no locations to manage yet.
+        if (org.plan_tier === 'pending') {
+          $('denied-title').textContent = 'Payment required';
+          $('denied-text').textContent = "This organisation hasn't completed checkout yet. Log in to the app to choose a plan and finish payment before managing it here.";
           showView('denied');
           return;
         }

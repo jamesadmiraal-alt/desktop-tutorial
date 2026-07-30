@@ -344,6 +344,25 @@
       <label for="org-daily-code">Today's code</label>
       <input id="org-daily-code" type="text" autocapitalize="none" placeholder="Shown live on the admin screen today">
     </div>
+    <!-- No free tier: shown instead of Home whenever a signed-in user's org
+         is still 'pending' (never paid, or a lapsed subscription) — see
+         showPaymentPendingPrompt(). Reuses the same .upgrade-opt/
+         .bill-annually-toggle wiring as the Account view's Single-venue
+         upsell, just in a different place in the DOM. -->
+    <div id="payment-pending-row" style="display:none">
+      <p class="upgrade-text">Choose a plan to activate <b id="pending-org-name"></b>.</p>
+      <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
+      <button class="upgrade-opt" data-tier="single">
+        <span><span class="opt-name">Single-venue</span>
+          <div class="opt-sub">1 location, unlimited products</div></span>
+        <span class="opt-price">$29<small>/mo</small></span>
+      </button>
+      <button class="upgrade-opt best" data-tier="multi">
+        <span><span class="opt-name">Multi-venue</span>
+          <div class="opt-sub">Unlimited locations, unlimited products</div></span>
+        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
+      </button>
+    </div>
     <button id="auth-submit" class="primary">Log in</button>
     <div class="auth-note">Your stocktakes are stored in the cloud and sync across devices —
       log in with the same account anywhere to continue.<br>
@@ -389,22 +408,6 @@
   </div>
   <div class="acct-card" id="acct-subscription-card">
     <h3>Subscription</h3>
-    <div id="acct-plan-free">
-      <span class="plan-badge free">Free plan</span>
-      <div class="plan-desc">1 location, up to 3 products per stocktake. Upgrade for more.</div>
-      <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
-      <button class="upgrade-opt" data-tier="single">
-        <span><span class="opt-name">Single-venue</span>
-          <div class="opt-sub">1 location, unlimited products</div></span>
-        <span class="opt-price">$29<small>/mo</small></span>
-      </button>
-      <button class="upgrade-opt best" data-tier="multi">
-        <span><span class="opt-name">Multi-venue</span>
-          <div class="opt-sub">Unlimited locations, unlimited products</div></span>
-        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
-      </button>
-      <div id="acct-note">After payment your organisation is upgraded automatically. Questions? Reply to your welcome email.</div>
-    </div>
     <div id="acct-plan-single" style="display:none">
       <span class="plan-badge pro">Single-venue plan</span>
       <div class="plan-desc">1 location, unlimited products per stocktake.</div>
@@ -539,28 +542,6 @@
   </div>
 </div>
 
-<!-- ===== Upgrade dialog ===== -->
-<div id="upgrade-overlay" class="overlay">
-  <div class="dialog">
-    <div class="title">🍾 Free plan limit reached</div>
-    <p class="upgrade-text">The free version counts up to <b>3 products per stocktake</b>.
-      Upgrade for unlimited products.</p>
-    <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
-    <button class="upgrade-opt" data-tier="single">
-      <span><span class="opt-name">Single-venue</span>
-        <div class="opt-sub">1 location, unlimited products</div></span>
-      <span class="opt-price">$29<small>/mo</small></span>
-    </button>
-    <button class="upgrade-opt best" data-tier="multi">
-      <span><span class="opt-name">Multi-venue</span>
-        <div class="opt-sub">Unlimited locations, unlimited products</div></span>
-      <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
-    </button>
-    <div class="dialog-actions" style="margin-top:12px">
-      <button id="upgrade-later" class="flex">Not now</button>
-    </div>
-  </div>
-</div>
 
 <!-- ===== New stocktake dialog ===== -->
 <div id="name-overlay" class="overlay">
@@ -619,8 +600,6 @@
   var configured = cfg.supabaseUrl && cfg.supabaseUrl.indexOf('YOUR-PROJECT') === -1 &&
                    cfg.supabaseAnonKey && cfg.supabaseAnonKey.indexOf('YOUR-') === -1;
 
-  var FREE_LIMIT = 3;       // distinct products per stocktake on the free plan
-  var isPaidTier = false;   // true when currentOrg.planTier is 'single' or 'multi' — org-level, replaces the old per-user is_pro
   var currentUser = null;   // {id, email, name}
   var currentOrg = null;    // {id, name, role, planTier, country, countryChangedAt, exportFormat}
   var locations = [];       // this org's pre-created venues: [{id, name}]
@@ -638,6 +617,11 @@
   // just failed and needs a retry) or defensively if a login ever finds no
   // membership. Swaps the auth view down to just the org-setup fields.
   var needsOrgSetup = false;
+  // True whenever the signed-in user's org exists but is 'pending' (no free
+  // tier — see showPaymentPendingPrompt()). Kept separate from
+  // needsOrgSetup since it's a different screen/reason, but both mean "hide
+  // the account button, there's nothing to open yet" — see showView().
+  var paymentPending = false;
 
   // Countries offered at signup/Account, and which Stripe checkout currency
   // each maps to (config.js's upgradeUrls). Anything not listed here — plus
@@ -727,7 +711,7 @@
     ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
-    $('account-btn').style.display = (currentUser && !needsOrgSetup) ? '' : 'none';
+    $('account-btn').style.display = (currentUser && !needsOrgSetup && !paymentPending) ? '' : 'none';
     $('user-badge').textContent = currentUser ? currentUser.email : '';
     if (name !== 'scan') stopScanner();
   }
@@ -819,6 +803,27 @@
     $('org-mode-row').style.display = '';
     setOrgRowsVisible(true);
     $('auth-submit').textContent = 'Continue';
+    showView('auth');
+  }
+
+  // No free tier: shown instead of Home whenever the signed-in user's org
+  // is 'pending' — never completed checkout, or a lapsed subscription (see
+  // refreshOrgStatus()). The upgrade-opt buttons here are the same ones
+  // Account view's Single-venue card uses, just relocated — clicking one
+  // goes straight to Stripe with this org's id as client_reference_id
+  // (goUpgrade() already does that generically).
+  function showPaymentPendingPrompt() {
+    paymentPending = true;
+    $('auth-credentials').style.display = 'none';
+    $('org-setup-note').style.display = 'none';
+    $('org-setup-logout').style.display = '';
+    $('org-mode-row').style.display = 'none';
+    $('org-create-row').style.display = 'none';
+    $('org-join-row').style.display = 'none';
+    $('auth-submit').style.display = 'none';
+    $('payment-pending-row').style.display = '';
+    $('pending-org-name').textContent = currentOrg ? currentOrg.name : 'your organisation';
+    renderUpgradePrices();
     showView('auth');
   }
 
@@ -950,9 +955,18 @@
           countryChangedAt: org.country_changed_at || null,
           exportFormat: org.export_format
         };
-        isPaidTier = currentOrg.planTier !== 'free';
       } else {
         currentOrg = null;
+      }
+      // No free tier — an org that hasn't completed checkout yet (or whose
+      // subscription lapsed) is 'pending' and gets hard-gated here rather
+      // than handed to the caller's normal-access callback below. This
+      // fires uniformly wherever refreshOrgStatus() is called from (login,
+      // opening Account, native resume), so e.g. a subscription cancelled
+      // while the app is open still kicks the user out on the next check.
+      if (currentOrg && currentOrg.planTier === 'pending') {
+        showPaymentPendingPrompt();
+        return;
       }
       renderPlan();
       if (cb) cb();
@@ -962,27 +976,24 @@
   function enterApp(user) {
     currentUser = { id: user.id, email: user.email, name: '' };
     $('auth-pass').value = ''; $('auth-pass2').value = '';
-    isPaidTier = false;
     refreshOrgStatus(function () {
-      // Not just defensive: this is the normal path whenever email
-      // confirmation was required at signup, since signUp() then returns no
-      // session and completeOrgSetup() never got to run — the org gets
-      // created here instead, on first login, rather than back at signup.
+      // Defensive: this is the normal path whenever email confirmation was
+      // required at signup, since signUp() then returns no session and
+      // completeOrgSetup() never got to run — the org gets created here
+      // instead, on first login, rather than back at signup.
       if (!currentOrg) { showOrgSetupPrompt(true); return; }
       loadLocations();
       loadTakes();
     });
   }
 
-  // ---- Upgrade (free plan limit) & account ----
-  function openUpgrade() { renderUpgradePrices(); $('upgrade-overlay').classList.add('open'); }
-  $('upgrade-later').onclick = function () { $('upgrade-overlay').classList.remove('open'); };
+  // ---- Upgrade & account ----
   // Picks the Payment Link matching the operator's currency (from their
   // country), falling back to DEFAULT_CURRENCY if that currency isn't
   // configured yet.
   // tier is 'single' or 'multi' — see config.js's upgradeUrls[currency][tier] shape.
-  // Shared across every "Bill annually" checkbox (Free/Single account cards,
-  // free-limit dialog) — flipping any one of them updates them all and
+  // Shared across every "Bill annually" checkbox (Single account card, the
+  // payment-pending gate) — flipping any one of them updates them all and
   // re-renders every visible price/link to match.
   var billAnnually = false;
   function setBillAnnually(val) {
@@ -1077,9 +1088,6 @@
   document.querySelectorAll('.upgrade-opt').forEach(function (b) {
     b.onclick = function () { goUpgrade(b.dataset.tier); };
   });
-  function isLimitError(error) {
-    return error && /row-level security|policy/i.test(error.message || '');
-  }
 
   function roleLabel(role) {
     return role === 'owner' ? 'Owner' : role === 'manager' ? 'Manager' : 'Staff';
@@ -1114,8 +1122,10 @@
     });
   }
   function renderPlan() {
-    var tier = currentOrg ? currentOrg.planTier : 'free';
-    $('acct-plan-free').style.display = tier === 'free' ? '' : 'none';
+    // Only ever called once currentOrg exists and isn't 'pending' —
+    // refreshOrgStatus() intercepts and gates out the 'pending' case
+    // before this runs (see there).
+    var tier = currentOrg ? currentOrg.planTier : null;
     $('acct-plan-single').style.display = tier === 'single' ? '' : 'none';
     $('acct-plan-multi').style.display = tier === 'multi' ? '' : 'none';
   }
@@ -1156,10 +1166,13 @@
 
   function resetAuthUiState() {
     needsOrgSetup = false;
+    paymentPending = false;
     $('auth-credentials').style.display = '';
     $('org-setup-note').style.display = 'none';
     $('org-setup-logout').style.display = 'none';
     $('org-mode-row').style.display = 'none';
+    $('payment-pending-row').style.display = 'none';
+    $('auth-submit').style.display = '';
     setOrgSignupMode('create');
   }
   function doLogout() {
@@ -1452,7 +1465,6 @@
   // ---- Quantity dialog ----
   function openQtyDialog(code, isEdit) {
     var existing = items.find(function (it) { return it.barcode === code; });
-    if (!existing && !isPaidTier && items.length >= FREE_LIMIT) { openUpgrade(); return; }
     pendingCode = code;
     dialogOpen = true;
     $('qty-code').textContent = code;
@@ -1505,10 +1517,7 @@
         .select().single()
         .then(function (res) {
           done();
-          if (res.error) {
-            if (isLimitError(res.error)) { closeQtyDialog(); openUpgrade(); return; }
-            fail(res.error, 'Save failed'); return;
-          }
+          if (res.error) { fail(res.error, 'Save failed'); return; }
           items.unshift(res.data);
           renderItems();
           toast(code + '  ×' + qty + ' saved');

@@ -40,8 +40,13 @@ create table public.organisations (
   logo_url text,
   export_format text not null default 'full'
     check (export_format in ('full', 'myob', 'lightspeed')),
-  plan_tier text not null default 'free'
-    check (plan_tier in ('free', 'single', 'multi')),
+  -- No free tier — a brand-new org starts 'pending' (created, but blocked
+  -- from doing anything real: no locations exist yet, so no stocktakes can
+  -- exist either — see the locations insert policy below) until the owner
+  -- completes checkout for 'single' or 'multi'. stripe-webhook flips this
+  -- and creates the org's first location together, on checkout.session.completed.
+  plan_tier text not null default 'pending'
+    check (plan_tier in ('pending', 'single', 'multi')),
 
   -- Billing country, moved here from profiles.country — it's what currency
   -- checkout uses, and checkout is now an org-level action. Same 30-day
@@ -270,9 +275,9 @@ begin
   values (trim(org_name), org_country, substr(md5(random()::text || clock_timestamp()::text), 1, 8))
   returning id into new_org_id;
 
-  -- Every org starts with one location, free on every tier — this is what
-  -- makes a solo signup behave exactly like today's single-user app.
-  insert into public.locations (org_id, name) values (new_org_id, 'Main');
+  -- No location created here — the org starts 'pending' (see the column
+  -- comment above) and has no usable location until checkout completes;
+  -- stripe-webhook creates the first one alongside flipping plan_tier.
 
   insert into public.memberships (org_id, user_id, role) values (new_org_id, auth.uid(), 'owner');
 
@@ -384,15 +389,17 @@ grant update (name, logo_url, export_format, join_code, country, roster_last_vie
 -- No insert policy: organisations are only ever created via
 -- create_organisation() above (security definer, bypasses RLS).
 
--- locations: any org member reads; owner/manager manage. The FIRST
--- location for an org (created alongside it, or the first one an
--- owner/manager adds on free/single) is a plain RLS-gated insert; adding a
--- 2nd+ location to a multi-tier org should go through the create_location
--- Edge Function instead (Phase D) so the Stripe subscription quantity gets
--- incremented first — a plain Postgres policy can't make that outbound
--- call. This policy still needs to be structurally correct on its own,
--- since RLS is the real boundary regardless of which client code path is
--- used to reach it.
+-- locations: any org member reads; owner/manager manage. There's no plain
+-- client insert path any more for a 'pending' org's very first location —
+-- that's created by stripe-webhook (service role, bypasses RLS) once
+-- checkout completes, which is exactly what makes 'pending' a hard
+-- paywall: no location exists yet, so no stocktake can exist either (see
+-- the stocktakes insert policy), regardless of what a client tries. The
+-- one remaining plain-RLS insert case is a 'single'-tier org's first
+-- location (their only one, ever). Adding a 2nd+ location to a
+-- multi-tier org goes through the create_location Edge Function instead
+-- (Phase D) so the Stripe subscription quantity gets incremented first —
+-- a plain Postgres policy can't make that outbound call.
 create policy "read org locations" on public.locations
   for select using (org_id = public.my_org_id());
 
@@ -406,7 +413,10 @@ create policy "owner manager insert locations" on public.locations
     and public.my_role() in ('owner', 'manager')
     and (
       (select plan_tier from public.organisations where id = locations.org_id) = 'multi'
-      or (select count(*) from public.locations where org_id = locations.org_id) = 0
+      or (
+        (select plan_tier from public.organisations where id = locations.org_id) = 'single'
+        and (select count(*) from public.locations where org_id = locations.org_id) = 0
+      )
     )
   );
 
@@ -452,14 +462,13 @@ create policy "owner manager delete stocktakes" on public.stocktakes
   for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
 
 -- stocktake_items: any org member can read/insert/update/delete within
--- their org's stocktakes. The insert check additionally verifies
--- stocktake_id actually belongs to a stocktake in the SAME org as the
--- item's own org_id — without this, a client could satisfy
--- `org_id = my_org_id()` while pointing stocktake_id at a different org's
--- stocktake, writing items into someone else's tenant. Free-plan limit
--- (3 distinct products per stocktake) is re-pointed from profiles.is_pro
--- to organisations.plan_tier but otherwise unchanged — remember
--- FREE_LIMIT in app.html has to stay in sync with the `< 3` below.
+-- their org's stocktakes. The insert check verifies stocktake_id actually
+-- belongs to a stocktake in the SAME org as the item's own org_id —
+-- without this, a client could satisfy `org_id = my_org_id()` while
+-- pointing stocktake_id at a different org's stocktake, writing items into
+-- someone else's tenant. No item-count cap any more — that was the old
+-- free-plan limit (3 distinct products per stocktake); there's no free
+-- plan now, every org that can reach this point has already paid.
 create policy "read org items" on public.stocktake_items
   for select using (org_id = public.my_org_id());
 
@@ -470,11 +479,6 @@ create policy "org members insert items" on public.stocktake_items
       select 1 from public.stocktakes s
        where s.id = stocktake_items.stocktake_id and s.org_id = stocktake_items.org_id
     )
-    and (
-      (select plan_tier from public.organisations where id = stocktake_items.org_id) != 'free'
-      or (select count(*) from public.stocktake_items i
-            where i.stocktake_id = stocktake_items.stocktake_id) < 3
-    )
   );
 
 create policy "org members update items" on public.stocktake_items
@@ -484,9 +488,16 @@ create policy "org members update items" on public.stocktake_items
 create policy "org members delete items" on public.stocktake_items
   for delete using (org_id = public.my_org_id());
 
--- ---- Upgrading an org's plan ----
--- Until the new Stripe wiring (Phase D) is live, flip the tier manually:
+-- ---- Upgrading an org's plan manually (e.g. before Stripe is fully wired
+-- up, or to fix a payment that landed without a matching webhook event) ----
 --   update public.organisations set plan_tier = 'single'
 --    where id = (select org_id from public.memberships m
 --                  join auth.users u on u.id = m.user_id
 --                 where u.email = 'person@example.com');
+-- A 'pending' org has no locations yet (see the plan_tier column comment
+-- above) — stripe-webhook normally creates the first one alongside the
+-- tier flip, so doing this manually also needs:
+--   insert into public.locations (org_id, name)
+--   values ((select org_id from public.memberships m
+--              join auth.users u on u.id = m.user_id
+--             where u.email = 'person@example.com'), 'Main');

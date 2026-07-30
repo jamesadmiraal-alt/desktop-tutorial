@@ -34,12 +34,12 @@ Libraries are vendored (no CDN) so the app keeps loading on flaky connections.
 
 ## Plans
 
-- **Free** — up to **3 products per stocktake** (unlimited stocktakes). When a 4th product is scanned, the app offers an upgrade link.
-- **Pro — $29/month per user**, or **$290/year (2 months free)** — unlimited products per stocktake.
+No free tier — every organisation picks a paid plan before it's usable:
 
-The in-app Account section (👤 in the header) shows the signed-in user and their plan, with both upgrade options; `upgradeUrl` / `upgradeUrlAnnual` in `config.js` control where the buttons lead (point them at Stripe Payment Links when payments are set up).
+- **Single-venue — $29/month** (or $290/year) — 1 location, unlimited products per stocktake, unlimited staff.
+- **Multi-venue — $59/month** (or $590/year) base, **+$29/month per additional venue** — unlimited locations, unlimited products, unlimited staff. Adding or removing a venue in the admin console adjusts the subscription automatically.
 
-The limit is enforced both in the app and server-side by a row-level-security policy, keyed off `profiles.is_pro`. Payments aren't automated yet: after someone pays, flip their flag (SQL at the bottom of `schema.sql`), or later wire a Stripe Payment Link + webhook and point `upgradeUrl` in `config.js` at it.
+Signing up creates an organisation, not a personal account — stocktakes, locations, and staff all belong to it (see `schema.sql`'s `organisations`/`memberships`/`locations` tables). A brand-new organisation is `pending` until checkout completes; the app blocks everything except choosing a plan until then (`organisations.plan_tier`, enforced by row-level security, not just the UI). `config.js`'s `upgradeUrls` (keyed by currency, then tier, then billing period) control where the plan buttons lead — point them at real Stripe Payment Links per `STRIPE-SETUP.md`.
 
 ## Supabase setup (once)
 

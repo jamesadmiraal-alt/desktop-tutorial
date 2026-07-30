@@ -1,8 +1,13 @@
 // Barscan Stripe webhook — runs as a Supabase Edge Function.
 //
 // Flips organisations.plan_tier when Stripe reports a completed checkout,
-// a cancelled subscription, or a tier change — and off again to 'free' on
-// cancellation. Deploy instructions: STRIPE-SETUP.md.
+// a cancelled subscription, or a tier change. There's no free plan — a
+// cancelled subscription drops the org back to 'pending' (the same locked-
+// out state a brand-new, never-paid org starts in; see schema.sql), not
+// some lesser usable tier. checkout.session.completed also creates the
+// org's first location if it doesn't have one yet, since that no longer
+// happens at signup (create_organisation() in schema.sql) — the org isn't
+// usable at all until payment completes. Deploy instructions: STRIPE-SETUP.md.
 //
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   STRIPE_WEBHOOK_SECRET  - the "whsec_..." signing secret of the webhook endpoint
@@ -102,6 +107,24 @@ async function setPlanByCustomer(customerId: string, tier: string) {
   if (!res.ok) throw new Error(`organisations update failed: ${res.status} ${await res.text()}`);
 }
 
+// Creates the org's first location if it doesn't have one yet — a no-op
+// for a tier-change checkout on an org that already has locations (e.g.
+// single -> multi via a fresh checkout rather than the portal).
+async function ensureFirstLocation(orgId: string) {
+  const countRes = await db(`locations?org_id=eq.${encodeURIComponent(orgId)}&select=id`, {
+    headers: { Prefer: "count=exact" },
+  });
+  const contentRange = countRes.headers.get("content-range") ?? "";
+  const existingCount = Number(contentRange.split("/")[1]) || (await countRes.json()).length;
+  if (existingCount > 0) return;
+
+  const res = await db(`locations`, {
+    method: "POST",
+    body: JSON.stringify({ org_id: orgId, name: "Main" }),
+  });
+  if (!res.ok) throw new Error(`location create failed: ${res.status} ${await res.text()}`);
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 
@@ -142,12 +165,16 @@ Deno.serve(async (req) => {
           break;
         }
         await setOrgPlan(orgId, tier, { customerId, subscriptionId, subscriptionItemId });
+        await ensureFirstLocation(orgId);
         break;
       }
       case "customer.subscription.deleted": {
         const sub = event.data.object;
         const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
-        if (customerId) await setPlanByCustomer(customerId, "free");
+        // Locked out, same as a never-paid org — not deleted, just
+        // inaccessible until they resubscribe (see setPlanByCustomer's
+        // caller comment / the header comment above).
+        if (customerId) await setPlanByCustomer(customerId, "pending");
         break;
       }
       case "customer.subscription.updated": {
