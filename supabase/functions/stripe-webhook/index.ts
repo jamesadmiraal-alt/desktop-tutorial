@@ -30,11 +30,26 @@ const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 // STRIPE-SETUP.md's Phase D section. PLACEHOLDER: fill in the real price
 // ids once the products/prices exist.
 const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
-  // "price_XXXXXXXXXXXXXX_AUD_SINGLE_MONTHLY": "single",
-  // "price_XXXXXXXXXXXXXX_AUD_SINGLE_ANNUAL":  "single",
-  // "price_XXXXXXXXXXXXXX_AUD_MULTI_MONTHLY":  "multi",
-  // "price_XXXXXXXXXXXXXX_AUD_MULTI_ANNUAL":   "multi",
-  // ...one entry per currency per tier per period (16 total)
+  // Reused from the pre-org-tier "Barscan Pro" product (renamed to "Barscan
+  // Single-venue" — same price ids, nothing about the price itself changed).
+  "price_1TvX8tEiJERMRN7vG2cavZde": "single", // EUR annual  ($270/yr)
+  "price_1TvVCKEiJERMRN7vJzOdO9Qp": "single", // EUR monthly ($27/mo)
+  "price_1TvVC4EiJERMRN7vKoqap7Mj": "single", // GBP annual  (£250/yr)
+  "price_1TvVAvEiJERMRN7vV0ndm2c0": "single", // GBP monthly (£25/mo)
+  "price_1TvVAFEiJERMRN7vnJ3vq2l1": "single", // USD annual  ($270/yr)
+  "price_1TvVA0EiJERMRN7vD4QpJ4pz": "single", // USD monthly ($27/mo)
+  "price_1Tv5fIEiJERMRN7vAfgFfbca": "single", // AUD annual  (A$290/yr)
+  "price_1Tv5ejEiJERMRN7vvAweNVYU": "single", // AUD monthly (A$29/mo)
+
+  "price_1TzmL3EiJERMRN7vOlaRkmPS": "multi", // AUD monthly (A$59/mo base)
+  "price_1U0UYUEiJERMRN7vdmuqpNi6": "multi", // AUD annual  (A$590/yr base)
+  // AUD-only for now (per dev decision — see the org-model planning doc /
+  // this session's history) — USD/GBP/EUR Multi-venue prices not created.
+  // Every non-AUD country already falls back to AUD's real links/prices
+  // (upgradeLink()/renderUpgradePrices() in app.html, DEFAULT_CURRENCY),
+  // so this isn't a gap, just a deliberately deferred currency.
+  // "price_XXXXXXXXXXXXXX_AUD_MULTI_ANNUAL":  "multi",
+  // ...8 more once Multi-venue's prices exist (one per currency per period)
 };
 
 const encoder = new TextEncoder();

@@ -14,20 +14,19 @@ window.BARSCAN_CONFIG = {
   // links below.
   // symbol/price(s) drive the displayed price (renderUpgradePrices() in
   // app.html) — keep them in sync with the actual Stripe price amounts.
-  // PLACEHOLDER — see STRIPE-SETUP.md's Phase D section for how to create
-  // the real products/prices/Payment Links (16 total: 2 tiers x 4
-  // currencies x 2 periods) and paste the results in here.
+  // Single-venue links reused from the pre-org-tier "Barscan Pro" product
+  // (renamed to "Barscan Single-venue") — still need to be pasted in below.
   upgradeUrls: {
     AUD: {
       single: {
         symbol: 'A$',
-        monthly: { link: '', price: '29' },
-        annual:  { link: '', price: '290' }
+        monthly: { link: 'https://buy.stripe.com/test_dRm3cvgdq4dv4mp9csdEs09', price: '29' },
+        annual:  { link: 'https://buy.stripe.com/test_cNi3cv1iw5hz8CFgEUdEs08', price: '290' }
       },
       multi: {
         symbol: 'A$',
-        monthly: { link: '', basePrice: '59', perVenuePrice: '29' },
-        annual:  { link: '', basePrice: '590', perVenuePrice: '290' }
+        monthly: { link: 'https://buy.stripe.com/test_5kQ5kDaT625n9GJ88odEs0b', basePrice: '59', perVenuePrice: '29' },
+        annual:  { link: 'https://buy.stripe.com/test_6oUeVd6CQ11j2ehdsIdEs0c', basePrice: '590', perVenuePrice: '290' }
       }
     },
     USD: {
@@ -38,8 +37,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '$',
-        monthly: { link: '', basePrice: '54', perVenuePrice: '27' },
-        annual:  { link: '', basePrice: '540', perVenuePrice: '270' }
+        monthly: { link: 'https://buy.stripe.com/test_bJecN55yM9xP069coEdEs0d', basePrice: '55', perVenuePrice: '27' },
+        annual:  { link: 'https://buy.stripe.com/test_7sYfZhf9m7pH4mpagwdEs0e', basePrice: '550', perVenuePrice: '270' }
       }
     },
     GBP: {
@@ -50,8 +49,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '£',
-        monthly: { link: '', basePrice: '50', perVenuePrice: '25' },
-        annual:  { link: '', basePrice: '500', perVenuePrice: '250' }
+        monthly: { link: 'https://buy.stripe.com/test_9B6fZh1iw4dv8CFewMdEs0f', basePrice: '49', perVenuePrice: '25' },
+        annual:  { link: 'https://buy.stripe.com/test_6oU6oH3qE25n3il74kdEs0g', basePrice: '490', perVenuePrice: '250' }
       }
     },
     EUR: {
@@ -62,8 +61,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '€',
-        monthly: { link: '', basePrice: '54', perVenuePrice: '27' },
-        annual:  { link: '', basePrice: '540', perVenuePrice: '270' }
+        monthly: { link: 'https://buy.stripe.com/test_6oU4gze5i4dv6ux4WcdEs0h', basePrice: '55', perVenuePrice: '27' },
+        annual:  { link: 'https://buy.stripe.com/test_bJebJ15yMh0hf1388odEs0i', basePrice: '550', perVenuePrice: '270' }
       }
     }
   }
