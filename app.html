@@ -153,10 +153,10 @@
   }
 
   .pw-field { position: relative; }
-  .pw-field input[type="password"], .pw-field input[type="text"] { padding-right: 44px; }
+  .pw-field input[type="password"], .pw-field input[type="text"] { padding-right: 92px; }
   .pw-toggle {
-    position: absolute; right: 2px; top: 0; bottom: 0; width: 40px;
-    background: none; padding: 0; font-size: 1.05rem; color: var(--text-dim);
+    position: absolute; right: 4px; top: 0; bottom: 0; width: 84px;
+    background: none; padding: 0; font-size: 0.78rem; font-weight: 600; color: var(--text-dim);
     display: flex; align-items: center; justify-content: center;
   }
   .pw-toggle.on { color: var(--accent); }
@@ -319,7 +319,7 @@
       <label for="auth-pass">Password</label>
       <div class="pw-field">
         <input id="auth-pass" type="password" autocomplete="current-password">
-        <button type="button" class="pw-toggle" data-for="auth-pass" title="Show password">👁️</button>
+        <button type="button" class="pw-toggle" data-for="auth-pass" title="Show password">Show</button>
       </div>
       <div id="login-extras">
         <label id="remember-row" class="checkbox-row"><input id="remember-me" type="checkbox" checked><span>Remember me</span></label>
@@ -329,7 +329,7 @@
         <label for="auth-pass2">Confirm password</label>
         <div class="pw-field">
           <input id="auth-pass2" type="password" autocomplete="new-password">
-          <button type="button" class="pw-toggle" data-for="auth-pass2" title="Show password">👁️</button>
+          <button type="button" class="pw-toggle" data-for="auth-pass2" title="Show password">Show</button>
         </div>
       </div>
     </div>
@@ -392,11 +392,11 @@
     <p class="upgrade-text">You're signed in via your password reset link. Choose a new password below, or close this to keep your current one.</p>
     <div class="pw-field">
       <input id="reset-pass1" type="password" placeholder="New password" autocomplete="new-password">
-      <button type="button" class="pw-toggle" data-for="reset-pass1" title="Show password">👁️</button>
+      <button type="button" class="pw-toggle" data-for="reset-pass1" title="Show password">Show</button>
     </div>
     <div class="pw-field" style="margin-top:10px">
       <input id="reset-pass2" type="password" placeholder="Confirm new password" autocomplete="new-password">
-      <button type="button" class="pw-toggle" data-for="reset-pass2" title="Show password">👁️</button>
+      <button type="button" class="pw-toggle" data-for="reset-pass2" title="Show password">Show</button>
     </div>
     <div class="dialog-actions" style="margin-top:14px">
       <button id="reset-pass-cancel" class="flex">Not now</button>
@@ -781,6 +781,7 @@
       var showing = input.type === 'text';
       input.type = showing ? 'password' : 'text';
       btn.classList.toggle('on', !showing);
+      btn.textContent = showing ? 'Show' : 'Hide';
       btn.title = showing ? 'Show password' : 'Hide password';
     };
   });
