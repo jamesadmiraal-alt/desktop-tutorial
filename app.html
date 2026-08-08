@@ -152,6 +152,15 @@
     color: var(--text); padding: 12px; font-size: 1rem; width: 100%;
   }
 
+  .pw-field { position: relative; }
+  .pw-field input[type="password"], .pw-field input[type="text"] { padding-right: 44px; }
+  .pw-toggle {
+    position: absolute; right: 2px; top: 0; bottom: 0; width: 40px;
+    background: none; padding: 0; font-size: 1.05rem; color: var(--text-dim);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .pw-toggle.on { color: var(--accent); }
+
   /* ---- Setup / Auth views ---- */
   #setup-view, #auth-view { justify-content: center; padding: 24px 20px; }
   .auth-card { background: var(--surface); border-radius: 16px; padding: 24px 20px; }
@@ -308,14 +317,20 @@
       <label for="auth-email">Email</label>
       <input id="auth-email" type="email" autocomplete="email" autocapitalize="none" inputmode="email">
       <label for="auth-pass">Password</label>
-      <input id="auth-pass" type="password" autocomplete="current-password">
+      <div class="pw-field">
+        <input id="auth-pass" type="password" autocomplete="current-password">
+        <button type="button" class="pw-toggle" data-for="auth-pass" title="Show password">👁️</button>
+      </div>
       <div id="login-extras">
         <label id="remember-row" class="checkbox-row"><input id="remember-me" type="checkbox" checked><span>Remember me</span></label>
         <button id="forgot-pass-btn" class="link-btn">Forgot password?</button>
       </div>
       <div id="confirm-row" style="display:none">
         <label for="auth-pass2">Confirm password</label>
-        <input id="auth-pass2" type="password" autocomplete="new-password">
+        <div class="pw-field">
+          <input id="auth-pass2" type="password" autocomplete="new-password">
+          <button type="button" class="pw-toggle" data-for="auth-pass2" title="Show password">👁️</button>
+        </div>
       </div>
     </div>
     <!-- Signup-only, and also shown on its own (auth-credentials hidden)
@@ -375,8 +390,14 @@
   <div class="dialog">
     <div class="title">Set a new password</div>
     <p class="upgrade-text">You're signed in via your password reset link. Choose a new password below, or close this to keep your current one.</p>
-    <input id="reset-pass1" type="password" placeholder="New password" autocomplete="new-password">
-    <input id="reset-pass2" type="password" placeholder="Confirm new password" autocomplete="new-password" style="margin-top:10px">
+    <div class="pw-field">
+      <input id="reset-pass1" type="password" placeholder="New password" autocomplete="new-password">
+      <button type="button" class="pw-toggle" data-for="reset-pass1" title="Show password">👁️</button>
+    </div>
+    <div class="pw-field" style="margin-top:10px">
+      <input id="reset-pass2" type="password" placeholder="Confirm new password" autocomplete="new-password">
+      <button type="button" class="pw-toggle" data-for="reset-pass2" title="Show password">👁️</button>
+    </div>
     <div class="dialog-actions" style="margin-top:14px">
       <button id="reset-pass-cancel" class="flex">Not now</button>
       <button id="reset-pass-save" class="primary flex">Save password</button>
@@ -753,6 +774,16 @@
   }
   $('org-mode-create').onclick = function () { setOrgSignupMode('create'); };
   $('org-mode-join').onclick = function () { setOrgSignupMode('join'); };
+
+  Array.prototype.forEach.call(document.querySelectorAll('.pw-toggle'), function (btn) {
+    btn.onclick = function () {
+      var input = $(btn.getAttribute('data-for'));
+      var showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      btn.classList.toggle('on', !showing);
+      btn.title = showing ? 'Show password' : 'Hide password';
+    };
+  });
   // Sets orgSignupMode/tab styling for the eventual org-setup step, but
   // this runs at page load — org-create-row/org-join-row must stay hidden
   // until showOrgSetupPrompt() actually shows that step, not from the
