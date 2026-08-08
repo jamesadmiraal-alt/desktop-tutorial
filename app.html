@@ -294,8 +294,8 @@
 <div id="auth-view" class="view">
   <div class="auth-card">
     <div class="logo">🍾</div>
-    <h2>Barscan</h2>
-    <div class="sub">Stocktaking for hospitality</div>
+    <h2 id="auth-heading">Barscan</h2>
+    <div class="sub" id="auth-sub">Stocktaking for hospitality</div>
     <div id="auth-credentials">
       <div class="auth-tabs">
         <button id="tab-login" class="on">Log in</button>
@@ -324,7 +324,7 @@
          signup, or (org-setup-note below) a login where email confirmation
          meant the org never got created at signup time in the first place.
          See showOrgSetupPrompt(). -->
-    <div id="org-setup-note" class="auth-note" style="display:none">You're signed in — just need to finish setting up your organisation below.</div>
+    <div id="org-setup-note" class="auth-note" style="display:none">Signed in as <b id="org-setup-email"></b>.</div>
     <button id="org-setup-logout" class="link-btn" style="display:none">Not you? Log out</button>
     <div id="org-mode-row" style="display:none">
       <div class="auth-tabs">
@@ -753,8 +753,18 @@
   }
   $('org-mode-create').onclick = function () { setOrgSignupMode('create'); };
   $('org-mode-join').onclick = function () { setOrgSignupMode('join'); };
+  // Sets orgSignupMode/tab styling for the eventual org-setup step, but
+  // this runs at page load — org-create-row/org-join-row must stay hidden
+  // until showOrgSetupPrompt() actually shows that step, not from the
+  // moment the page loads.
   setOrgSignupMode('create');
+  setOrgRowsVisible(false);
 
+  // Deliberately doesn't touch org-mode-row/org-create-row/org-join-row —
+  // creating/joining an organisation is a separate step shown only by
+  // showOrgSetupPrompt(), after the account itself exists. Showing both
+  // forms at once on a single screen is exactly what read as "messy and
+  // confusing" before this split.
   function setAuthMode(mode) {
     authMode = mode;
     $('tab-login').classList.toggle('on', mode === 'login');
@@ -762,8 +772,6 @@
     $('signup-name-row').style.display = mode === 'signup' ? '' : 'none';
     $('confirm-row').style.display = mode === 'signup' ? '' : 'none';
     $('login-extras').style.display = mode === 'login' ? '' : 'none';
-    $('org-mode-row').style.display = mode === 'signup' ? '' : 'none';
-    setOrgRowsVisible(mode === 'signup');
     $('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
     $('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
   }
@@ -781,24 +789,25 @@
     return null;
   }
 
-  // Shows just the org-create/join fields, hiding email/password — used in
-  // two situations: (a) right after a fresh signUp() with an immediate
-  // session (fields are already filled in from the signup form, this just
-  // gets the UI into the right shape for a retry if the RPC below fails),
-  // and (b) after a real login that finds no membership at all — most
-  // commonly because email confirmation was required, so signUp() never
-  // returned a session and this step never ran back at signup time; the
-  // fields are empty here since it's a fresh page load, not a resumed form,
-  // so `fromLogin` shows an explanatory note instead of silently swapping
-  // the login form for an unexplained one.
-  function showOrgSetupPrompt(fromLogin) {
+  // Always a distinct second step after the account itself exists — never
+  // shown at the same time as the signup form (see setAuthMode()). Three
+  // ways to land here, all needing exactly the same screen: right after a
+  // fresh signUp() with an immediate session; after a real login that finds
+  // no membership at all, most commonly because email confirmation meant
+  // this step never ran back at signup time; or a retry if the RPC below
+  // fails. The explanatory note applies equally to all three, so it's
+  // always shown now rather than only on the "returning later" path.
+  function showOrgSetupPrompt() {
     needsOrgSetup = true;
     $('auth-credentials').style.display = 'none';
     $('account-btn').style.display = 'none';
-    $('org-setup-note').style.display = fromLogin ? '' : 'none';
-    // Whichever way we got here, this screen has no email/password fields
-    // to get back to — without this, a signed-in user with no org yet (or
-    // the wrong account) has no way to log out and start over.
+    $('auth-heading').textContent = 'Set up your organisation';
+    $('auth-sub').textContent = 'One more step before you can start scanning';
+    $('org-setup-email').textContent = currentUser ? currentUser.email : '';
+    $('org-setup-note').style.display = '';
+    // No email/password fields to get back to here — without this, a
+    // signed-in user stuck on this screen (wrong account, or wants to
+    // start over) has no way to log out.
     $('org-setup-logout').style.display = '';
     $('org-mode-row').style.display = '';
     setOrgRowsVisible(true);
@@ -815,6 +824,8 @@
   function showPaymentPendingPrompt() {
     paymentPending = true;
     $('auth-credentials').style.display = 'none';
+    $('auth-heading').textContent = 'Choose your plan';
+    $('auth-sub').textContent = 'One more step before you can start scanning';
     $('org-setup-note').style.display = 'none';
     $('org-setup-logout').style.display = '';
     $('org-mode-row').style.display = 'none';
@@ -867,8 +878,8 @@
       if (!name) { toast('Enter your name', '#b91c1c'); done(); return; }
       if (pw.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); done(); return; }
       if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
-      var orgValidation = validateOrgFields();
-      if (orgValidation) { toast(orgValidation, '#b91c1c'); done(); return; }
+      // Org creation/joining is a separate step after this succeeds — see
+      // showOrgSetupPrompt() — so nothing org-related is validated here.
       sb.auth.signUp({ email: email, password: pw, options: { data: { full_name: name } } }).then(function (res) {
         done();
         if (res.error) { fail(res.error, 'Sign up failed'); return; }
@@ -876,7 +887,6 @@
           currentUser = { id: res.data.session.user.id, email: res.data.session.user.email, name: name };
           $('auth-pass').value = ''; $('auth-pass2').value = '';
           showOrgSetupPrompt();
-          completeOrgSetup();
         } else {
           toast('Check your email to confirm your account, then log in', '#2563eb');
           setAuthMode('login');
@@ -981,7 +991,7 @@
       // required at signup, since signUp() then returns no session and
       // completeOrgSetup() never got to run — the org gets created here
       // instead, on first login, rather than back at signup.
-      if (!currentOrg) { showOrgSetupPrompt(true); return; }
+      if (!currentOrg) { showOrgSetupPrompt(); return; }
       loadLocations();
       loadTakes();
     });
@@ -1167,6 +1177,8 @@
   function resetAuthUiState() {
     needsOrgSetup = false;
     paymentPending = false;
+    $('auth-heading').textContent = 'Barscan';
+    $('auth-sub').textContent = 'Stocktaking for hospitality';
     $('auth-credentials').style.display = '';
     $('org-setup-note').style.display = 'none';
     $('org-setup-logout').style.display = 'none';
@@ -1174,6 +1186,7 @@
     $('payment-pending-row').style.display = 'none';
     $('auth-submit').style.display = '';
     setOrgSignupMode('create');
+    setOrgRowsVisible(false);
   }
   function doLogout() {
     sb.auth.signOut().then(function () {
