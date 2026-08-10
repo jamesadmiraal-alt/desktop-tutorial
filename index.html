@@ -52,14 +52,16 @@
   .card p { color: #9ca3af; font-size: 0.92rem; }
 
   .how { padding: 40px 0 8px; }
-  h2.section { text-align: center; font-size: 1.7rem; margin-bottom: 24px; }
-  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+  h2.section { text-align: center; font-size: 1.7rem; margin-bottom: 6px; }
+  p.section-sub { text-align: center; color: #9ca3af; font-size: 0.95rem; margin-bottom: 28px; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
   .step { background: #1f2937; border-radius: 16px; padding: 20px; text-align: center; }
   .step .n {
     display: inline-flex; align-items: center; justify-content: center;
     width: 34px; height: 34px; border-radius: 999px; background: #2563eb;
     font-weight: 700; margin-bottom: 10px;
   }
+  .step h3 { margin-bottom: 4px; }
   .step p { color: #9ca3af; font-size: 0.9rem; }
 
   .pricing { padding: 48px 0 24px; }
@@ -162,11 +164,14 @@
 
 <section class="how wrap">
   <h2 class="section">How it works</h2>
+  <p class="section-sub">From signup to a finished stocktake in a few minutes.</p>
   <div class="steps">
-    <div class="step"><div class="n">1</div><h3>Scan</h3><p>Point the camera at a barcode — beep, done.</p></div>
-    <div class="step"><div class="n">2</div><h3>Count</h3><p>The number pad pops up — type the quantity and save.</p></div>
-    <div class="step"><div class="n">3</div><h3>Repeat</h3><p>Scanning the same product again adds to its count.</p></div>
-    <div class="step"><div class="n">4</div><h3>Export</h3><p>Download or share the finished stocktake as CSV.</p></div>
+    <div class="step"><div class="n">1</div><h3>Sign up</h3><p>Create your account with a name, email and password.</p></div>
+    <div class="step"><div class="n">2</div><h3>Set up your organisation</h3><p>Name it and add your first venue — or join an existing one with a code.</p></div>
+    <div class="step"><div class="n">3</div><h3>Choose a plan</h3><p>Pick Single- or Multi-venue and check out securely with Stripe.</p></div>
+    <div class="step"><div class="n">4</div><h3>Scan</h3><p>Point your phone's camera at a barcode — beep, done.</p></div>
+    <div class="step"><div class="n">5</div><h3>Count</h3><p>The number pad pops up — type the quantity and save. Scan again to add to the count.</p></div>
+    <div class="step"><div class="n">6</div><h3>Export</h3><p>Download or share the finished stocktake as CSV — ready for your books or stock system.</p></div>
   </div>
 </section>
 
