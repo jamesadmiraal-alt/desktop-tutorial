@@ -6,12 +6,13 @@
 <meta name="theme-color" content="#111827">
 <meta name="description" content="Barscan — barcode stocktaking for hospitality. Scan bottles with your phone, count stock by location, export to CSV.">
 <title>Barscan — stocktaking for hospitality</title>
+<link rel="stylesheet" href="styles.css">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html { scroll-behavior: smooth; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #111827; color: #f9fafb; line-height: 1.6;
+    background: var(--bg); color: var(--text); line-height: 1.6;
   }
   .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
 
@@ -21,85 +22,89 @@
   }
   nav .brand { font-size: 1.2rem; font-weight: 700; }
   nav .links { display: flex; gap: 10px; align-items: center; }
-  nav a.plain { color: #9ca3af; text-decoration: none; font-size: 0.95rem; padding: 8px 10px; }
-  nav a.plain:hover { color: #f9fafb; }
+  nav a.plain { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; padding: 8px 10px; }
+  nav a.plain:hover { color: var(--text); }
 
   .btn {
     display: inline-block; text-decoration: none; text-align: center;
     border-radius: 10px; font-size: 1rem; font-weight: 600;
-    padding: 12px 22px; color: #fff; background: #374151;
+    padding: 12px 22px; color: var(--on-accent); background: var(--btn-neutral-bg);
   }
   .btn:active { opacity: 0.85; }
-  .btn.primary { background: #2563eb; }
-  .btn.success { background: #059669; }
+  .btn.primary { background: var(--accent); }
+  .btn.success { background: var(--success); }
 
   .hero { text-align: center; padding: 64px 20px 48px; }
   .hero .emoji { font-size: 4rem; }
   .hero h1 { font-size: clamp(2rem, 6vw, 3.2rem); line-height: 1.15; margin: 16px 0 12px; }
-  .hero h1 span { color: #fbbf24; }
-  .hero p { color: #9ca3af; font-size: 1.15rem; max-width: 620px; margin: 0 auto 28px; }
+  .hero h1 span { color: var(--warning); }
+  .hero p { color: var(--text-dim); font-size: 1.15rem; max-width: 620px; margin: 0 auto 28px; }
   .hero .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-  .hero .note { color: #6b7280; font-size: 0.85rem; margin-top: 14px; }
+  .hero .note { color: var(--text-faint); font-size: 0.85rem; margin-top: 14px; }
 
   .features { padding: 32px 0 16px; }
   .features .grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
     gap: 16px;
   }
-  .card { background: #1f2937; border-radius: 16px; padding: 22px; }
+  .card { background: var(--surface); border-radius: 16px; padding: 22px; }
   .card .icon { font-size: 1.8rem; }
   .card h3 { margin: 10px 0 6px; font-size: 1.05rem; }
-  .card p { color: #9ca3af; font-size: 0.92rem; }
+  .card p { color: var(--text-dim); font-size: 0.92rem; }
 
   .how { padding: 40px 0 8px; }
   h2.section { text-align: center; font-size: 1.7rem; margin-bottom: 6px; }
-  p.section-sub { text-align: center; color: #9ca3af; font-size: 0.95rem; margin-bottom: 28px; }
+  p.section-sub { text-align: center; color: var(--text-dim); font-size: 0.95rem; margin-bottom: 28px; }
   .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-  .step { background: #1f2937; border-radius: 16px; padding: 20px; text-align: center; }
+  .step { background: var(--surface); border-radius: 16px; padding: 20px; text-align: center; }
   .step .n {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 34px; height: 34px; border-radius: 999px; background: #2563eb;
+    width: 34px; height: 34px; border-radius: 999px; background: var(--accent);
     font-weight: 700; margin-bottom: 10px;
   }
   .step h3 { margin-bottom: 4px; }
-  .step p { color: #9ca3af; font-size: 0.9rem; }
+  .step p { color: var(--text-dim); font-size: 0.9rem; }
 
   .pricing { padding: 48px 0 24px; }
   .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; max-width: 720px; margin: 0 auto; }
-  .plan { background: #1f2937; border-radius: 16px; padding: 26px 22px; display: flex; flex-direction: column; }
-  .plan.pro { border: 2px solid #059669; position: relative; }
+  .plan { background: var(--surface); border-radius: 16px; padding: 26px 22px; display: flex; flex-direction: column; }
+  .plan.pro { border: 2px solid var(--success); position: relative; }
   .plan.pro .tag {
     position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
-    background: #059669; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+    background: var(--success); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
     padding: 3px 12px; border-radius: 999px; text-transform: uppercase;
   }
   .plan h3 { font-size: 1.1rem; }
   .plan .price { font-size: 2.2rem; font-weight: 800; margin: 8px 0 2px; }
-  .plan .per { color: #9ca3af; font-size: 0.85rem; margin-bottom: 16px; }
+  .plan .per { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 16px; }
   .plan .annual-offer {
-    background: #111827; border: 1px solid #059669; border-radius: 10px;
-    padding: 8px 12px; font-size: 0.85rem; color: #d1d5db; margin: -6px 0 16px;
+    background: var(--bg); border: 1px solid var(--success); border-radius: 10px;
+    padding: 8px 12px; font-size: 0.85rem; color: var(--text-body); margin: -6px 0 16px;
   }
   .offer-tag {
-    background: #059669; color: #fff; font-size: 0.68rem; font-weight: 700;
+    background: var(--success); color: var(--on-accent); font-size: 0.68rem; font-weight: 700;
     padding: 2px 8px; border-radius: 999px; margin-left: 4px; white-space: nowrap;
   }
   .plan ul { list-style: none; margin-bottom: 20px; flex: 1; }
-  .plan li { padding: 5px 0; color: #d1d5db; font-size: 0.92rem; }
-  .plan li::before { content: "✓  "; color: #34d399; font-weight: 700; }
+  .plan li { padding: 5px 0; color: var(--text-body); font-size: 0.92rem; display: flex; align-items: flex-start; gap: 6px; }
+  .plan li::before { content: ""; width: 0.95em; height: 0.95em; flex: 0 0 auto; margin-top: 0.35em; background: var(--check); -webkit-mask: url(icons/check.svg) no-repeat center/contain; mask: url(icons/check.svg) no-repeat center/contain; }
   .plan .btn { width: 100%; }
 
   footer.site {
-    text-align: center; color: #6b7280; font-size: 0.8rem;
+    text-align: center; color: var(--text-faint); font-size: 0.8rem;
     padding: 32px 20px calc(32px + env(safe-area-inset-bottom));
   }
-  footer.site a { color: #9ca3af; }
+  footer.site a { color: var(--text-dim); }
+
+/* Lucide glyphs, masked so they inherit currentColor (see design system → ICONOGRAPHY) */
+.ico{display:inline-block;width:1em;height:1em;vertical-align:-0.125em;background:currentColor;-webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain}
+.ico.lg{width:1.15em;height:1.15em}
 </style>
 </head>
 <body>
 
 <nav>
-  <div class="brand">🍾 Barscan</div>
+  <div class="brand"><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan</div>
   <div class="links">
     <a class="plain" href="#pricing">Pricing</a>
     <a class="btn primary" href="app.html">Log in</a>
@@ -107,7 +112,7 @@
 </nav>
 
 <section class="hero">
-  <div class="emoji">🍾</div>
+  <div class="emoji"><span class="ico" style="--i:url(icons/wine.svg)"></span></div>
   <h1>Stocktake your bar<br>in <span>minutes</span>, not hours</h1>
   <p>Barscan turns any phone into a barcode scanner for hospitality stocktaking.
      Scan bottles, cans and kegs, punch in the count, and export a clean CSV —
@@ -122,25 +127,25 @@
 <section class="features wrap">
   <div class="grid">
     <div class="card">
-      <div class="icon">📱</div>
+      <div class="icon"><span class="ico" style="--i:url(icons/scan-barcode.svg)"></span></div>
       <h3>Scan with the phone camera</h3>
       <p>Reads the barcodes on bottles, cans and cases — EAN, UPC, Code 128, QR and more.
          The number pad opens the moment a scan lands, so counting is scan → type → next.</p>
     </div>
     <div class="card">
-      <div class="icon">📍</div>
+      <div class="icon"><span class="ico" style="--i:url(icons/map-pin.svg)"></span></div>
       <h3>Stocktakes by location</h3>
       <p>Create a named stocktake per location — main bar, cellar, storeroom — and pause and
          resume any of them whenever you like, from any device.</p>
     </div>
     <div class="card">
-      <div class="icon">☁️</div>
+      <div class="icon"><span class="ico" style="--i:url(icons/cloud.svg)"></span></div>
       <h3>Synced accounts</h3>
       <p>Every count is saved to the cloud as you go. Log in on another phone and pick up
          exactly where you left off.</p>
     </div>
     <div class="card">
-      <div class="icon">📤</div>
+      <div class="icon"><span class="ico" style="--i:url(icons/share-2.svg)"></span></div>
       <h3>Export anywhere</h3>
       <p>One tap exports the stocktake as CSV — download it, share it to email or WhatsApp,
          or paste it straight into your spreadsheet.</p>
@@ -150,7 +155,7 @@
 
 <section class="wrap" style="padding: 8px 20px 40px">
   <div class="card" style="text-align:center;max-width:680px;margin:0 auto">
-    <div class="icon">🏢</div>
+    <div class="icon"><span class="ico" style="--i:url(icons/building-2.svg)"></span></div>
     <h3 style="font-size:1.3rem;margin:12px 0 10px">Running more than one venue?</h3>
     <p style="color:#d1d5db;font-size:0.98rem;line-height:1.6">
       Single-venue keeps one bar's counts in one place. <b>Multi-venue</b> does more —
@@ -211,7 +216,7 @@
 </section>
 
 <footer class="site">
-  🍾 Barscan — stocktaking for hospitality · <a href="app.html">Open the app</a>
+  <span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan — stocktaking for hospitality · <a href="app.html">Open the app</a>
 </footer>
 
 </body>

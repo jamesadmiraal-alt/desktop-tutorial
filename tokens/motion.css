@@ -1,0 +1,19 @@
+/* Motion is deliberately almost absent: one opacity fade for the toast, one
+   opacity dim for press, and native smooth scrolling. No transforms, no
+   bounces, no entrance animations. */
+:root{
+  --duration-fast:0.2s; /* @kind other */
+  --ease-default:ease; /* @kind other */
+  --transition-toast:opacity 0.2s; /* @kind other */
+
+  /* button:active */
+  --press-opacity:0.8; /* @kind other */
+  /* marketing .btn:active */
+  --press-opacity-soft:0.85; /* @kind other */
+  /* link and text button :active */
+  --press-opacity-link:0.7; /* @kind other */
+  --disabled-opacity:0.45; /* @kind other */
+
+  --scroll-behavior:smooth; /* @kind other */
+  --tap-highlight:transparent;
+}

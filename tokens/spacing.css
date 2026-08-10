@@ -1,0 +1,44 @@
+/* Barscan is NOT on a 4/8 grid — it uses odd steps (5, 14, 18, 22, 26) freely.
+   These are the literal values in the source; do not round them. */
+:root{
+  --space-0:0;
+  --space-1:2px;
+  --space-2:3px;
+  --space-3:4px;
+  --space-4:5px;
+  --space-5:6px;
+  --space-6:8px;
+  --space-7:10px;
+  --space-8:12px;
+  --space-9:14px;
+  --space-10:16px;
+  --space-11:18px;
+  --space-12:20px;
+  --space-13:22px;
+  --space-14:24px;
+  --space-15:26px;
+  --space-16:28px;
+  --space-17:32px;
+  --space-18:40px;
+  --space-19:48px;
+  --space-20:64px;
+
+  /* recurring composites */
+  --gap-tight:6px;    /* qty stepper */
+  --gap-row:8px;      /* list rows, dialog actions */
+  --gap-grid:16px;    /* card grids */
+  --pad-card:22px;         /* marketing feature card */
+  --pad-card-app:18px 16px;/* app account card */
+  --pad-row:14px 12px;     /* stocktake row */
+  --pad-item:12px;         /* scan item */
+  --pad-control:12px 14px; /* app button */
+  --pad-control-lg:12px 22px; /* marketing button */
+  --pad-dialog:20px;
+  --pad-view:16px 12px;    /* scrolling app views */
+  --pad-page:0 20px;       /* marketing wrap gutter */
+
+  --grid-min-card:260px;   /* feature + plan grid minmax */
+  --grid-min-step:240px;   /* how-it-works grid minmax */
+  --safe-top:env(safe-area-inset-top);
+  --safe-bottom:env(safe-area-inset-bottom);
+}

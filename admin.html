@@ -6,6 +6,9 @@
 <meta name="theme-color" content="#111827">
 <title>Barscan Admin</title>
 <script>
+
+  // Lucide glyph as an HTML string, for icons set from JS
+  const ICO = (n, cls) => '<span class="ico' + (cls ? ' ' + cls : '') + '" style="--i:url(icons/' + n + '.svg)"></span>';
 // Same no-FOUC pattern as app.html — see that file's comment for why this
 // has to run synchronously here rather than in the main script.
 (function () {
@@ -17,41 +20,9 @@
 </script>
 <script src="supabase.min.js"></script>
 <script src="config.js"></script>
+<!-- Design-system tokens: colours, type, spacing, radii, motion -->
+<link rel="stylesheet" href="styles.css">
 <style>
-  /* Same token set as app.html, for visual consistency — kept in sync by
-     hand since there's no shared stylesheet (matches this repo's no-build
-     conventions; see CLAUDE.md). */
-  :root {
-    --bg: #111827;
-    --surface: #1f2937;
-    --border: #374151;
-    --border-strong: #4b5563;
-    --btn-neutral-bg: #374151;
-    --btn-neutral-text: #fff;
-    --text: #f9fafb;
-    --text-body: #d1d5db;
-    --text-dim: #9ca3af;
-    --text-faint: #6b7280;
-    --on-accent: #fff;
-    --accent: #2563eb;
-    --success: #059669;
-    --danger: #b91c1c;
-    --link: #60a5fa;
-    --warning: #fbbf24;
-  }
-  :root[data-theme="light"] {
-    --bg: #f3f4f6;
-    --surface: #ffffff;
-    --border: #e5e7eb;
-    --border-strong: #d1d5db;
-    --btn-neutral-bg: #e5e7eb;
-    --btn-neutral-text: #111827;
-    --text: #111827;
-    --text-body: #374151;
-    --text-dim: #4b5563;
-    --link: #1d4ed8;
-    --warning: #d97706;
-  }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -127,21 +98,25 @@
     font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 60;
   }
   #toast.show { opacity: 1; }
+
+/* Lucide glyphs, masked so they inherit currentColor (see design system → ICONOGRAPHY) */
+.ico{display:inline-block;width:1em;height:1em;vertical-align:-0.125em;background:currentColor;-webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain}
+.ico.lg{width:1.15em;height:1.15em}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>🍾 Barscan Admin</h1>
+  <h1><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan Admin</h1>
   <div class="right">
-    <button id="theme-toggle">🌙</button>
+    <button id="theme-toggle"><span class="ico" style="--i:url(icons/moon.svg)"></span></button>
     <button id="logout-btn" style="display:none">Log out</button>
   </div>
 </header>
 
 <div id="login-view" class="wrap">
   <div class="auth-card">
-    <div class="logo">🍾</div>
+    <div class="logo"><span class="lg" style="--i:url(icons/wine.svg)"></span></div>
     <h2>Barscan Admin</h2>
     <div class="sub">Sign in with your owner or manager account</div>
     <label for="login-email">Email</label>
@@ -211,7 +186,7 @@
     document.documentElement.setAttribute('data-theme', theme);
     try { localStorage.setItem('barscan-theme', theme); } catch (e) {}
     var isLight = theme === 'light';
-    $('theme-toggle').textContent = isLight ? '☀️' : '🌙';
+    $('theme-toggle').innerHTML = isLight ? ICO('sun') : ICO('moon');
     $('theme-toggle').setAttribute('aria-label', isLight ? 'Switch to dark mode' : 'Switch to light mode');
     var meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', isLight ? '#ffffff' : '#111827');

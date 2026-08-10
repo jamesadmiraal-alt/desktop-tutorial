@@ -6,6 +6,9 @@
 <meta name="theme-color" content="#111827">
 <title>Barscan</title>
 <script>
+
+  // Lucide glyph as an HTML string, for icons set from JS
+  const ICO = (n, cls) => '<span class="ico' + (cls ? ' ' + cls : '') + '" style="--i:url(icons/' + n + '.svg)"></span>';
 // Sets data-theme before first paint so there's no flash of the wrong theme
 // on load — has to run here, synchronously in <head>, not in the main
 // script at the bottom of <body>. applyTheme() later in that main script
@@ -28,46 +31,9 @@
 <script src="capacitor-app-plugin.js"></script>
 <script src="capacitor-browser-plugin.js"></script>
 <script src="capacitor-status-bar-plugin.js"></script>
+<!-- Design-system tokens: colours, type, spacing, radii, motion -->
+<link rel="stylesheet" href="styles.css">
 <style>
-  :root {
-    /* Dark is the default — matches the app's original always-dark look, so
-       nothing changes for anyone until data-theme="light" is set. See
-       CLAUDE.md for how the theme is chosen/persisted. */
-    --bg: #111827;
-    --surface: #1f2937;
-    --border: #374151;
-    --border-strong: #4b5563;
-    --btn-neutral-bg: #374151;
-    --btn-neutral-text: #fff;
-    --text: #f9fafb;
-    --text-body: #d1d5db;
-    --text-dim: #9ca3af;
-    --text-faint: #6b7280;
-    --on-accent: #fff;
-    --accent: #2563eb;
-    --success: #059669;
-    --danger: #b91c1c;
-    --link: #60a5fa;
-    --warning: #fbbf24;
-    --delete-icon: #f87171;
-  }
-  :root[data-theme="light"] {
-    --bg: #f3f4f6;
-    --surface: #ffffff;
-    --border: #e5e7eb;
-    --border-strong: #d1d5db;
-    --btn-neutral-bg: #e5e7eb;
-    --btn-neutral-text: #111827;
-    --text: #111827;
-    --text-body: #374151;
-    --text-dim: #4b5563;
-    /* --text-faint (#6b7280) is unchanged — ~4.6:1 on white, still passes AA */
-    --link: #1d4ed8;
-    --warning: #d97706;
-    --delete-icon: #dc2626;
-    /* --accent/--success/--danger/--on-accent unchanged — always have their
-       own white foreground text, so the surface behind them doesn't matter */
-  }
 
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; }
@@ -214,19 +180,19 @@
   /* The scanner viewport intentionally stays dark in both themes — it sits
      against a live camera feed, not page content, and a light-themed
      viewfinder would look broken next to the actual video. */
-  #reader-wrap { position: relative; background: #000; }
+  #reader-wrap { position: relative; background: var(--viewfinder-black); }
   #reader { width: 100%; }
   #reader video { width: 100%; max-height: 45vh; object-fit: cover; display: block; }
-  #scanner-off { padding: 32px 16px; text-align: center; color: #9ca3af; background: #0b0f19; font-size: 0.9rem; }
+  #scanner-off { padding: 32px 16px; text-align: center; color: var(--gray-400); background: var(--viewfinder-shell); font-size: 0.9rem; }
   #cam-tools {
     position: absolute; bottom: 8px; left: 8px; right: 8px; display: none;
     align-items: center; gap: 10px;
   }
   #cam-tools.on { display: flex; }
-  #torch-btn { padding: 8px 12px; font-size: 1rem; background: rgba(17,24,39,0.75); display: none; }
+  #torch-btn { padding: 8px 12px; font-size: 1rem; background: var(--tool-scrim); display: none; }
   #torch-btn.avail { display: block; }
-  #torch-btn.lit { background: #f59e0b; }
-  #zoom-range { flex: 1; accent-color: #2563eb; display: none; }
+  #torch-btn.lit { background: var(--torch-lit); }
+  #zoom-range { flex: 1; accent-color: var(--accent); display: none; }
   #zoom-range.avail { display: block; }
 
   .controls { display: flex; gap: 8px; padding: 10px 12px; background: var(--surface); }
@@ -252,7 +218,7 @@
 
   /* ---- Modals ---- */
   .overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 50;
+    position: fixed; inset: 0; background: var(--scrim); z-index: 50;
     display: none; align-items: center; justify-content: center; padding: 16px;
   }
   .overlay.open { display: flex; }
@@ -274,22 +240,26 @@
     white-space: nowrap; max-width: 92vw; overflow: hidden; text-overflow: ellipsis;
   }
   #toast.show { opacity: 1; }
+
+/* Lucide glyphs, masked so they inherit currentColor (see design system → ICONOGRAPHY) */
+.ico{display:inline-block;width:1em;height:1em;vertical-align:-0.125em;background:currentColor;-webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain}
+.ico.lg{width:1.15em;height:1.15em}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>🍾 Barscan</h1>
+  <h1><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan</h1>
   <div class="right">
     <button id="theme-toggle" aria-label="Switch theme"></button>
-    <button id="account-btn" style="display:none">👤 <span id="user-badge"></span></button>
+    <button id="account-btn" style="display:none"><span class="ico" style="--i:url(icons/user.svg)"></span> <span id="user-badge"></span></button>
   </div>
 </header>
 
 <!-- ===== Setup (unconfigured) ===== -->
 <div id="setup-view" class="view">
   <div class="auth-card setup-card">
-    <div class="logo">🔧</div>
+    <div class="logo"><span class="lg" style="--i:url(icons/wrench.svg)"></span></div>
     <h2>Barscan setup</h2>
     <p>This copy of Barscan isn't connected to a Supabase project yet.</p>
     <p>Edit <code>config.js</code> and fill in your project's
@@ -302,7 +272,7 @@
 <!-- ===== Auth ===== -->
 <div id="auth-view" class="view">
   <div class="auth-card">
-    <div class="logo">🍾</div>
+    <div class="logo"><span class="lg" style="--i:url(icons/wine.svg)"></span></div>
     <h2 id="auth-heading">Barscan</h2>
     <div class="sub" id="auth-sub">Stocktaking for hospitality</div>
     <div id="auth-credentials">
@@ -501,16 +471,16 @@
   </div>
   <div id="reader-wrap">
     <div id="reader"></div>
-    <div id="scanner-off">Camera is off. Tap <b>📷 Scan</b> to begin scanning.<br>
+    <div id="scanner-off">Camera is off. Tap <b><span class="ico" style="--i:url(icons/camera.svg)"></span> Scan</b> to begin scanning.<br>
       <small>Camera access requires HTTPS and permission from your browser.</small>
     </div>
     <div id="cam-tools">
-      <button id="torch-btn">🔦</button>
+      <button id="torch-btn"><span class="ico" style="--i:url(icons/flashlight.svg)"></span></button>
       <input id="zoom-range" type="range">
     </div>
   </div>
   <div class="controls">
-    <button id="toggle-cam" class="primary flex">📷 Scan</button>
+    <button id="toggle-cam" class="primary flex"><span class="ico" style="--i:url(icons/camera.svg)"></span> Scan</button>
   </div>
   <div id="manual-row">
     <input id="manual-input" type="text" placeholder="Or type a barcode…" autocomplete="off">
@@ -528,7 +498,7 @@
   <div class="dialog">
     <div class="title" id="take-actions-title">Stocktake</div>
     <div class="action-sheet">
-      <button id="take-export" class="success">⬇ Export ▾</button>
+      <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export ▾</button>
       <button id="take-share">Share</button>
       <button id="take-clear" class="danger">Clear items</button>
       <button id="take-actions-cancel">Cancel</button>
@@ -604,7 +574,7 @@
     document.documentElement.setAttribute('data-theme', theme);
     try { localStorage.setItem('barscan-theme', theme); } catch (e) {}
     var isLight = theme === 'light';
-    $('theme-toggle').textContent = isLight ? '☀️' : '🌙';
+    $('theme-toggle').innerHTML = isLight ? ICO('sun') : ICO('moon');
     $('theme-toggle').setAttribute('aria-label', isLight ? 'Switch to dark mode' : 'Switch to light mode');
     var themeColorMeta = document.querySelector('meta[name="theme-color"]');
     if (themeColorMeta) themeColorMeta.setAttribute('content', isLight ? '#ffffff' : '#111827');
@@ -1717,7 +1687,7 @@
     $('torch-btn').classList.remove('avail', 'lit');
     $('zoom-range').classList.remove('avail');
     $('scanner-off').style.display = 'block';
-    $('toggle-cam').textContent = '📷 Scan';
+    $('toggle-cam').innerHTML = ICO('camera') + ' Scan';
     $('toggle-cam').classList.add('primary');
   }
 

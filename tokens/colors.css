@@ -1,0 +1,51 @@
+/* Semantic colour aliases. Dark is the DEFAULT — Barscan was always-dark
+   first; `:root[data-theme="light"]` is the opt-in override, persisted by the
+   app. Consumers should reference these, never the raw palette. */
+:root{
+  --bg:var(--gray-900);
+  --surface:var(--gray-800);
+  --border:var(--gray-700);
+  --border-strong:var(--gray-600);
+
+  --btn-neutral-bg:var(--gray-700);
+  --btn-neutral-text:var(--white);
+
+  --text:var(--gray-50);
+  --text-body:var(--gray-300);
+  --text-dim:var(--gray-400);
+  --text-faint:var(--gray-500);
+
+  --on-accent:var(--white);
+  --accent:var(--blue-600);
+  --success:var(--emerald-600);
+  --danger:var(--red-700);
+  --link:var(--blue-400);
+  --warning:var(--amber-400);
+  --delete-icon:var(--red-400);
+
+  /* extras used by marketing + scanner, aliased for parity */
+  --check:var(--emerald-400);
+  --torch-lit:var(--amber-500);
+  --scrim:rgba(0,0,0,0.7);
+  --tool-scrim:rgba(17,24,39,0.75);
+}
+:root[data-theme="light"]{
+  --bg:var(--gray-100);
+  --surface:var(--white);
+  --border:var(--gray-200);
+  --border-strong:var(--gray-300);
+
+  --btn-neutral-bg:var(--gray-200);
+  --btn-neutral-text:var(--gray-900);
+
+  --text:var(--gray-900);
+  --text-body:var(--gray-700);
+  --text-dim:var(--gray-600);
+  /* --text-faint stays #6b7280 — ~4.6:1 on white, still passes AA */
+
+  --link:var(--blue-700);
+  --warning:var(--amber-600);
+  --delete-icon:var(--red-600);
+  /* --accent / --success / --danger / --on-accent are unchanged: they always
+     carry their own white foreground, so the surface behind them is moot */
+}

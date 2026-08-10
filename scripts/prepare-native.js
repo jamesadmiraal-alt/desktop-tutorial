@@ -19,6 +19,7 @@ const copies = [
   ['capacitor-app-plugin.js', 'capacitor-app-plugin.js'],
   ['capacitor-browser-plugin.js', 'capacitor-browser-plugin.js'],
   ['capacitor-status-bar-plugin.js', 'capacitor-status-bar-plugin.js'],
+  ['styles.css', 'styles.css'],
   ['app.html', 'index.html'],
 ];
 
@@ -29,4 +30,15 @@ for (const [src, dest] of copies) {
   fs.copyFileSync(path.join(root, src), path.join(outDir, dest));
 }
 
-console.log('native-www/ ready (' + copies.length + ' files copied from ' + root + ')');
+let extraCount = 0;
+for (const dirName of ['tokens', 'icons']) {
+  const srcDir = path.join(root, dirName);
+  const destDir = path.join(outDir, dirName);
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const file of fs.readdirSync(srcDir)) {
+    fs.copyFileSync(path.join(srcDir, file), path.join(destDir, file));
+    extraCount++;
+  }
+}
+
+console.log('native-www/ ready (' + (copies.length + extraCount) + ' files copied from ' + root + ')');
