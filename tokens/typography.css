@@ -1,0 +1,50 @@
+/* Barscan ships NO webfont. It uses the platform UI stack so the product
+   looks native on the phone it's held in, and ui-monospace for barcodes.
+   There are no @font-face rules in the source and none are invented here. */
+:root{
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-mono:ui-monospace,Menlo,monospace;
+
+  /* size scale, in the rem values the source actually uses */
+  --text-hero:clamp(2rem,6vw,3.2rem); /* landing h1 */
+  --text-price:2.2rem;                /* plan price */
+  --text-display-sm:2rem;             /* auth logo glyph */
+  --text-h2:1.7rem;                   /* section heading */
+  --text-qty:1.6rem;                  /* quantity input */
+  --text-h3:1.4rem;                   /* auth card heading */
+  --text-lead:1.3rem;                 /* in-card feature heading */
+  --text-brand:1.2rem;                /* nav wordmark */
+  --text-lg:1.15rem;                  /* hero paragraph */
+  --text-title:1.1rem;                /* app header h1, list row name */
+  --text-row:1.05rem;                 /* row name, card h3, big numerals */
+  --text-base:1rem;                   /* inputs, marketing button */
+  --text-body-sm:0.95rem;             /* app button, section sub */
+  --text-card:0.92rem;                /* card copy, list copy */
+  --text-sm:0.9rem;
+  --text-xs:0.85rem;                  /* labels, hints */
+  --text-label:0.8rem;                /* form label, badge */
+  --text-pw:0.78rem;
+  --text-meta:0.75rem;                /* row meta, footnote */
+  --text-note:0.72rem;
+  --text-tag:0.68rem;                 /* pill tags */
+
+  --leading-tight:1.15;   /* hero h1 */
+  --leading-snug:1.4;
+  --leading-copy:1.5;     /* dense in-card prose */
+  --leading-body:1.6;     /* body default */
+
+  --weight-normal:400;
+  --weight-medium:600;
+  --weight-bold:700;
+  --weight-heavy:800;
+
+  --tracking-caps:0.05em;  /* uppercase section labels */
+  --tracking-tag:0.06em;   /* uppercase pill tags */
+
+  --measure-hero:620px;    /* hero paragraph max-width */
+  --measure-prose:680px;
+  --page-max:960px;        /* marketing wrap */
+  --app-max:640px;         /* app column */
+  --plans-max:720px;
+  --dialog-max:360px;
+}
