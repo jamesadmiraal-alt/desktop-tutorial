@@ -249,7 +249,7 @@
 <body>
 
 <header>
-  <h1><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan</h1>
+  <h1 id="home-btn" style="cursor:pointer"><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan</h1>
   <div class="right">
     <button id="theme-toggle" aria-label="Switch theme"></button>
     <button id="account-btn" style="display:none"><span class="ico" style="--i:url(icons/user.svg)"></span> <span id="user-badge"></span></button>
@@ -310,7 +310,7 @@
          meant the org never got created at signup time in the first place.
          See showOrgSetupPrompt(). -->
     <div id="org-setup-note" class="auth-note" style="display:none">Signed in as <b id="org-setup-email"></b>.</div>
-    <button id="org-setup-logout" class="link-btn" style="display:none">Not you? Log out</button>
+    <button id="org-setup-logout" class="link-btn" style="display:none">Log out</button>
     <div id="org-mode-row" style="display:none">
       <div class="auth-tabs">
         <button id="org-mode-create" class="on" type="button">Create organisation</button>
@@ -369,7 +369,7 @@
       <button type="button" class="pw-toggle" data-for="reset-pass2" title="Show password">Show</button>
     </div>
     <div class="dialog-actions" style="margin-top:14px">
-      <button id="reset-pass-cancel" class="flex">Not now</button>
+      <button id="reset-pass-cancel" class="flex">Cancel</button>
       <button id="reset-pass-save" class="primary flex">Save password</button>
     </div>
   </div>
@@ -1143,6 +1143,14 @@
   }
   $('account-btn').onclick = function () { if (currentUser) openAccount(); };
   $('acct-back').onclick = function () { loadTakes(); };
+  // Logo-as-home, same destination as the explicit back buttons — only
+  // does anything from the two views that already have a "back" concept;
+  // a no-op elsewhere (home is already home, and auth/setup screens have
+  // no home state to return to yet).
+  $('home-btn').onclick = function () {
+    if (currentView === 'scan') $('back-btn').onclick();
+    else if (currentView === 'account') $('acct-back').onclick();
+  };
 
   // ---- Change region (billing country) — owner only ----
   $('change-region-btn').onclick = function () {
@@ -1199,7 +1207,16 @@
     });
   }
   $('logout-btn').onclick = doLogout;
-  $('org-setup-logout').onclick = doLogout;
+  // Unlike the main Account-view logout, this is the ONLY way out of the
+  // org-setup/payment-pending screens (see showOrgSetupPrompt()'s comment) —
+  // and on org-setup specifically it can silently discard a typed org name,
+  // so it gets a confirmation the plain logout doesn't need.
+  $('org-setup-logout').onclick = function () {
+    var msg = needsOrgSetup
+      ? "Log out? You'll need to set up your organisation again."
+      : 'Log out? You can pick a plan again next time you log in.';
+    if (confirm(msg)) doLogout();
+  };
 
   // ---- Delete account ----
   $('delete-account-btn').onclick = function () { $('delete-overlay').classList.add('open'); };
@@ -1881,6 +1898,10 @@
     App.addListener('backButton', function () {
       if (currentView === 'scan') $('back-btn').onclick();
       else if (currentView === 'account') $('acct-back').onclick();
+      // org-setup/payment-pending are shown inside 'auth' — without this,
+      // hardware back exits the app entirely from a screen the user can't
+      // otherwise escape except via the (now-confirmed) logout button.
+      else if (currentView === 'auth' && (needsOrgSetup || paymentPending)) $('org-setup-logout').onclick();
       else App.exitApp();
     });
 

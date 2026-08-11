@@ -37,6 +37,12 @@
   header h1 { font-size: 1.1rem; font-weight: 600; }
   header .right { display: flex; align-items: center; gap: 8px; }
   #theme-toggle { font-size: 1rem; padding: 6px 10px; }
+  .header-link {
+    display: inline-flex; align-items: center; border-radius: 10px;
+    font-size: 0.9rem; font-weight: 600; padding: 8px 12px; text-decoration: none;
+    color: var(--btn-neutral-text); background: var(--btn-neutral-bg);
+  }
+  .header-link:active { opacity: 0.8; }
 
   /* Desk-oriented: wider than app.html's phone-first 640px cap, per
      CLAUDE.md's own reasoning for why this is a separate file. */
@@ -115,6 +121,7 @@
 <header>
   <h1><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan Admin</h1>
   <div class="right">
+    <a href="app.html" class="header-link">‹ Back to app</a>
     <button id="theme-toggle"><span class="ico" style="--i:url(icons/moon.svg)"></span></button>
     <button id="logout-btn" style="display:none">Log out</button>
   </div>
