@@ -12,16 +12,26 @@
 // `location_id ... on delete restrict` FK (schema.sql) already blocks that
 // at the database level; this just surfaces that error legibly.
 //
+// The Postgres-side work (membership/org lookup, the actual locations
+// delete, the recount) runs as the CALLER's own session, not the service
+// role — RLS already permits everything this function does to `locations`
+// under an owner/manager's own session (see the "owner manager delete
+// locations"/"owner manager insert locations" policies in schema.sql), so
+// service-role was never required there, only for the Stripe call below.
+// Running it as the caller means schema.sql's log_locations_change()
+// trigger picks up this removal automatically (auth.uid() resolves
+// correctly), in the same transaction as the delete — no separate audit
+// insert needed here.
+//
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   STRIPE_SECRET_KEY  - the "sk_..." secret key (already added for the
 //                        other billing functions — shared project-wide)
-// (SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
+// (SUPABASE_URL and SUPABASE_ANON_KEY are injected automatically.)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const CORS_HEADERS = {
@@ -37,12 +47,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-async function db(path: string, init: RequestInit = {}): Promise<Response> {
+// Runs as the calling user (their own JWT, forwarded), not the service
+// role — RLS applies exactly as it would for a direct client call, and
+// auth.uid() inside any trigger fired by these requests resolves to this
+// user, not null.
+async function userDb(authHeader: string, path: string, init: RequestInit = {}): Promise<Response> {
   return await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...init,
     headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
+      apikey: ANON_KEY,
+      Authorization: authHeader,
       "Content-Type": "application/json",
       ...(init.headers ?? {}),
     },
@@ -81,7 +95,8 @@ Deno.serve(async (req) => {
   if (!locationId) return jsonResponse({ error: "locationId is required." }, 400);
 
   try {
-    const memberRes = await db(
+    const memberRes = await userDb(
+      authHeader,
       `memberships?user_id=eq.${encodeURIComponent(user.id)}` +
         `&select=role,organisations(id,plan_tier,stripe_subscription_item_id)`,
     );
@@ -96,8 +111,10 @@ Deno.serve(async (req) => {
     }
 
     // Scope the delete to this org too — belt-and-braces alongside the
-    // membership/role check above.
-    const deleteRes = await db(
+    // membership/role check above (and alongside RLS itself, which already
+    // enforces org_id = my_org_id() on this request).
+    const deleteRes = await userDb(
+      authHeader,
       `locations?id=eq.${encodeURIComponent(locationId)}&org_id=eq.${encodeURIComponent(org.id)}`,
       { method: "DELETE", headers: { Prefer: "return=representation" } },
     );
@@ -113,7 +130,7 @@ Deno.serve(async (req) => {
     if (!deleted.length) return jsonResponse({ error: "Location not found." }, 404);
 
     if (org.stripe_subscription_item_id) {
-      const countRes = await db(`locations?org_id=eq.${encodeURIComponent(org.id)}&select=id`, {
+      const countRes = await userDb(authHeader, `locations?org_id=eq.${encodeURIComponent(org.id)}&select=id`, {
         headers: { Prefer: "count=exact" },
       });
       const contentRange = countRes.headers.get("content-range") ?? "";

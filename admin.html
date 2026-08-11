@@ -70,6 +70,12 @@
   .new-badge { background: var(--accent); color: var(--on-accent); font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
   #roster-list:empty::after { content: 'No members yet.'; color: var(--text-dim); font-size: 0.85rem; }
 
+  .audit-row { padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .audit-row:last-child { border-bottom: none; }
+  .audit-row .msg { font-size: 0.88rem; color: var(--text); }
+  .audit-row .when { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
+  #audit-log-list:empty::after { content: 'No activity yet.'; color: var(--text-dim); font-size: 0.85rem; }
+
   button {
     border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
     padding: 11px 14px; cursor: pointer; color: var(--btn-neutral-text); background: var(--btn-neutral-bg);
@@ -171,6 +177,12 @@
     <h2>Today's code</h2>
     <p class="hint">Changes automatically once a day. Only share it with someone joining today — both this and the join code above are required together.</p>
     <div class="code-box" id="daily-code-display">…</div>
+  </div>
+
+  <div class="card">
+    <h2>Activity log</h2>
+    <p class="hint">Recent location, team and organisation changes — most recent first.</p>
+    <div id="audit-log-list"></div>
   </div>
 </div>
 
@@ -413,6 +425,51 @@
     });
   }
 
+  // ---- Activity log ----
+  // One sentence per row, built from `action` — not a generic diff viewer.
+  // Falls back to a plain "<actor> <action>" string for anything not listed
+  // here, so the list never silently drops a row if the action set grows.
+  var AUDIT_SENTENCES = {
+    'location.created': function (r) { return r.actor_label + ' added location "' + r.target_label + '"'; },
+    'location.renamed': function (r) { return r.actor_label + ' renamed location "' + r.before.name + '" to "' + r.after.name + '"'; },
+    'location.removed': function (r) { return r.actor_label + ' removed location "' + r.target_label + '"'; },
+    'membership.role_changed': function (r) { return r.actor_label + ' changed ' + r.target_label + '’s role from ' + r.before.role + ' to ' + r.after.role; },
+    'membership.removed': function (r) { return r.actor_label + ' removed ' + r.target_label + ' from the organisation'; },
+    'stocktake.deleted': function (r) { return r.actor_label + ' deleted stocktake "' + r.target_label + '"'; },
+    'stocktake_items.cleared': function (r) { return r.actor_label + ' cleared all items from "' + r.target_label + '"'; },
+    'organisation.name_changed': function (r) { return r.actor_label + ' renamed the organisation from "' + r.before.name + '" to "' + r.after.name + '"'; },
+    'organisation.logo_changed': function (r) { return r.actor_label + ' changed the organisation logo'; },
+    'organisation.export_format_changed': function (r) { return r.actor_label + ' changed the export format from ' + r.before.export_format + ' to ' + r.after.export_format; },
+    'organisation.country_changed': function (r) { return r.actor_label + ' changed the billing country from ' + r.before.country + ' to ' + r.after.country; },
+    'organisation.join_code_changed': function (r) { return r.actor_label + ' rotated the join code'; }
+  };
+
+  function renderAuditLog(rows) {
+    var list = $('audit-log-list');
+    list.innerHTML = '';
+    rows.forEach(function (r) {
+      var row = document.createElement('div');
+      row.className = 'audit-row';
+      var msg = document.createElement('div');
+      msg.className = 'msg';
+      var describe = AUDIT_SENTENCES[r.action];
+      msg.textContent = describe ? describe(r) : (r.actor_label + ' ' + r.action);
+      var when = document.createElement('div');
+      when.className = 'when';
+      when.textContent = new Date(r.created_at).toLocaleString();
+      row.appendChild(msg); row.appendChild(when);
+      list.appendChild(row);
+    });
+  }
+
+  function loadAuditLog() {
+    sb.from('audit_log').select('*').eq('org_id', currentOrg.id)
+      .order('created_at', { ascending: false }).limit(30).then(function (res) {
+        if (res.error) { fail(res.error, 'Could not load activity log'); return; }
+        renderAuditLog(res.data || []);
+      });
+  }
+
   // ---- Auth ----
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
@@ -446,6 +503,7 @@
         loadLocations();
         loadRoster();
         loadDailyCode();
+        loadAuditLog();
       });
   }
 

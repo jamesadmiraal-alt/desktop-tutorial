@@ -1832,7 +1832,7 @@
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to clear', '#b91c1c'); $('take-actions-overlay').classList.remove('open'); return; }
       if (!confirm('Delete all ' + takeItems.length + ' scanned items in "' + actionsTake.name + '"? Export first if you need the data.')) return;
-      sb.from('stocktake_items').delete().eq('stocktake_id', actionsTake.id).then(function (res) {
+      sb.rpc('clear_stocktake_items', { p_stocktake_id: actionsTake.id }).then(function (res) {
         if (res.error) { fail(res.error, 'Clear failed'); return; }
         $('take-actions-overlay').classList.remove('open');
         actionsTake.stocktake_items = [];

@@ -488,6 +488,250 @@ create policy "org members update items" on public.stocktake_items
 create policy "org members delete items" on public.stocktake_items
   for delete using (org_id = public.my_org_id());
 
+-- ==========================================================================
+-- Operator activity log — "who did what". Deliberately NOT dropped and
+-- recreated on every run like every table above: it's the historical
+-- record itself, and this file now gets re-run against a live org routinely
+-- (every time a feature needs a schema change), not just once at the start.
+-- `create table if not exists` + explicit `if exists` guards below keep
+-- reruns safe without wiping existing log rows. Every other app table above
+-- still gets `drop table ... cascade`'d on each run, which would silently
+-- destroy this table's FK constraints (the cascade drops dependent
+-- constraint objects) without the unconditional drop/re-add below.
+-- ==========================================================================
+create table if not exists public.audit_log (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid,
+  org_label text not null,
+  actor_id uuid,
+  actor_label text not null,
+  action text not null,           -- dot-namespaced, e.g. 'location.renamed'
+  entity_type text not null,      -- 'location' | 'membership' | 'organisation' | 'stocktake'
+  entity_id uuid,                 -- NOT a FK — the referenced row may be long gone
+  target_label text,              -- human label for what was affected
+  before jsonb,
+  after jsonb,
+  created_at timestamptz not null default now()
+);
+
+-- on delete set null (not cascade): if an org is ever dissolved (e.g. a
+-- sole member deleting their account), its log history shouldn't vanish in
+-- the same transaction as the event it exists to explain. org_label/
+-- actor_label are snapshotted at write time for the same reason — profiles
+-- cascade-deletes with auth.users, so a join-at-read-time approach would go
+-- blank exactly when a departed operator's history matters most.
+alter table public.audit_log drop constraint if exists audit_log_org_id_fkey;
+alter table public.audit_log add constraint audit_log_org_id_fkey
+  foreign key (org_id) references public.organisations(id) on delete set null;
+
+alter table public.audit_log drop constraint if exists audit_log_actor_id_fkey;
+alter table public.audit_log add constraint audit_log_actor_id_fkey
+  foreign key (actor_id) references auth.users(id) on delete set null;
+
+create index if not exists audit_log_org_created_idx
+  on public.audit_log (org_id, created_at desc);
+
+alter table public.audit_log enable row level security;
+
+-- No insert/update/delete policy for `authenticated` at all — RLS defaults
+-- to deny for any command with zero matching policies. Writes only happen
+-- from inside `security definer` trigger functions below (which execute as
+-- the function owner and bypass RLS, same mechanism that already lets
+-- create_organisation()/join_organisation() insert into
+-- organisations/memberships with no direct insert policy on those tables
+-- either) — nobody, not even an org owner, can fabricate or edit a log
+-- entry through the client.
+drop policy if exists "owner manager read audit log" on public.audit_log;
+create policy "owner manager read audit log" on public.audit_log
+  for select using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- A trigger only writes a log row when auth.uid() is non-null — i.e. a real
+-- end-user's own RLS-governed session made the change. Writes made via a
+-- service-role key (some Edge Functions, e.g. stripe-webhook's
+-- ensureFirstLocation()) have no end-user JWT, so auth.uid() is null there
+-- and the trigger silently no-ops — deliberate, not a bug: those are
+-- system-driven writes with no human actor to attribute.
+create or replace function public.log_locations_change()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+begin
+  if actor is null then
+    return coalesce(new, old);
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o
+    where o.id = coalesce(new.org_id, old.org_id);
+
+  if TG_OP = 'INSERT' then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, after)
+    values (new.org_id, org_label, actor, actor_label, 'location.created', 'location', new.id, new.name, to_jsonb(new));
+  elsif TG_OP = 'UPDATE' and old.name is distinct from new.name then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.org_id, org_label, actor, actor_label, 'location.renamed', 'location', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  elsif TG_OP = 'DELETE' then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
+    values (old.org_id, org_label, actor, actor_label, 'location.removed', 'location', old.id, old.name, to_jsonb(old));
+  end if;
+  return coalesce(new, old);
+end $$;
+
+create trigger log_locations_audit
+  after insert or update or delete on public.locations
+  for each row execute function public.log_locations_change();
+
+-- membership INSERT is deliberately not logged — join_organisation() already
+-- durably records who joined and when via the row itself (created_at).
+create or replace function public.log_memberships_change()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+  target_label text;
+begin
+  if actor is null then
+    return coalesce(new, old);
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o
+    where o.id = coalesce(new.org_id, old.org_id);
+  select coalesce(p.full_name, u.email, 'Unknown user') into target_label
+    from auth.users u left join public.profiles p on p.id = u.id
+   where u.id = coalesce(new.user_id, old.user_id);
+
+  if TG_OP = 'UPDATE' and old.role is distinct from new.role then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.org_id, org_label, actor, actor_label, 'membership.role_changed', 'membership', new.user_id, target_label, to_jsonb(old), to_jsonb(new));
+  elsif TG_OP = 'DELETE' then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
+    values (old.org_id, org_label, actor, actor_label, 'membership.removed', 'membership', old.user_id, target_label, to_jsonb(old));
+  end if;
+  return coalesce(new, old);
+end $$;
+
+create trigger log_memberships_audit
+  after update or delete on public.memberships
+  for each row execute function public.log_memberships_change();
+
+-- Watches every owner-writable organisations column (the same set the
+-- column-scoped GRANT above already lets owners write) except the passive
+-- roster_last_viewed_at read-tracking touch, which isn't an operator action.
+create or replace function public.log_organisations_change()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+begin
+  if actor is null then
+    return new;
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+
+  if old.name is distinct from new.name then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.name_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
+  if old.logo_url is distinct from new.logo_url then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.logo_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
+  if old.export_format is distinct from new.export_format then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.export_format_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
+  if old.country is distinct from new.country then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.country_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
+  if old.join_code is distinct from new.join_code then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.join_code_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
+  return new;
+end $$;
+
+create trigger log_organisations_audit
+  after update on public.organisations
+  for each row execute function public.log_organisations_change();
+
+-- stocktakes: delete only. Creation is already durably attributed via
+-- created_by; the only update that happens today is an automatic
+-- status->'completed' side effect of exporting, not an operator decision.
+create or replace function public.log_stocktakes_change()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+begin
+  if actor is null then
+    return old;
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o where o.id = old.org_id;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
+  values (old.org_id, org_label, actor, actor_label, 'stocktake.deleted', 'stocktake', old.id, old.name, to_jsonb(old));
+  return old;
+end $$;
+
+create trigger log_stocktakes_audit
+  after delete on public.stocktakes
+  for each row execute function public.log_stocktakes_change();
+
+-- "Clear items" goes through this RPC instead of a stocktake_items trigger:
+-- every stocktake deletion already cascades to delete all of that
+-- stocktake's items, which would fire a blanket per-row trigger once per
+-- scanned item on every single stocktake delete — noisy, and redundant with
+-- the one clean row log_stocktakes_change() already writes for that same
+-- delete. There's no cheap, reliable way for a row-level trigger to tell
+-- "this delete is part of a cascade" from "this is the deliberate bulk
+-- clear", so the RPC sidesteps it: one function, one summary log row, no
+-- per-row trigger. security definer bypasses RLS the same way the trigger
+-- functions above do, so it re-implements the org-scoping check itself —
+-- without it this would be a cross-org delete callable by any authenticated
+-- user who knows or guesses a stocktake UUID.
+create or replace function public.clear_stocktake_items(p_stocktake_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+  take_name text;
+  take_org uuid;
+  cleared_count integer;
+begin
+  select s.org_id, s.name into take_org, take_name
+    from public.stocktakes s where s.id = p_stocktake_id;
+
+  if take_org is null or take_org != public.my_org_id() then
+    raise exception 'Stocktake not found.';
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o where o.id = take_org;
+
+  delete from public.stocktake_items where stocktake_id = p_stocktake_id;
+  get diagnostics cleared_count = row_count;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
+  values (take_org, org_label, actor, actor_label, 'stocktake_items.cleared', 'stocktake', p_stocktake_id, take_name, jsonb_build_object('items_cleared', cleared_count));
+end $$;
+
+grant execute on function public.clear_stocktake_items(uuid) to authenticated;
+
 -- ---- Upgrading an org's plan manually (e.g. before Stripe is fully wired
 -- up, or to fix a payment that landed without a matching webhook event) ----
 --   update public.organisations set plan_tier = 'single'

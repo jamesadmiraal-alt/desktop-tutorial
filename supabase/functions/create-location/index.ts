@@ -11,16 +11,26 @@
 // ON, same as create-portal-session/delete-account — see STRIPE-SETUP.md).
 // Owner/manager only.
 //
+// The Postgres-side work (membership/org lookup, the actual locations
+// insert, the recount) runs as the CALLER's own session, not the service
+// role — RLS already permits everything this function does to `locations`
+// under an owner/manager's own session on the multi tier (see the "owner
+// manager insert locations" policy in schema.sql, no count cap for
+// plan_tier='multi'), so service-role was never required there, only for
+// the Stripe call below. Running it as the caller means schema.sql's
+// log_locations_change() trigger picks up this creation automatically
+// (auth.uid() resolves correctly), in the same transaction as the insert —
+// no separate audit insert needed here.
+//
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   STRIPE_SECRET_KEY  - the "sk_..." secret key (already added for the
 //                        other billing functions — shared project-wide)
-// (SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
+// (SUPABASE_URL and SUPABASE_ANON_KEY are injected automatically.)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const CORS_HEADERS = {
@@ -36,12 +46,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-async function db(path: string, init: RequestInit = {}): Promise<Response> {
+// Runs as the calling user (their own JWT, forwarded), not the service
+// role — RLS applies exactly as it would for a direct client call, and
+// auth.uid() inside any trigger fired by these requests resolves to this
+// user, not null.
+async function userDb(authHeader: string, path: string, init: RequestInit = {}): Promise<Response> {
   return await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...init,
     headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
+      apikey: ANON_KEY,
+      Authorization: authHeader,
       "Content-Type": "application/json",
       ...(init.headers ?? {}),
     },
@@ -80,7 +94,8 @@ Deno.serve(async (req) => {
   if (!name) return jsonResponse({ error: "Location name is required." }, 400);
 
   try {
-    const memberRes = await db(
+    const memberRes = await userDb(
+      authHeader,
       `memberships?user_id=eq.${encodeURIComponent(user.id)}` +
         `&select=role,organisations(id,plan_tier,stripe_subscription_item_id)`,
     );
@@ -97,7 +112,7 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "This organisation's billing isn't fully set up yet." }, 400);
     }
 
-    const insertRes = await db(`locations`, {
+    const insertRes = await userDb(authHeader, `locations`, {
       method: "POST",
       headers: { Prefer: "return=representation" },
       body: JSON.stringify({ org_id: org.id, name }),
@@ -111,7 +126,7 @@ Deno.serve(async (req) => {
 
     // Recount rather than increment — self-correcting instead of
     // accumulating drift if a previous sync ever failed partway.
-    const countRes = await db(`locations?org_id=eq.${encodeURIComponent(org.id)}&select=id`, {
+    const countRes = await userDb(authHeader, `locations?org_id=eq.${encodeURIComponent(org.id)}&select=id`, {
       headers: { Prefer: "count=exact" },
     });
     const contentRange = countRes.headers.get("content-range") ?? "";
@@ -122,7 +137,7 @@ Deno.serve(async (req) => {
     });
     if (!stripeRes.ok) {
       // Roll back — don't leave the location count and Stripe quantity out of sync.
-      await db(`locations?id=eq.${encodeURIComponent(inserted.id)}`, { method: "DELETE" });
+      await userDb(authHeader, `locations?id=eq.${encodeURIComponent(inserted.id)}`, { method: "DELETE" });
       throw new Error(`Stripe quantity update failed: ${stripeRes.status} ${await stripeRes.text()}`);
     }
 
