@@ -344,9 +344,17 @@
       </button>
       <button class="upgrade-opt best" data-tier="multi">
         <span><span class="opt-name">Multi-venue</span>
-          <div class="opt-sub">Unlimited locations, unlimited products</div></span>
-        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
+          <div class="opt-sub">Unlimited venues and locations</div></span>
+        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
       </button>
+    </div>
+    <!-- Multi-venue only: all of this org's purchased concurrent seats are
+         already in use (see claim_seat() in schema.sql). Same "distinct
+         screen, org-setup-note/org-setup-logout reused as the only escape"
+         pattern as payment-pending-row above — see showSeatsFullPrompt(). -->
+    <div id="seats-full-row" style="display:none">
+      <p class="upgrade-text">All of <b id="seats-full-org-name"></b>'s concurrent user seats are in use right now — ask a teammate to log out, or add another seat from the admin console.</p>
+      <button id="seats-full-retry" class="primary" style="width:100%">Try again</button>
     </div>
     <button id="auth-submit" class="primary">Log in</button>
     <div class="auth-note">Your stocktakes are stored in the cloud and sync across devices —
@@ -406,14 +414,14 @@
       <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="multi">
         <span><span class="opt-name">Upgrade to Multi-venue</span>
-          <div class="opt-sub">Unlimited locations</div></span>
-        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra venue</small></span>
+          <div class="opt-sub">Unlimited venues and locations</div></span>
+        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
       </button>
       <div id="acct-note">Thanks for supporting Barscan!</div>
     </div>
     <div id="acct-plan-multi" style="display:none">
       <span class="plan-badge pro">Multi-venue plan</span>
-      <div class="plan-desc">Unlimited locations and products. Add or remove venues any time from the admin console — billing adjusts automatically.</div>
+      <div class="plan-desc">Unlimited venues, locations and products. Add or remove concurrent user seats any time from the admin console — billing adjusts automatically.</div>
       <button id="manage-sub-btn-multi" class="manage-sub-btn">Manage subscription</button>
       <div id="acct-note">Update your payment method, view invoices, or cancel — handled securely by Stripe.
         Trouble with the button above? Reply to your welcome email.</div>
@@ -613,6 +621,10 @@
   // needsOrgSetup since it's a different screen/reason, but both mean "hide
   // the account button, there's nothing to open yet" — see showView().
   var paymentPending = false;
+  // True whenever a multi-venue org's purchased concurrent seats are all
+  // occupied (see showSeatsFullPrompt()) — same "hide the account button"
+  // treatment as the other two auth-view sub-states above.
+  var seatsFull = false;
 
   // Countries offered at signup/Account, and which Stripe checkout currency
   // each maps to (config.js's upgradeUrls). Anything not listed here — plus
@@ -702,7 +714,7 @@
     ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
-    $('account-btn').style.display = (currentUser && !needsOrgSetup && !paymentPending) ? '' : 'none';
+    $('account-btn').style.display = (currentUser && !needsOrgSetup && !paymentPending && !seatsFull) ? '' : 'none';
     $('user-badge').textContent = currentUser ? currentUser.email : '';
     if (name !== 'scan') stopScanner();
   }
@@ -840,6 +852,28 @@
     showView('auth');
   }
 
+  // Multi-venue only: every purchased concurrent seat is already occupied
+  // (see claim_seat() in schema.sql / refreshOrgStatus() above). Same
+  // "distinct screen, org-setup-logout reused as the only escape" shape as
+  // showPaymentPendingPrompt() — seatsFull just picks a third message for
+  // that shared button's confirm() text.
+  function showSeatsFullPrompt() {
+    seatsFull = true;
+    $('auth-credentials').style.display = 'none';
+    $('auth-heading').textContent = 'All seats are in use';
+    $('auth-sub').textContent = 'One more step before you can start scanning';
+    $('org-setup-note').style.display = 'none';
+    $('org-setup-logout').style.display = '';
+    $('org-mode-row').style.display = 'none';
+    $('org-create-row').style.display = 'none';
+    $('org-join-row').style.display = 'none';
+    $('payment-pending-row').style.display = 'none';
+    $('auth-submit').style.display = 'none';
+    $('seats-full-org-name').textContent = currentOrg ? currentOrg.name : 'Your organisation';
+    $('seats-full-row').style.display = '';
+    showView('auth');
+  }
+
   // Calls create_organisation()/join_organisation() (see schema.sql) using
   // whatever's currently in the org-create/join fields. Deliberately a
   // separate step from signUp() (see schema.sql's own comment on this) so a
@@ -952,7 +986,7 @@
     Promise.all([
       sb.from('profiles').select('full_name').eq('id', currentUser.id).maybeSingle(),
       sb.from('memberships')
-        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format)')
+        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, heartbeat_interval_seconds)')
         .eq('user_id', currentUser.id).maybeSingle()
     ]).then(function (results) {
       var profileRes = results[0], memberRes = results[1];
@@ -965,7 +999,8 @@
           id: org.id, name: org.name, role: memberRes.data.role,
           planTier: org.plan_tier, country: org.country || '',
           countryChangedAt: org.country_changed_at || null,
-          exportFormat: org.export_format
+          exportFormat: org.export_format,
+          heartbeatIntervalSeconds: org.heartbeat_interval_seconds
         };
       } else {
         currentOrg = null;
@@ -980,9 +1015,44 @@
         showPaymentPendingPrompt();
         return;
       }
+      // Multi-venue only: venues/locations are free/unlimited, concurrent
+      // login seats are the billable unit instead (see claim_seat() in
+      // schema.sql). Single-venue never enforces this — skip the round
+      // trip entirely rather than relying on the RPC's own no-op path.
+      if (currentOrg && currentOrg.planTier === 'multi') {
+        sb.rpc('claim_seat').then(function (res) {
+          if (res.error || res.data === false) {
+            showSeatsFullPrompt();
+            return;
+          }
+          startSeatHeartbeat();
+          renderPlan();
+          if (cb) cb();
+        });
+        return;
+      }
       renderPlan();
       if (cb) cb();
     });
+  }
+
+  // ---- Concurrent-seat heartbeat (multi-venue only) ----
+  var heartbeatIntervalId = null;
+  function startSeatHeartbeat() {
+    stopSeatHeartbeat();
+    if (!currentOrg || currentOrg.planTier !== 'multi') return;
+    heartbeatIntervalId = setInterval(function () {
+      sb.rpc('heartbeat').then(function (res) {
+        if (!res.error && res.data === false) {
+          stopSeatHeartbeat();
+          toast('You were logged out by an admin', '#b91c1c');
+          doLogout();
+        }
+      });
+    }, (currentOrg.heartbeatIntervalSeconds || 60) * 1000);
+  }
+  function stopSeatHeartbeat() {
+    if (heartbeatIntervalId) { clearInterval(heartbeatIntervalId); heartbeatIntervalId = null; }
   }
 
   function enterApp(user) {
@@ -1047,7 +1117,7 @@
       var entry = tierInfo[period] || {};
       if (tier === 'multi') {
         priceEl.innerHTML = symbol + (entry.basePrice || (billAnnually ? '590' : '59')) + '<small>' + unit + '</small><br>' +
-          '<small>+' + symbol + (entry.perVenuePrice || (billAnnually ? '290' : '29')) + unit + ' per extra venue</small>';
+          '<small>+' + symbol + (entry.perSeatPrice || (billAnnually ? '290' : '29')) + unit + ' per extra concurrent user</small>';
       } else {
         priceEl.innerHTML = symbol + (entry.price || (billAnnually ? '290' : '29')) + '<small>' + unit + '</small>';
       }
@@ -1187,6 +1257,7 @@
   function resetAuthUiState() {
     needsOrgSetup = false;
     paymentPending = false;
+    seatsFull = false;
     $('auth-heading').textContent = 'Barscan';
     $('auth-sub').textContent = 'Stocktaking for hospitality';
     $('auth-credentials').style.display = '';
@@ -1194,11 +1265,18 @@
     $('org-setup-logout').style.display = 'none';
     $('org-mode-row').style.display = 'none';
     $('payment-pending-row').style.display = 'none';
+    $('seats-full-row').style.display = 'none';
     $('auth-submit').style.display = '';
     setOrgSignupMode('create');
     setOrgRowsVisible(false);
   }
   function doLogout() {
+    stopSeatHeartbeat();
+    // best-effort — frees the seat immediately rather than waiting out the
+    // staleness timeout. supabase-js query builders are lazy thenables:
+    // the request is never actually sent unless something consumes it, so
+    // this needs a .then() even though the result itself is ignored.
+    sb.rpc('release_seat').then(function () {});
     sb.auth.signOut().then(function () {
       currentUser = null; currentOrg = null; currentTake = null; items = []; locations = [];
       resetAuthUiState();
@@ -1208,15 +1286,18 @@
   }
   $('logout-btn').onclick = doLogout;
   // Unlike the main Account-view logout, this is the ONLY way out of the
-  // org-setup/payment-pending screens (see showOrgSetupPrompt()'s comment) —
-  // and on org-setup specifically it can silently discard a typed org name,
-  // so it gets a confirmation the plain logout doesn't need.
+  // org-setup/payment-pending/seats-full screens (see showOrgSetupPrompt()'s
+  // comment) — and on org-setup specifically it can silently discard a
+  // typed org name, so it gets a confirmation the plain logout doesn't need.
   $('org-setup-logout').onclick = function () {
     var msg = needsOrgSetup
       ? "Log out? You'll need to set up your organisation again."
+      : seatsFull
+      ? 'Log out? You can try again for a seat next time you log in.'
       : 'Log out? You can pick a plan again next time you log in.';
     if (confirm(msg)) doLogout();
   };
+  $('seats-full-retry').onclick = function () { refreshOrgStatus(); };
 
   // ---- Delete account ----
   $('delete-account-btn').onclick = function () { $('delete-overlay').classList.add('open'); };
@@ -1898,10 +1979,10 @@
     App.addListener('backButton', function () {
       if (currentView === 'scan') $('back-btn').onclick();
       else if (currentView === 'account') $('acct-back').onclick();
-      // org-setup/payment-pending are shown inside 'auth' — without this,
-      // hardware back exits the app entirely from a screen the user can't
-      // otherwise escape except via the (now-confirmed) logout button.
-      else if (currentView === 'auth' && (needsOrgSetup || paymentPending)) $('org-setup-logout').onclick();
+      // org-setup/payment-pending/seats-full are shown inside 'auth' —
+      // without this, hardware back exits the app entirely from a screen
+      // the user can't otherwise escape except via the logout button.
+      else if (currentView === 'auth' && (needsOrgSetup || paymentPending || seatsFull)) $('org-setup-logout').onclick();
       else App.exitApp();
     });
 

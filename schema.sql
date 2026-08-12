@@ -79,6 +79,28 @@ create table public.organisations (
   -- with no email/push infrastructure needed).
   roster_last_viewed_at timestamptz,
 
+  -- Multi-venue billing: venues/locations are unlimited and free — the
+  -- billable unit is concurrent seats instead (see active_sessions,
+  -- claim_seat() below). Extra seats purchased beyond the owner (who's
+  -- always free — see claim_seat()); single-venue orgs ignore this
+  -- entirely (unlimited staff, no seat pool). Deliberately NOT in the
+  -- client-writable column GRANT below — same protected treatment as
+  -- plan_tier/stripe_customer_id, since it's a billing number tied to a
+  -- real Stripe charge, not a preference. Only set-seat-count (Edge
+  -- Function, service role, after the matching Stripe PATCH succeeds)
+  -- may write it.
+  concurrent_seats integer not null default 0,
+  -- How often (seconds) a logged-in client checks in via heartbeat() —
+  -- governs both how quickly a stale/crashed session frees its seat and
+  -- how quickly an owner's kick_user() call actually takes effect on the
+  -- kicked device (2.5x this value — see claim_seat()/heartbeat()).
+  -- Owner-adjustable trade-off (faster response vs. request volume), so
+  -- unlike concurrent_seats above, this IS a preference — plain
+  -- client-writable column (see the GRANT below) with audit coverage
+  -- via log_organisations_change().
+  heartbeat_interval_seconds integer not null default 60
+    check (heartbeat_interval_seconds >= 10),
+
   created_at timestamptz not null default now()
 );
 
@@ -308,6 +330,44 @@ begin
   return target_org.id;
 end $$;
 
+-- Owner-provisioned team member: the create-team-member Edge Function
+-- creates the auth.users row itself (via the Admin API — something
+-- Postgres can't do), then calls this, forwarding the OWNER's own JWT
+-- rather than the service role, so auth.uid() below resolves to the
+-- owner for both the role check and the audit log entry. Unlike
+-- join_organisation() (self-service, unlogged — see log_memberships_change()'s
+-- comment), this path is logged explicitly: an owner directly
+-- provisioning someone's account is a distinct, audit-worthy action, not
+-- a routine join.
+create or replace function public.add_team_member(p_user_id uuid, p_role text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  org_id uuid := public.my_org_id();
+  target_label text;
+begin
+  if public.my_role() != 'owner' then
+    raise exception 'Only the owner can add team members.';
+  end if;
+  if p_role not in ('manager', 'staff') then
+    raise exception 'Invalid role.';
+  end if;
+
+  insert into public.memberships (org_id, user_id, role) values (org_id, p_user_id, p_role);
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select coalesce(u.email, 'Unknown user') into target_label
+    from auth.users u where u.id = p_user_id;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, after)
+  values (org_id, (select name from public.organisations where id = org_id), actor, actor_label,
+          'membership.added_by_owner', 'membership', p_user_id, target_label, jsonb_build_object('role', p_role));
+end $$;
+
+grant execute on function public.add_team_member(uuid, text) to authenticated;
+
 -- Lazy daily-code rotation — called by admin.html whenever the roster/join
 -- screen is opened, rather than a pg_cron job (avoids depending on an
 -- extension just to rotate a code once a day). Owner/manager only.
@@ -384,7 +444,7 @@ create policy "owner update org" on public.organisations
   with check (id = public.my_org_id() and public.my_role() = 'owner');
 
 revoke update on public.organisations from authenticated;
-grant update (name, logo_url, export_format, join_code, country, roster_last_viewed_at)
+grant update (name, logo_url, export_format, join_code, country, roster_last_viewed_at, heartbeat_interval_seconds)
   on public.organisations to authenticated;
 -- No insert policy: organisations are only ever created via
 -- create_organisation() above (security definer, bypasses RLS).
@@ -656,6 +716,10 @@ begin
     insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
     values (new.id, new.name, actor, actor_label, 'organisation.join_code_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
   end if;
+  if old.heartbeat_interval_seconds is distinct from new.heartbeat_interval_seconds then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.heartbeat_interval_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
   return new;
 end $$;
 
@@ -731,6 +795,162 @@ begin
 end $$;
 
 grant execute on function public.clear_stocktake_items(uuid) to authenticated;
+
+-- ==========================================================================
+-- Multi-venue concurrent-seat billing. Venues/locations carry no billing
+-- consequence any more (unlimited, free) — the multi-venue tier's paid
+-- unit is how many people can be actively logged in at once. One row per
+-- person (not per device/session — see claim_seat()), upserted on every
+-- claim/heartbeat. No client insert/update/delete policy at all: writes
+-- only happen via the security-definer RPCs below, same "RLS blocks it,
+-- security definer bypasses it" pattern as audit_log.
+-- ==========================================================================
+create table public.active_sessions (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  org_id uuid not null references public.organisations(id) on delete cascade,
+  last_seen_at timestamptz not null default now()
+);
+
+alter table public.active_sessions enable row level security;
+
+create policy "owner manager read active sessions" on public.active_sessions
+  for select using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- Called once at login (refreshOrgStatus() in app.html) — NOT the
+-- repeating call, see heartbeat() below. Owner is always exempt from the
+-- pool (the $59 base always covers them, regardless of purchased seats),
+-- and single-venue orgs never enforce a limit at all (unlimited staff,
+-- unchanged from before this feature).
+create or replace function public.claim_seat()
+returns boolean language plpgsql security definer set search_path = public as $$
+declare
+  v_org_id uuid := public.my_org_id();
+  v_role text := public.my_role();
+  v_plan text;
+  v_seats integer;
+  v_interval_secs integer;
+  v_occupied integer;
+begin
+  select plan_tier, concurrent_seats, heartbeat_interval_seconds
+    into v_plan, v_seats, v_interval_secs
+    from public.organisations where id = v_org_id;
+
+  if v_plan != 'multi' or v_role = 'owner' then
+    insert into public.active_sessions (user_id, org_id, last_seen_at)
+      values (auth.uid(), v_org_id, now())
+      on conflict (user_id) do update set last_seen_at = now();
+    return true;
+  end if;
+
+  -- Already holding a seat (e.g. a second device, or re-entering after
+  -- being on the seats-full screen) — refresh it, don't count it twice.
+  if exists (select 1 from public.active_sessions where user_id = auth.uid()) then
+    update public.active_sessions set last_seen_at = now() where user_id = auth.uid();
+    return true;
+  end if;
+
+  select count(*) into v_occupied from public.active_sessions
+   where org_id = v_org_id
+     and last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5);
+
+  if v_occupied >= v_seats then
+    return false;
+  end if;
+
+  insert into public.active_sessions (user_id, org_id, last_seen_at)
+    values (auth.uid(), v_org_id, now());
+  return true;
+end $$;
+
+grant execute on function public.claim_seat() to authenticated;
+
+-- The repeating call (every heartbeat_interval_seconds while the app is
+-- open, multi-tier only). Deliberately does NOT insert a row if one
+-- doesn't exist — that's what makes kick_user() actually stick instead
+-- of being silently undone by the next heartbeat: a kicked client's next
+-- heartbeat finds nothing to update, gets `false` back, and logs itself
+-- out client-side.
+create or replace function public.heartbeat()
+returns boolean language plpgsql security definer set search_path = public as $$
+begin
+  update public.active_sessions set last_seen_at = now() where user_id = auth.uid();
+  return found;
+end $$;
+
+grant execute on function public.heartbeat() to authenticated;
+
+-- Best-effort, called on explicit logout so the common case frees the
+-- seat immediately instead of waiting out the staleness timeout.
+create or replace function public.release_seat()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  delete from public.active_sessions where user_id = auth.uid();
+end $$;
+
+grant execute on function public.release_seat() to authenticated;
+
+-- Owner force-logs-out anyone holding a seat, from admin.html. Soft kick,
+-- not an instant server-side kill — see heartbeat()'s comment for why
+-- that's a deliberate, stated trade-off rather than an oversight.
+create or replace function public.kick_user(p_user_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  org_id uuid := public.my_org_id();
+  target_label text;
+begin
+  if public.my_role() != 'owner' then
+    raise exception 'Only the owner can log out a team member.';
+  end if;
+  if not exists (select 1 from public.memberships where user_id = p_user_id and org_id = org_id) then
+    raise exception 'That person is not a member of your organisation.';
+  end if;
+
+  delete from public.active_sessions where user_id = p_user_id and org_id = org_id;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select coalesce(p.full_name, u.email, 'Unknown user') into target_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = p_user_id;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label)
+  values (org_id, (select name from public.organisations where id = org_id), actor, actor_label,
+          'membership.force_logged_out_by_owner', 'membership', p_user_id, target_label);
+end $$;
+
+grant execute on function public.kick_user(uuid) to authenticated;
+
+-- Roster for the new "Concurrent seats" admin.html card — owner/manager
+-- only, same auth.users-join-from-security-definer shape as
+-- list_org_members(). Filtered to the same staleness cutoff claim_seat()
+-- uses, so the owner sees who's ACTUALLY active, not stale rows waiting
+-- to time out.
+create or replace function public.list_active_sessions()
+returns table (user_id uuid, email text, full_name text, last_seen_at timestamptz)
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org_id uuid := public.my_org_id();
+  v_interval_secs integer;
+begin
+  if public.my_role() not in ('owner', 'manager') then
+    raise exception 'Only owners and managers can view active sessions.';
+  end if;
+
+  select heartbeat_interval_seconds into v_interval_secs
+    from public.organisations where id = v_org_id;
+
+  return query
+    select s.user_id, u.email::text, p.full_name, s.last_seen_at
+      from public.active_sessions s
+      join auth.users u on u.id = s.user_id
+      left join public.profiles p on p.id = s.user_id
+     where s.org_id = v_org_id
+       and s.last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5)
+     order by s.last_seen_at desc;
+end $$;
+
+grant execute on function public.list_active_sessions() to authenticated;
 
 -- ---- Upgrading an org's plan manually (e.g. before Stripe is fully wired
 -- up, or to fix a payment that landed without a matching webhook event) ----

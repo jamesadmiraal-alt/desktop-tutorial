@@ -169,8 +169,8 @@ Deno.serve(async (req) => {
           break;
         }
         // One Stripe call gets both the purchased price (-> tier) and the
-        // subscription item id (needed later by create-location/
-        // remove-location to keep quantity in sync with location count).
+        // subscription item id (needed later by set-seat-count to keep
+        // quantity in sync with purchased concurrent-seat count).
         const sub = await stripeGetJson(`subscriptions/${subscriptionId}`);
         const priceId = sub.items?.data?.[0]?.price?.id;
         const subscriptionItemId = sub.items?.data?.[0]?.id;

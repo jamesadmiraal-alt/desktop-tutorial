@@ -37,7 +37,7 @@ Libraries are vendored (no CDN) so the app keeps loading on flaky connections.
 No free tier — every organisation picks a paid plan before it's usable:
 
 - **Single-venue — $29/month** (or $290/year) — 1 location, unlimited products per stocktake, unlimited staff.
-- **Multi-venue — $59/month** (or $590/year) base, **+$29/month per additional venue** — unlimited locations, unlimited products, unlimited staff. Adding or removing a venue in the admin console adjusts the subscription automatically.
+- **Multi-venue — $59/month** (or $590/year) base, **+$29/month per additional concurrent user** — unlimited venues and locations, unlimited products, unlimited staff accounts. The owner is always free; billing scales with how many people are logged in at the same moment, not with headcount or venue count. Adjust the seat count any time from the admin console.
 
 Signing up creates an organisation, not a personal account — stocktakes, locations, and staff all belong to it (see `schema.sql`'s `organisations`/`memberships`/`locations` tables). A brand-new organisation is `pending` until checkout completes; the app blocks everything except choosing a plan until then (`organisations.plan_tier`, enforced by row-level security, not just the UI). `config.js`'s `upgradeUrls` (keyed by currency, then tier, then billing period) control where the plan buttons lead — point them at real Stripe Payment Links per `STRIPE-SETUP.md`.
 

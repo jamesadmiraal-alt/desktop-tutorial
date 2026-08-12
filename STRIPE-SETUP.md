@@ -6,8 +6,9 @@ is needed.
 
 Billing is **organisation-scoped**, not per-user (see the org-model planning doc):
 an organisation is on the **Free**, **Single-venue** ($29/mo flat), or **Multi-venue**
-($59/mo base + $29/mo per venue beyond the first, via Stripe's native graduated
-pricing) plan, each also offered **monthly or annually** (a "Bill annually" toggle
+($59/mo base + $29/mo per extra concurrent user beyond the owner, via Stripe's
+native graduated pricing — venues/locations themselves are unlimited and free)
+plan, each also offered **monthly or annually** (a "Bill annually" toggle
 in the app swaps between them — annual is priced at 10x the monthly amount, i.e.
 2 months free, matching the app's copy). Everything below happens in the Stripe
 **sandbox/test** dashboard first. When you go live, repeat the same steps in live
@@ -39,9 +40,10 @@ two billing periods = **16 prices** total — tedious, but each one is quick.
      the other currencies the same way you did for Single-venue above)
    - **Tier 2**: up to **∞**, **per-unit** — $29/mo or $290/yr
 
-   This produces a total of `base + perVenue × (quantity − 1)` — quantity
-   tracks the org's location count, kept in sync automatically by the
-   `create-location`/`remove-location` Edge Functions (§9).
+   This produces a total of `base + perSeat × (quantity − 1)` — quantity
+   tracks 1 (the always-free owner) plus however many extra concurrent
+   seats the owner has purchased, kept in sync by the `set-seat-count`
+   Edge Function (§9) whenever the owner changes it in admin.html.
 3. (The old single "Barscan Pro" product from before the org-tier rework, if it
    still exists, isn't used by any current code — safe to leave alone or archive.)
 
@@ -74,8 +76,8 @@ upgradeUrls: {
     },
     multi: {
       symbol: 'A$',
-      monthly: { link: 'PASTE HERE', basePrice: '59', perVenuePrice: '29' },
-      annual:  { link: 'PASTE HERE', basePrice: '590', perVenuePrice: '290' }
+      monthly: { link: 'PASTE HERE', basePrice: '59', perSeatPrice: '29' },
+      annual:  { link: 'PASTE HERE', basePrice: '590', perSeatPrice: '290' }
     }
   },
   USD: { /* same shape */ }, GBP: { /* same shape */ }, EUR: { /* same shape */ }
@@ -161,16 +163,17 @@ supabase functions deploy stripe-webhook --no-verify-jwt --project-ref vfixdchbk
 3. You're redirected back to the app with a "Payment received" message
 4. Within a few seconds the webhook flips the organisation's plan — open
    👤 Account and the matching plan badge should appear
-5. For Multi-venue specifically: in `admin.html`, adding a second location
-   should now work (blocked before payment) — check the Stripe Dashboard's
-   subscription afterward and confirm its quantity is 2
+5. For Multi-venue specifically: in `admin.html`'s new "Concurrent seats"
+   card, set the seat count to 1 and click Update — check the Stripe
+   Dashboard's subscription afterward and confirm its quantity is 2
+   (1 base slot + 1 purchased seat)
 6. To test cancellation: Stripe Dashboard → Customers → cancel the subscription →
    the organisation drops back to Free
 
 ## 8. Add the Stripe secret key to Supabase
 
-`stripe-webhook`, `create-portal-session`, `delete-account`, `create-location`,
-and `remove-location` all call Stripe's API (not just verify inbound events), so
+`stripe-webhook`, `create-portal-session`, `delete-account`, and
+`set-seat-count` all call Stripe's API (not just verify inbound events), so
 they need your actual secret key.
 
 Supabase Dashboard → **Edge Functions** → **Secrets** → add
@@ -180,21 +183,23 @@ It's shared across every Edge Function in the project, so this is a one-time ste
 
 ## 9. Deploy the account/billing-management functions
 
-Five functions besides the webhook: `create-portal-session` (Manage
-subscription), `delete-account`, and the two new **`create-location`** /
-**`remove-location`** functions (only used once an org is on the multi-venue
-tier and adds/removes a location beyond its first — see the org-model planning
-doc for why these need to be server-side at all).
+Four functions besides the webhook: `create-portal-session` (Manage
+subscription), `delete-account`, `create-team-member`/`update-team-member`
+(owner-provisioned logins — no billing involved), and **`set-seat-count`**
+(only used on the multi-venue tier, when the owner changes how many extra
+concurrent seats they're paying for — see the org-model planning doc for
+why this needs to be server-side at all).
 
 **Important — opposite of the webhook**: leave **"Enforce JWT verification" ON**
-for all four of these. They act on behalf of whoever calls them, using that
+for all of these. They act on behalf of whoever calls them, using that
 caller's own Supabase session to identify them.
 
 ```sh
 supabase functions deploy create-portal-session --project-ref vfixdchbkmqryfhirphx
 supabase functions deploy delete-account --project-ref vfixdchbkmqryfhirphx
-supabase functions deploy create-location --project-ref vfixdchbkmqryfhirphx
-supabase functions deploy remove-location --project-ref vfixdchbkmqryfhirphx
+supabase functions deploy create-team-member --project-ref vfixdchbkmqryfhirphx
+supabase functions deploy update-team-member --project-ref vfixdchbkmqryfhirphx
+supabase functions deploy set-seat-count --project-ref vfixdchbkmqryfhirphx
 ```
 
 (Omit `--no-verify-jwt` — that flag is specific to the webhook.) If deploying via

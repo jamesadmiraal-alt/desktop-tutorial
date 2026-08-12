@@ -7,7 +7,7 @@ window.BARSCAN_CONFIG = {
   supabaseAnonKey: 'sb_publishable_juhiIJWl7qvSj4hL_7JQcA_wEoNVgi6',
   // Where the in-app upgrade buttons send people, keyed by currency (chosen
   // from the organisation's country — see COUNTRY_CURRENCY in app.html),
-  // then by tier ('single' flat, 'multi' base+per-venue), then by billing
+  // then by tier ('single' flat, 'multi' base+per-concurrent-seat), then by billing
   // period ('monthly'/'annual' — see the "Bill annually" toggle in
   // app.html). goUpgrade() falls back to AUD (the home/default currency —
   // see DEFAULT_CURRENCY in app.html) for any currency left with empty
@@ -25,8 +25,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: 'A$',
-        monthly: { link: 'https://buy.stripe.com/test_5kQ5kDaT625n9GJ88odEs0b', basePrice: '59', perVenuePrice: '29' },
-        annual:  { link: 'https://buy.stripe.com/test_6oUeVd6CQ11j2ehdsIdEs0c', basePrice: '590', perVenuePrice: '290' }
+        monthly: { link: 'https://buy.stripe.com/test_5kQ5kDaT625n9GJ88odEs0b', basePrice: '59', perSeatPrice: '29' },
+        annual:  { link: 'https://buy.stripe.com/test_6oUeVd6CQ11j2ehdsIdEs0c', basePrice: '590', perSeatPrice: '290' }
       }
     },
     USD: {
@@ -37,8 +37,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '$',
-        monthly: { link: 'https://buy.stripe.com/test_bJecN55yM9xP069coEdEs0d', basePrice: '55', perVenuePrice: '27' },
-        annual:  { link: 'https://buy.stripe.com/test_7sYfZhf9m7pH4mpagwdEs0e', basePrice: '550', perVenuePrice: '270' }
+        monthly: { link: 'https://buy.stripe.com/test_bJecN55yM9xP069coEdEs0d', basePrice: '55', perSeatPrice: '27' },
+        annual:  { link: 'https://buy.stripe.com/test_7sYfZhf9m7pH4mpagwdEs0e', basePrice: '550', perSeatPrice: '270' }
       }
     },
     GBP: {
@@ -49,8 +49,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '£',
-        monthly: { link: 'https://buy.stripe.com/test_9B6fZh1iw4dv8CFewMdEs0f', basePrice: '49', perVenuePrice: '25' },
-        annual:  { link: 'https://buy.stripe.com/test_6oU6oH3qE25n3il74kdEs0g', basePrice: '490', perVenuePrice: '250' }
+        monthly: { link: 'https://buy.stripe.com/test_9B6fZh1iw4dv8CFewMdEs0f', basePrice: '49', perSeatPrice: '25' },
+        annual:  { link: 'https://buy.stripe.com/test_6oU6oH3qE25n3il74kdEs0g', basePrice: '490', perSeatPrice: '250' }
       }
     },
     EUR: {
@@ -61,8 +61,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '€',
-        monthly: { link: 'https://buy.stripe.com/test_6oU4gze5i4dv6ux4WcdEs0h', basePrice: '55', perVenuePrice: '27' },
-        annual:  { link: 'https://buy.stripe.com/test_bJebJ15yMh0hf1388odEs0i', basePrice: '550', perVenuePrice: '270' }
+        monthly: { link: 'https://buy.stripe.com/test_6oU4gze5i4dv6ux4WcdEs0h', basePrice: '55', perSeatPrice: '27' },
+        annual:  { link: 'https://buy.stripe.com/test_bJebJ15yMh0hf1388odEs0i', basePrice: '550', perSeatPrice: '270' }
       }
     }
   }

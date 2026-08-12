@@ -82,21 +82,40 @@
   .audit-row .when { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
   #audit-log-list:empty::after { content: 'No activity yet.'; color: var(--text-dim); font-size: 0.85rem; }
 
+  .session-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .session-row:last-child { border-bottom: none; }
+  .session-row .who { flex: 1; min-width: 0; }
+  .session-row .name { font-weight: 600; }
+  .session-row .since { font-size: 0.78rem; color: var(--text-dim); }
+  #active-sessions-list:empty::after { content: 'No one is currently logged in.'; color: var(--text-dim); font-size: 0.85rem; }
+
   button {
     border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
     padding: 11px 14px; cursor: pointer; color: var(--btn-neutral-text); background: var(--btn-neutral-bg);
   }
   button:active { opacity: 0.8; }
   button.primary { background: var(--accent); color: var(--on-accent); }
+  button.flex { flex: 1; }
   button:disabled { opacity: 0.45; }
   .link-btn { background: transparent; color: var(--link); padding: 4px 0; font-size: 0.85rem; font-weight: 600; text-decoration: underline; }
   .link-btn:active { opacity: 0.7; }
 
-  input[type="text"], input[type="email"], input[type="password"] {
+  input[type="text"], input[type="email"], input[type="password"], select {
     border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg);
     color: var(--text); padding: 11px 12px; font-size: 1rem; width: 100%;
   }
   label { display: block; font-size: 0.8rem; color: var(--text-dim); margin: 10px 0 4px; }
+
+  /* ---- Modals (same shape as app.html's) ---- */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50;
+    display: none; align-items: center; justify-content: center; padding: 16px;
+  }
+  .overlay.open { display: flex; }
+  .dialog { background: var(--surface); border-radius: 16px; padding: 20px; width: 100%; max-width: 380px; }
+  .dialog .title { font-weight: 600; font-size: 1.05rem; margin-bottom: 4px; }
+  .dialog-actions { display: flex; gap: 8px; }
+  .member-btn-row { display: flex; gap: 8px; margin-top: 14px; }
 
   .auth-card { background: var(--surface); border-radius: 16px; padding: 24px 20px; max-width: 380px; margin: 60px auto; }
   .auth-card .logo { text-align: center; font-size: 2rem; margin-bottom: 4px; }
@@ -164,13 +183,56 @@
       <button id="add-location-btn" class="primary">Add</button>
     </div>
     <p class="hint" id="location-limit-note" style="display:none;margin-top:12px;margin-bottom:0">
-      Free and single-venue plans include one location. Upgrade to Multi-venue from the app's Account page to add more.
+      Single-venue includes one location. Upgrade to Multi-venue from the app's Account page for unlimited venues and locations.
     </p>
   </div>
 
   <div class="card">
     <h2>Team</h2>
     <div id="roster-list"></div>
+  </div>
+
+  <div class="card">
+    <h2>Add team member</h2>
+    <p class="hint">Creates their login directly — no join code needed. They can change this password later from the app.</p>
+    <div id="add-member-form">
+      <label for="new-member-name">Name</label>
+      <input id="new-member-name" type="text" placeholder="Full name">
+      <label for="new-member-email">Email</label>
+      <input id="new-member-email" type="email" autocapitalize="none" inputmode="email" placeholder="name@example.com">
+      <label for="new-member-role">Admin portal access</label>
+      <select id="new-member-role">
+        <option value="staff">No access (Staff)</option>
+        <option value="manager">Manager (full admin access)</option>
+      </select>
+      <button id="add-member-btn" class="primary" style="margin-top:14px;width:100%">Add team member</button>
+    </div>
+    <div id="add-member-result" style="display:none">
+      <p class="hint" style="color:var(--success);margin-bottom:8px">Account created for <b id="add-member-result-email"></b> — share this temporary password with them.</p>
+      <div class="code-box" id="add-member-result-password"></div>
+      <div class="member-btn-row">
+        <button id="add-member-copy-btn" class="flex">Copy password</button>
+        <button id="add-member-again-btn" class="flex">Add another</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="seats-card" style="display:none">
+    <h2>Concurrent seats</h2>
+    <p class="hint">Venues and locations are unlimited and free on Multi-venue — what's billed is how many people can be logged in at the same moment. You're always free; each extra seat is $29/mo.</p>
+    <label for="seat-count-input">Extra seats purchased</label>
+    <div style="display:flex;gap:8px">
+      <input id="seat-count-input" type="text" inputmode="numeric" placeholder="0">
+      <button id="seat-count-save" class="primary">Update</button>
+    </div>
+    <label for="heartbeat-interval-input" style="margin-top:16px">Check-in frequency (seconds)</label>
+    <p class="hint" style="margin-top:2px">How often devices check in, and how quickly a forced log-out or a crashed session actually frees its seat. Lower = faster, more requests.</p>
+    <div style="display:flex;gap:8px">
+      <input id="heartbeat-interval-input" type="text" inputmode="numeric" placeholder="60">
+      <button id="heartbeat-interval-save" class="primary">Save</button>
+    </div>
+    <label style="margin-top:16px">Currently active</label>
+    <div id="active-sessions-list"></div>
   </div>
 
   <div class="card">
@@ -190,6 +252,24 @@
     <h2>Activity log</h2>
     <p class="hint">Recent location, team and organisation changes — most recent first.</p>
     <div id="audit-log-list"></div>
+  </div>
+</div>
+
+<div id="edit-member-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Edit team member</div>
+    <p class="hint" id="edit-member-email" style="margin-bottom:0"></p>
+    <label for="edit-member-name">Name</label>
+    <input id="edit-member-name" type="text">
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="edit-member-cancel" class="flex">Cancel</button>
+      <button id="edit-member-save" class="primary flex">Save name</button>
+    </div>
+    <button id="edit-member-reset-pw" class="link-btn" style="display:block;margin-top:14px">Reset password</button>
+    <div id="edit-member-pw-result" style="display:none;margin-top:10px">
+      <p class="hint" style="color:var(--success);margin-bottom:6px">New temporary password — share it with them:</p>
+      <div class="code-box" id="edit-member-new-password"></div>
+    </div>
   </div>
 </div>
 
@@ -288,10 +368,11 @@
         removeBtn.onclick = function () {
           if (!confirm('Remove location "' + loc.name + '"? Stocktakes already at this location keep their history, but this location itself can only be removed once it has no stocktakes.')) return;
           removeBtn.disabled = true;
-          sb.functions.invoke('remove-location', { body: { locationId: loc.id } }).then(function (res) {
+          sb.from('locations').delete().eq('id', loc.id).then(function (res) {
             removeBtn.disabled = false;
-            if (res.error || !res.data || res.data.error) {
-              fail(res.error, (res.data && res.data.error) || 'Could not remove location');
+            if (res.error) {
+              var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
+              fail(blocked ? { message: "This location has stocktakes and can't be removed." } : res.error, blocked ? '' : 'Could not remove location');
               return;
             }
             loadLocations();
@@ -320,18 +401,11 @@
     var name = $('new-location-name').value.trim();
     if (!name) { toast('Enter a location name', '#b91c1c'); return; }
     $('add-location-btn').disabled = true;
-    // The org's first location (free/single tier, or a fresh multi-tier org
-    // with none yet) is a plain insert — no billing consequence. Adding a
-    // 2nd+ location on multi-tier goes through the Edge Function instead,
-    // since that has to bump the Stripe subscription quantity first.
-    var useEdgeFunction = currentOrg.planTier === 'multi' && $('locations-list').children.length >= 1;
-    var request = useEdgeFunction
-      ? sb.functions.invoke('create-location', { body: { name: name } }).then(function (res) {
-          if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
-          return res;
-        })
-      : sb.from('locations').insert({ name: name });
-    request.then(function (res) {
+    // Plain insert for every tier — venues/locations carry no billing
+    // consequence any more (multi-venue pays per concurrent seat instead,
+    // see the Concurrent seats card below), so there's no Stripe quantity
+    // to sync here the way there used to be.
+    sb.from('locations').insert({ name: name }).then(function (res) {
       $('add-location-btn').disabled = false;
       if (res.error) { fail(res.error, 'Could not add location'); return; }
       $('new-location-name').value = '';
@@ -400,6 +474,12 @@
           });
       };
 
+      var editBtn = document.createElement('button');
+      editBtn.textContent = '✎';
+      editBtn.disabled = isSelf;
+      editBtn.title = isSelf ? 'Edit your own name/password from the app' : 'Edit name or reset password';
+      editBtn.onclick = function () { openEditMember(m); };
+
       var removeBtn = document.createElement('button');
       removeBtn.textContent = '✕';
       removeBtn.disabled = isSelf;
@@ -414,10 +494,73 @@
           });
       };
 
-      row.appendChild(who); row.appendChild(roleSelect); row.appendChild(removeBtn);
+      row.appendChild(who); row.appendChild(roleSelect); row.appendChild(editBtn); row.appendChild(removeBtn);
       list.appendChild(row);
     });
   }
+
+  // ---- Add / edit team members ----
+  $('add-member-btn').onclick = function () {
+    var name = $('new-member-name').value.trim();
+    var email = $('new-member-email').value.trim();
+    var role = $('new-member-role').value;
+    if (!name || !email) { toast('Enter a name and email', '#b91c1c'); return; }
+    $('add-member-btn').disabled = true;
+    sb.functions.invoke('create-team-member', { body: { fullName: name, email: email, role: role } }).then(function (res) {
+      $('add-member-btn').disabled = false;
+      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+      if (res.error) { fail(res.error, 'Could not add team member'); return; }
+      $('add-member-form').style.display = 'none';
+      $('add-member-result-email').textContent = res.data.email;
+      $('add-member-result-password').textContent = res.data.tempPassword;
+      $('add-member-result').style.display = '';
+      loadRoster();
+    });
+  };
+  $('add-member-copy-btn').onclick = function () {
+    var pw = $('add-member-result-password').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(pw).then(function () { toast('Password copied'); });
+  };
+  $('add-member-again-btn').onclick = function () {
+    $('new-member-name').value = ''; $('new-member-email').value = ''; $('new-member-role').value = 'staff';
+    $('add-member-result').style.display = 'none';
+    $('add-member-form').style.display = '';
+  };
+
+  var editingMember = null;
+  function openEditMember(m) {
+    editingMember = m;
+    $('edit-member-email').textContent = m.email;
+    $('edit-member-name').value = m.full_name || '';
+    $('edit-member-pw-result').style.display = 'none';
+    $('edit-member-overlay').classList.add('open');
+  }
+  $('edit-member-cancel').onclick = function () { $('edit-member-overlay').classList.remove('open'); };
+  $('edit-member-save').onclick = function () {
+    var name = $('edit-member-name').value.trim();
+    if (!name) { toast('Enter a name', '#b91c1c'); return; }
+    $('edit-member-save').disabled = true;
+    sb.functions.invoke('update-team-member', { body: { userId: editingMember.user_id, fullName: name } }).then(function (res) {
+      $('edit-member-save').disabled = false;
+      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+      if (res.error) { fail(res.error, 'Could not update name'); return; }
+      $('edit-member-overlay').classList.remove('open');
+      toast('Name updated');
+      loadRoster();
+    });
+  };
+  $('edit-member-reset-pw').onclick = function () {
+    if (!confirm("Reset " + (editingMember.full_name || editingMember.email) + "'s password? Their current password will stop working.")) return;
+    $('edit-member-reset-pw').disabled = true;
+    sb.functions.invoke('update-team-member', { body: { userId: editingMember.user_id, resetPassword: true } }).then(function (res) {
+      $('edit-member-reset-pw').disabled = false;
+      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+      if (res.error) { fail(res.error, 'Could not reset password'); return; }
+      $('edit-member-new-password').textContent = res.data.tempPassword;
+      $('edit-member-pw-result').style.display = '';
+      loadRoster();
+    });
+  };
 
   function loadRoster() {
     sb.rpc('list_org_members').then(function (res) {
@@ -432,6 +575,68 @@
     });
   }
 
+  // ---- Concurrent seats (multi-venue only) ----
+  $('seat-count-save').onclick = function () {
+    var seats = parseInt($('seat-count-input').value, 10);
+    if (!Number.isInteger(seats) || seats < 0) { toast('Enter a whole number of seats (0 or more)', '#b91c1c'); return; }
+    $('seat-count-save').disabled = true;
+    sb.functions.invoke('set-seat-count', { body: { seats: seats } }).then(function (res) {
+      $('seat-count-save').disabled = false;
+      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+      if (res.error) { fail(res.error, 'Could not update seat count'); return; }
+      currentOrg.concurrentSeats = seats;
+      toast('Seat count updated');
+    });
+  };
+
+  $('heartbeat-interval-save').onclick = function () {
+    var secs = parseInt($('heartbeat-interval-input').value, 10);
+    if (!Number.isInteger(secs) || secs < 10) { toast('Check-in frequency must be 10 seconds or more', '#b91c1c'); return; }
+    $('heartbeat-interval-save').disabled = true;
+    sb.from('organisations').update({ heartbeat_interval_seconds: secs }).eq('id', currentOrg.id).then(function (res) {
+      $('heartbeat-interval-save').disabled = false;
+      if (res.error) { fail(res.error, 'Could not update check-in frequency'); return; }
+      currentOrg.heartbeatIntervalSeconds = secs;
+      toast('Check-in frequency updated');
+    });
+  };
+
+  function renderActiveSessions(sessions) {
+    var list = $('active-sessions-list');
+    list.innerHTML = '';
+    sessions.forEach(function (s) {
+      var row = document.createElement('div');
+      row.className = 'session-row';
+      var who = document.createElement('div');
+      who.className = 'who';
+      var nameEl = document.createElement('div');
+      nameEl.className = 'name'; nameEl.textContent = s.full_name || s.email;
+      var sinceEl = document.createElement('div');
+      sinceEl.className = 'since'; sinceEl.textContent = 'Since ' + new Date(s.last_seen_at).toLocaleTimeString();
+      who.appendChild(nameEl); who.appendChild(sinceEl);
+
+      var kickBtn = document.createElement('button');
+      kickBtn.textContent = 'Log out';
+      kickBtn.onclick = function () {
+        sb.rpc('kick_user', { p_user_id: s.user_id }).then(function (res) {
+          if (res.error) { fail(res.error, 'Could not log out this person'); return; }
+          toast('Logged out ' + (s.full_name || s.email));
+          loadActiveSessions();
+        });
+      };
+
+      row.appendChild(who); row.appendChild(kickBtn);
+      list.appendChild(row);
+    });
+  }
+
+  function loadActiveSessions() {
+    sb.rpc('list_active_sessions').then(function (res) {
+      if (res.error) { fail(res.error, 'Could not load active sessions'); return; }
+      renderActiveSessions(res.data || []);
+    });
+  }
+
   // ---- Activity log ----
   // One sentence per row, built from `action` — not a generic diff viewer.
   // Falls back to a plain "<actor> <action>" string for anything not listed
@@ -442,13 +647,18 @@
     'location.removed': function (r) { return r.actor_label + ' removed location "' + r.target_label + '"'; },
     'membership.role_changed': function (r) { return r.actor_label + ' changed ' + r.target_label + '’s role from ' + r.before.role + ' to ' + r.after.role; },
     'membership.removed': function (r) { return r.actor_label + ' removed ' + r.target_label + ' from the organisation'; },
+    'membership.added_by_owner': function (r) { return r.actor_label + ' added ' + r.target_label + ' to the team as ' + (r.after.role === 'manager' ? 'Manager' : 'Staff'); },
+    'membership.updated_by_owner': function (r) { return r.actor_label + ' renamed ' + (r.before.full_name || 'a team member') + ' to "' + r.after.full_name + '"'; },
+    'membership.password_reset_by_owner': function (r) { return r.actor_label + ' reset ' + r.target_label + '’s password'; },
+    'membership.force_logged_out_by_owner': function (r) { return r.actor_label + ' logged out ' + r.target_label; },
     'stocktake.deleted': function (r) { return r.actor_label + ' deleted stocktake "' + r.target_label + '"'; },
     'stocktake_items.cleared': function (r) { return r.actor_label + ' cleared all items from "' + r.target_label + '"'; },
     'organisation.name_changed': function (r) { return r.actor_label + ' renamed the organisation from "' + r.before.name + '" to "' + r.after.name + '"'; },
     'organisation.logo_changed': function (r) { return r.actor_label + ' changed the organisation logo'; },
     'organisation.export_format_changed': function (r) { return r.actor_label + ' changed the export format from ' + r.before.export_format + ' to ' + r.after.export_format; },
     'organisation.country_changed': function (r) { return r.actor_label + ' changed the billing country from ' + r.before.country + ' to ' + r.after.country; },
-    'organisation.join_code_changed': function (r) { return r.actor_label + ' rotated the join code'; }
+    'organisation.join_code_changed': function (r) { return r.actor_label + ' rotated the join code'; },
+    'organisation.heartbeat_interval_changed': function (r) { return r.actor_label + ' changed the check-in frequency from ' + r.before.heartbeat_interval_seconds + 's to ' + r.after.heartbeat_interval_seconds + 's'; }
   };
 
   function renderAuditLog(rows) {
@@ -481,7 +691,7 @@
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
     sb.from('memberships')
-      .select('role, organisations(id, name, plan_tier, join_code, roster_last_viewed_at)')
+      .select('role, organisations(id, name, plan_tier, join_code, roster_last_viewed_at, concurrent_seats, heartbeat_interval_seconds)')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(function (res) {
@@ -503,7 +713,8 @@
         }
         currentOrg = {
           id: org.id, name: org.name, planTier: org.plan_tier, joinCode: org.join_code,
-          rosterLastViewedAt: org.roster_last_viewed_at
+          rosterLastViewedAt: org.roster_last_viewed_at,
+          concurrentSeats: org.concurrent_seats, heartbeatIntervalSeconds: org.heartbeat_interval_seconds
         };
         showView('admin');
         renderOrg();
@@ -511,6 +722,14 @@
         loadRoster();
         loadDailyCode();
         loadAuditLog();
+        // Concurrent seats are a multi-venue-only concept — single-venue
+        // has no seat pool at all (unlimited staff, unchanged).
+        if (currentOrg.planTier === 'multi') {
+          $('seats-card').style.display = '';
+          $('seat-count-input').value = currentOrg.concurrentSeats;
+          $('heartbeat-interval-input').value = currentOrg.heartbeatIntervalSeconds;
+          loadActiveSessions();
+        }
       });
   }
 
