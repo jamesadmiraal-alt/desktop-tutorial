@@ -73,7 +73,17 @@
   .loc-row:last-child { border-bottom: none; }
   .loc-row input { flex: 1; }
   .loc-row button { flex: none; padding: 8px 12px; background: transparent; color: var(--danger); }
-  #locations-list:empty::after { content: 'No locations yet.'; color: var(--text-dim); font-size: 0.85rem; }
+  #venues-list:empty::after { content: 'No venues yet.'; color: var(--text-dim); font-size: 0.85rem; }
+
+  .venue-section { margin-bottom: 18px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .venue-section:last-child { border-bottom: none; margin-bottom: 0; }
+  .venue-row input { font-weight: 700; }
+  .venue-locations { margin: 4px 0 4px 18px; border-left: 2px solid var(--border); padding-left: 12px; }
+  .venue-locations .loc-row { padding: 6px 0; }
+  .venue-locations:empty::after { content: 'No locations in this venue yet.'; color: var(--text-dim); font-size: 0.85rem; display: block; padding: 6px 0; }
+  .add-venue-location-row { margin: 4px 0 0 18px; padding-left: 12px; display: flex; gap: 8px; }
+  .add-venue-location-row input { flex: 1; }
+  .add-venue-location-row button { flex: none; }
 
   .roster-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
   .roster-row:last-child { border-bottom: none; }
@@ -200,15 +210,15 @@
   </div>
 
   <div class="card">
-    <h2>Locations</h2>
-    <p class="hint">Staff can only start stocktakes at a location listed here.</p>
-    <div id="locations-list"></div>
-    <div id="add-location-row" style="margin-top:14px;display:flex;gap:8px">
-      <input id="new-location-name" type="text" placeholder="New location name">
-      <button id="add-location-btn" class="primary">Add</button>
+    <h2>Venues</h2>
+    <p class="hint">Staff can only start stocktakes at a location listed here. Locations are grouped under a venue.</p>
+    <div id="venues-list"></div>
+    <div id="add-venue-row" style="margin-top:14px;display:flex;gap:8px">
+      <input id="new-venue-name" type="text" placeholder="New venue name">
+      <button id="add-venue-btn" class="primary">Add venue</button>
     </div>
-    <p class="hint" id="location-limit-note" style="display:none;margin-top:12px;margin-bottom:0">
-      Single-venue includes one location. Upgrade to Multi-venue from the app's Account page for unlimited venues and locations.
+    <p class="hint" id="venue-limit-note" style="display:none;margin-top:12px;margin-bottom:0">
+      Single-venue includes one venue, with unlimited locations inside it. Upgrade to Multi-venue from the app's Account page for unlimited venues.
     </p>
   </div>
 
@@ -363,14 +373,13 @@
     $('join-code-display').textContent = currentOrg.joinCode;
   }
 
-  function renderLocations(locations) {
-    var list = $('locations-list');
-    list.innerHTML = '';
-    // Remove is only offered once there's more than one location — never
-    // true on free/single tier (capped at 1), so this is effectively
-    // multi-tier-only without needing an explicit tier check here.
-    var canRemove = locations.length > 1;
-    locations.forEach(function (loc) {
+  // Locations within a venue are always removable (never capped) — only
+  // venues themselves are ever capped by tier (see renderVenues' atCap
+  // below), so no "canRemove" gating is needed at the location level any
+  // more the way it used to be when locations were the capped unit.
+  function renderVenueLocations(venue, container) {
+    container.innerHTML = '';
+    (venue.locations || []).forEach(function (loc) {
       var row = document.createElement('div');
       row.className = 'loc-row';
       var input = document.createElement('input');
@@ -386,55 +395,137 @@
         });
       });
       row.appendChild(input);
-      if (canRemove) {
-        var removeBtn = document.createElement('button');
-        removeBtn.textContent = '✕';
-        removeBtn.title = 'Remove location';
-        removeBtn.onclick = function () {
-          if (!confirm('Remove location "' + loc.name + '"? Stocktakes already at this location keep their history, but this location itself can only be removed once it has no stocktakes.')) return;
-          removeBtn.disabled = true;
-          sb.from('locations').delete().eq('id', loc.id).then(function (res) {
-            removeBtn.disabled = false;
+      var removeBtn = document.createElement('button');
+      removeBtn.textContent = '✕';
+      removeBtn.title = 'Remove location';
+      removeBtn.onclick = function () {
+        if (!confirm('Remove location "' + loc.name + '"? Stocktakes already at this location keep their history, but this location itself can only be removed once it has no stocktakes.')) return;
+        removeBtn.disabled = true;
+        sb.from('locations').delete().eq('id', loc.id).then(function (res) {
+          removeBtn.disabled = false;
+          if (res.error) {
+            var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
+            fail(blocked ? { message: "This location has stocktakes and can't be removed." } : res.error, blocked ? '' : 'Could not remove location');
+            return;
+          }
+          loadVenues();
+          toast('Location removed');
+        });
+      };
+      row.appendChild(removeBtn);
+      container.appendChild(row);
+    });
+  }
+
+  function renderVenues(venues) {
+    var list = $('venues-list');
+    list.innerHTML = '';
+    // A venue is only removable once there's more than one (single-venue
+    // orgs are permanently capped at exactly 1 — see atCap below) — mirrors
+    // how locations' own remove button used to be gated before this layer
+    // existed, just one level up.
+    var canRemoveVenue = venues.length > 1;
+    venues.forEach(function (venue) {
+      var section = document.createElement('div');
+      section.className = 'venue-section';
+
+      var venueRow = document.createElement('div');
+      venueRow.className = 'loc-row venue-row';
+      var venueInput = document.createElement('input');
+      venueInput.type = 'text';
+      venueInput.value = venue.name;
+      venueInput.addEventListener('change', function () {
+        var name = venueInput.value.trim();
+        if (!name || name === venue.name) { venueInput.value = venue.name; return; }
+        sb.from('venues').update({ name: name }).eq('id', venue.id).then(function (res) {
+          if (res.error) { fail(res.error, 'Could not rename venue'); venueInput.value = venue.name; return; }
+          venue.name = name;
+          toast('Venue renamed');
+        });
+      });
+      venueRow.appendChild(venueInput);
+      if (canRemoveVenue) {
+        var removeVenueBtn = document.createElement('button');
+        removeVenueBtn.textContent = '✕';
+        removeVenueBtn.title = 'Remove venue';
+        removeVenueBtn.onclick = function () {
+          if (!confirm('Remove venue "' + venue.name + '"? It can only be removed once it has no locations.')) return;
+          removeVenueBtn.disabled = true;
+          sb.from('venues').delete().eq('id', venue.id).then(function (res) {
+            removeVenueBtn.disabled = false;
             if (res.error) {
               var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
-              fail(blocked ? { message: "This location has stocktakes and can't be removed." } : res.error, blocked ? '' : 'Could not remove location');
+              fail(blocked ? { message: "This venue has locations and can't be removed." } : res.error, blocked ? '' : 'Could not remove venue');
               return;
             }
-            loadLocations();
-            toast('Location removed');
+            loadVenues();
+            toast('Venue removed');
           });
         };
-        row.appendChild(removeBtn);
+        venueRow.appendChild(removeVenueBtn);
       }
-      list.appendChild(row);
+      section.appendChild(venueRow);
+
+      var locContainer = document.createElement('div');
+      locContainer.className = 'venue-locations';
+      renderVenueLocations(venue, locContainer);
+      section.appendChild(locContainer);
+
+      var addLocRow = document.createElement('div');
+      addLocRow.className = 'add-venue-location-row';
+      var addLocInput = document.createElement('input');
+      addLocInput.type = 'text';
+      addLocInput.placeholder = 'New location name';
+      var addLocBtn = document.createElement('button');
+      addLocBtn.textContent = 'Add';
+      addLocBtn.onclick = function () {
+        var name = addLocInput.value.trim();
+        if (!name) { toast('Enter a location name', '#b91c1c'); return; }
+        addLocBtn.disabled = true;
+        sb.from('locations').insert({ name: name, org_id: currentOrg.id, venue_id: venue.id }).then(function (res) {
+          addLocBtn.disabled = false;
+          if (res.error) { fail(res.error, 'Could not add location'); return; }
+          addLocInput.value = '';
+          loadVenues();
+        });
+      };
+      addLocRow.appendChild(addLocInput); addLocRow.appendChild(addLocBtn);
+      section.appendChild(addLocRow);
+
+      list.appendChild(section);
     });
-    // Mirrors the RLS insert policy on locations (schema.sql): free/single
-    // tier orgs get exactly one location, multi-tier is unlimited.
-    var atCap = currentOrg.planTier !== 'multi' && locations.length >= 1;
-    $('add-location-row').style.display = atCap ? 'none' : 'flex';
-    $('location-limit-note').style.display = atCap ? '' : 'none';
+    // Mirrors the RLS insert policy on venues (schema.sql): single tier gets
+    // exactly one venue, ever; multi-tier is unlimited. Locations within a
+    // venue are unlimited on every tier — no cap check at that level.
+    var atCap = currentOrg.planTier !== 'multi' && venues.length >= 1;
+    $('add-venue-row').style.display = atCap ? 'none' : 'flex';
+    $('venue-limit-note').style.display = atCap ? '' : 'none';
   }
 
-  function loadLocations() {
-    sb.from('locations').select('id,name').order('name').then(function (res) {
-      if (res.error) { fail(res.error, 'Could not load locations'); return; }
-      renderLocations(res.data || []);
+  function loadVenues() {
+    sb.from('venues').select('id,name,locations(id,name)').order('name').then(function (res) {
+      if (res.error) { fail(res.error, 'Could not load venues'); return; }
+      var venues = (res.data || []).map(function (v) {
+        v.locations = (v.locations || []).slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+        return v;
+      });
+      renderVenues(venues);
     });
   }
 
-  $('add-location-btn').onclick = function () {
-    var name = $('new-location-name').value.trim();
-    if (!name) { toast('Enter a location name', '#b91c1c'); return; }
-    $('add-location-btn').disabled = true;
+  $('add-venue-btn').onclick = function () {
+    var name = $('new-venue-name').value.trim();
+    if (!name) { toast('Enter a venue name', '#b91c1c'); return; }
+    $('add-venue-btn').disabled = true;
     // Plain insert for every tier — venues/locations carry no billing
     // consequence any more (multi-venue pays per concurrent seat instead,
     // see the Concurrent seats card below), so there's no Stripe quantity
     // to sync here the way there used to be.
-    sb.from('locations').insert({ name: name }).then(function (res) {
-      $('add-location-btn').disabled = false;
-      if (res.error) { fail(res.error, 'Could not add location'); return; }
-      $('new-location-name').value = '';
-      loadLocations();
+    sb.from('venues').insert({ name: name, org_id: currentOrg.id }).then(function (res) {
+      $('add-venue-btn').disabled = false;
+      if (res.error) { fail(res.error, 'Could not add venue'); return; }
+      $('new-venue-name').value = '';
+      loadVenues();
     });
   };
 
@@ -643,7 +734,15 @@
       var kickBtn = document.createElement('button');
       kickBtn.textContent = 'Log out';
       kickBtn.onclick = function () {
-        sb.rpc('kick_user', { p_user_id: s.user_id }).then(function (res) {
+        kickBtn.disabled = true;
+        // kick-user (Edge Function), not the plain kick_user() RPC — it
+        // does everything the RPC did (org/role check, drop the
+        // active_sessions row) plus a 24h Auth Admin API ban, so a kicked
+        // user can't just keep refreshing their still-valid session
+        // forever. Not an instant kill — see the function's own comment.
+        sb.functions.invoke('kick-user', { body: { userId: s.user_id } }).then(function (res) {
+          kickBtn.disabled = false;
+          if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
           if (res.error) { fail(res.error, 'Could not log out this person'); return; }
           toast('Logged out ' + (s.full_name || s.email));
           loadActiveSessions();
@@ -667,8 +766,12 @@
   // Falls back to a plain "<actor> <action>" string for anything not listed
   // here, so the list never silently drops a row if the action set grows.
   var AUDIT_SENTENCES = {
+    'venue.created': function (r) { return r.actor_label + ' added venue "' + r.target_label + '"'; },
+    'venue.renamed': function (r) { return r.actor_label + ' renamed venue "' + r.before.name + '" to "' + r.after.name + '"'; },
+    'venue.removed': function (r) { return r.actor_label + ' removed venue "' + r.target_label + '"'; },
     'location.created': function (r) { return r.actor_label + ' added location "' + r.target_label + '"'; },
     'location.renamed': function (r) { return r.actor_label + ' renamed location "' + r.before.name + '" to "' + r.after.name + '"'; },
+    'location.moved': function (r) { return r.actor_label + ' moved location "' + r.target_label + '" to a different venue'; },
     'location.removed': function (r) { return r.actor_label + ' removed location "' + r.target_label + '"'; },
     'membership.role_changed': function (r) { return r.actor_label + ' changed ' + r.target_label + '’s role from ' + r.before.role + ' to ' + r.after.role; },
     'membership.removed': function (r) { return r.actor_label + ' removed ' + r.target_label + ' from the organisation'; },
@@ -676,6 +779,7 @@
     'membership.updated_by_owner': function (r) { return r.actor_label + ' renamed ' + (r.before.full_name || 'a team member') + ' to "' + r.after.full_name + '"'; },
     'membership.password_reset_by_owner': function (r) { return r.actor_label + ' reset ' + r.target_label + '’s password'; },
     'membership.force_logged_out_by_owner': function (r) { return r.actor_label + ' logged out ' + r.target_label; },
+    'membership.left_voluntarily': function (r) { return r.target_label + ' left the organisation (account deleted)'; },
     'stocktake.deleted': function (r) { return r.actor_label + ' deleted stocktake "' + r.target_label + '"'; },
     'stocktake_items.cleared': function (r) { return r.actor_label + ' cleared all items from "' + r.target_label + '"'; },
     'organisation.name_changed': function (r) { return r.actor_label + ' renamed the organisation from "' + r.before.name + '" to "' + r.after.name + '"'; },
@@ -683,7 +787,8 @@
     'organisation.export_format_changed': function (r) { return r.actor_label + ' changed the export format from ' + r.before.export_format + ' to ' + r.after.export_format; },
     'organisation.country_changed': function (r) { return r.actor_label + ' changed the billing country from ' + r.before.country + ' to ' + r.after.country; },
     'organisation.join_code_changed': function (r) { return r.actor_label + ' rotated the join code'; },
-    'organisation.heartbeat_interval_changed': function (r) { return r.actor_label + ' changed the check-in frequency from ' + r.before.heartbeat_interval_seconds + 's to ' + r.after.heartbeat_interval_seconds + 's'; }
+    'organisation.heartbeat_interval_changed': function (r) { return r.actor_label + ' changed the check-in frequency from ' + r.before.heartbeat_interval_seconds + 's to ' + r.after.heartbeat_interval_seconds + 's'; },
+    'organisation.dissolved': function (r) { return r.actor_label + ' deleted their account, dissolving the organisation'; }
   };
 
   function renderAuditLog(rows) {
@@ -753,7 +858,7 @@
         };
         showView('admin');
         renderOrg();
-        loadLocations();
+        loadVenues();
         loadRoster();
         loadDailyCode();
         loadAuditLog();

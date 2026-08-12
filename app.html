@@ -252,6 +252,11 @@
   .team-row select { width: auto; padding: 8px 10px; font-size: 0.85rem; }
   #team-roster-list:empty::after { content: 'No team members yet.'; color: var(--text-dim); font-size: 0.85rem; }
   .team-btn-row { display: flex; gap: 8px; margin-top: 14px; }
+  .team-loc-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .team-loc-row:last-child { border-bottom: none; }
+  .team-loc-row input { flex: 1; }
+  .team-loc-row button { flex: none; padding: 8px 12px; background: transparent; color: var(--danger); }
+  #team-locations-list:empty::after { content: 'No locations yet.'; color: var(--text-dim); font-size: 0.85rem; }
 
   #toast {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
@@ -486,8 +491,13 @@
     <div class="name">Team & location</div>
   </div>
   <div class="acct-card">
-    <h3>Location</h3>
-    <input id="team-location-name" type="text" placeholder="Location name">
+    <h3>Venue</h3>
+    <input id="team-venue-name" type="text" placeholder="Venue name">
+    <div id="team-locations-list" style="margin-top:10px"></div>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <input id="team-new-location-name" type="text" placeholder="New location name">
+      <button id="team-add-location-btn">Add</button>
+    </div>
   </div>
   <div class="acct-card">
     <h3>Team</h3>
@@ -1087,6 +1097,7 @@
   // one join, since a user with no membership yet still has a valid profile.
   function refreshOrgStatus(cb) {
     if (!currentUser) return;
+    var previousTier = currentOrg ? currentOrg.planTier : null;
     Promise.all([
       sb.from('profiles').select('full_name').eq('id', currentUser.id).maybeSingle(),
       sb.from('memberships')
@@ -1119,6 +1130,19 @@
         showPaymentPendingPrompt();
         return;
       }
+      // Confirmation for a plan-tier change picked up by *this* refresh —
+      // fires wherever the user is actually looking (this tab regaining
+      // focus, or native resume), unlike the boot-time ?upgraded=1 toast
+      // which only ever fires in the (possibly abandoned) tab Stripe
+      // redirected to. previousTier is null on first-ever load, so this
+      // never fires on plain login.
+      function announceTierChangeIfAny() {
+        if (previousTier && currentOrg && currentOrg.planTier !== previousTier &&
+            (currentOrg.planTier === 'single' || currentOrg.planTier === 'multi')) {
+          var label = currentOrg.planTier === 'multi' ? 'Multi-venue' : 'Single-venue';
+          toast('🎉 You’re now on the ' + label + ' plan!', '#059669');
+        }
+      }
       // Multi-venue only: venues/locations are free/unlimited, concurrent
       // login seats are the billable unit instead (see claim_seat() in
       // schema.sql). Single-venue never enforces this — skip the round
@@ -1130,11 +1154,13 @@
             return;
           }
           startSeatHeartbeat();
+          announceTierChangeIfAny();
           renderPlan();
           if (cb) cb();
         });
         return;
       }
+      announceTierChangeIfAny();
       renderPlan();
       if (cb) cb();
     });
@@ -1332,42 +1358,103 @@
     else if (currentView === 'team') $('team-back').onclick();
   };
 
-  // ---- Team & location (single-venue only — see open-team-btn above).
+  // ---- Team & venue (single-venue only — see open-team-btn above).
   // Deliberately no join-code/daily-code display here — create-team-member
   // below already fully replaces what codes were for (no code to read
   // aloud, no separate join step), so it's left admin.html/multi-venue-only.
-  var teamLocation = null;
+  // Single-venue orgs get exactly one venue, ever — but unlimited locations
+  // within it (see schema.sql's venues layer), so this manages the venue's
+  // name plus a full locations list, not just a single location like before.
+  var teamVenue = null;
   function openTeam() {
     showView('team');
     loadTeamView();
   }
   function loadTeamView() {
     Promise.all([
-      sb.from('locations').select('id,name').limit(1).maybeSingle(),
+      sb.from('venues').select('id,name,locations(id,name)').limit(1).maybeSingle(),
       sb.rpc('list_org_members')
     ]).then(function (results) {
-      var locRes = results[0], rosterRes = results[1];
-      if (locRes.error) { fail(locRes.error, 'Could not load location'); }
-      else if (locRes.data) {
-        teamLocation = locRes.data;
-        $('team-location-name').value = locRes.data.name;
+      var venueRes = results[0], rosterRes = results[1];
+      if (venueRes.error) { fail(venueRes.error, 'Could not load venue'); }
+      else if (venueRes.data) {
+        teamVenue = venueRes.data;
+        teamVenue.locations = (teamVenue.locations || []).slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+        $('team-venue-name').value = teamVenue.name;
+        renderTeamLocations();
       }
       if (rosterRes.error) { fail(rosterRes.error, 'Could not load team'); return; }
       renderTeamRoster(rosterRes.data || []);
     });
   }
-  $('team-location-name').addEventListener('change', function () {
-    var name = $('team-location-name').value.trim();
-    if (!teamLocation || !name || name === teamLocation.name) {
-      if (teamLocation) $('team-location-name').value = teamLocation.name;
+  $('team-venue-name').addEventListener('change', function () {
+    var name = $('team-venue-name').value.trim();
+    if (!teamVenue || !name || name === teamVenue.name) {
+      if (teamVenue) $('team-venue-name').value = teamVenue.name;
       return;
     }
-    sb.from('locations').update({ name: name }).eq('id', teamLocation.id).then(function (res) {
-      if (res.error) { fail(res.error, 'Could not rename location'); $('team-location-name').value = teamLocation.name; return; }
-      teamLocation.name = name;
-      toast('Location renamed');
+    sb.from('venues').update({ name: name }).eq('id', teamVenue.id).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not rename venue'); $('team-venue-name').value = teamVenue.name; return; }
+      teamVenue.name = name;
+      toast('Venue renamed');
     });
   });
+
+  // Single-venue is permanently capped at one venue, but its locations are
+  // unlimited and freely add/rename/remove-able — same list shape as
+  // admin.html's Venues card uses for its own nested per-venue locations.
+  function renderTeamLocations() {
+    var list = $('team-locations-list');
+    list.innerHTML = '';
+    (teamVenue.locations || []).forEach(function (loc) {
+      var row = document.createElement('div');
+      row.className = 'team-loc-row';
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.value = loc.name;
+      input.addEventListener('change', function () {
+        var name = input.value.trim();
+        if (!name || name === loc.name) { input.value = loc.name; return; }
+        sb.from('locations').update({ name: name }).eq('id', loc.id).then(function (res) {
+          if (res.error) { fail(res.error, 'Could not rename location'); input.value = loc.name; return; }
+          loc.name = name;
+          toast('Location renamed');
+        });
+      });
+      row.appendChild(input);
+      var removeBtn = document.createElement('button');
+      removeBtn.textContent = '✕';
+      removeBtn.title = 'Remove location';
+      removeBtn.onclick = function () {
+        if (!confirm('Remove location "' + loc.name + '"? Stocktakes already at this location keep their history, but this location itself can only be removed once it has no stocktakes.')) return;
+        removeBtn.disabled = true;
+        sb.from('locations').delete().eq('id', loc.id).then(function (res) {
+          removeBtn.disabled = false;
+          if (res.error) {
+            var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
+            fail(blocked ? { message: "This location has stocktakes and can't be removed." } : res.error, blocked ? '' : 'Could not remove location');
+            return;
+          }
+          loadTeamView();
+          toast('Location removed');
+        });
+      };
+      row.appendChild(removeBtn);
+      list.appendChild(row);
+    });
+  }
+  $('team-add-location-btn').onclick = function () {
+    if (!teamVenue) return;
+    var name = $('team-new-location-name').value.trim();
+    if (!name) { toast('Enter a location name', '#b91c1c'); return; }
+    $('team-add-location-btn').disabled = true;
+    sb.from('locations').insert({ name: name, org_id: currentOrg.id, venue_id: teamVenue.id }).then(function (res) {
+      $('team-add-location-btn').disabled = false;
+      if (res.error) { fail(res.error, 'Could not add location'); return; }
+      $('team-new-location-name').value = '';
+      loadTeamView();
+    });
+  };
 
   function renderTeamRoster(members) {
     var list = $('team-roster-list');
@@ -1600,13 +1687,26 @@
     return list.length + ' items · ' + qty + ' total qty';
   }
 
-  // This org's pre-created venues — fetched once per login/resume, needed
-  // before "New stocktake" can offer a location picker.
+  // This org's pre-created locations (each nested under a venue) — fetched
+  // once per login/resume, needed before "New stocktake" can offer a
+  // location picker.
   function loadLocations(cb) {
-    sb.from('locations').select('id,name').order('name').then(function (res) {
+    sb.from('locations').select('id,name,venue_id,venues(name)').order('name').then(function (res) {
       if (!res.error) locations = res.data || [];
       if (cb) cb();
     });
+  }
+
+  // How many distinct venues this org's locations span — single-tier orgs
+  // are always exactly 1 (their permanent cap), so this only ever goes
+  // above 1 for a multi-venue org that's actually created more than one.
+  function distinctVenueCount() {
+    var seen = {};
+    var count = 0;
+    locations.forEach(function (l) {
+      if (l.venue_id && !seen[l.venue_id]) { seen[l.venue_id] = true; count++; }
+    });
+    return count;
   }
 
   var creatorNames = {}; // { userId: fullName } — see loadCreatorNames() below
@@ -1617,7 +1717,7 @@
     $('stocktake-list-completed').innerHTML = '';
     $('completed-heading').style.display = 'none';
     sb.from('stocktakes')
-      .select('id,name,status,created_at,updated_at,created_by,locations(name),stocktake_items(qty)')
+      .select('id,name,status,created_at,updated_at,created_by,locations(name,venues(name)),stocktake_items(qty)')
       .order('updated_at', { ascending: false })
       .then(function (res) {
         if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
@@ -1649,9 +1749,14 @@
     info.className = 'info';
     var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = t.name;
     var meta = document.createElement('div'); meta.className = 'meta';
-    // Only show which venue once there's more than one — keeps the solo/
-    // single-location case identical to before this feature existed.
-    var locPrefix = (locations.length > 1 && t.locations && t.locations.name) ? t.locations.name + ' · ' : '';
+    // Only show a "Venue · Location" prefix once there's more than one
+    // venue — keeps the solo/single-venue case identical to before this
+    // layer existed, regardless of how many locations sit inside that one
+    // venue.
+    var loc = t.locations;
+    var locPrefix = (distinctVenueCount() > 1 && loc && loc.name)
+      ? ((loc.venues && loc.venues.name) ? loc.venues.name + ' · ' : '') + loc.name + ' · '
+      : '';
     var startedBy = (t.created_by && creatorNames[t.created_by]) ? ' · Started by ' + creatorNames[t.created_by] : '';
     meta.textContent = locPrefix + takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString() + startedBy;
     info.appendChild(nm); info.appendChild(meta);
@@ -1719,11 +1824,34 @@
     if (locations.length > 1) {
       $('name-location-row').style.display = '';
       $('name-location').innerHTML = '';
-      locations.forEach(function (l) {
-        var opt = document.createElement('option');
-        opt.value = l.id; opt.textContent = l.name;
-        $('name-location').appendChild(opt);
-      });
+      if (distinctVenueCount() > 1) {
+        // Group by venue so a multi-venue org's picker reads
+        // "Venue > Location" instead of a flat list that could contain
+        // same-named locations from different venues.
+        var byVenue = {};
+        var venueOrder = [];
+        locations.forEach(function (l) {
+          var vName = (l.venues && l.venues.name) || 'Other';
+          if (!byVenue[vName]) { byVenue[vName] = []; venueOrder.push(vName); }
+          byVenue[vName].push(l);
+        });
+        venueOrder.forEach(function (vName) {
+          var group = document.createElement('optgroup');
+          group.label = vName;
+          byVenue[vName].forEach(function (l) {
+            var opt = document.createElement('option');
+            opt.value = l.id; opt.textContent = l.name;
+            group.appendChild(opt);
+          });
+          $('name-location').appendChild(group);
+        });
+      } else {
+        locations.forEach(function (l) {
+          var opt = document.createElement('option');
+          opt.value = l.id; opt.textContent = l.name;
+          $('name-location').appendChild(opt);
+        });
+      }
       $('name-location').value = locations[0].id;
     } else {
       $('name-location-row').style.display = 'none';
@@ -2259,6 +2387,17 @@
     if (Capacitor.Plugins.StatusBar) {
       Capacitor.Plugins.StatusBar.setOverlaysWebView({ overlay: false }).catch(function () {});
     }
+  } else {
+    // Web only: openExternal() sends Stripe's Payment Link (and its
+    // after-payment redirect) to a separate new tab, not this one — this
+    // tab never sees ?upgraded=1 and never otherwise re-checks. Regaining
+    // focus is the signal to re-check, mirroring the native resume
+    // listener above. The webhook can take up to roughly a minute to
+    // process, so the first refocus right after closing Stripe may not
+    // show the change yet — not solved with polling here, same as native.
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible' && currentUser) refreshOrgStatus();
+    });
   }
 })();
 </script>

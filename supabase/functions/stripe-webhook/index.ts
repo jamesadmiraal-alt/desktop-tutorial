@@ -5,9 +5,10 @@
 // cancelled subscription drops the org back to 'pending' (the same locked-
 // out state a brand-new, never-paid org starts in; see schema.sql), not
 // some lesser usable tier. checkout.session.completed also creates the
-// org's first location if it doesn't have one yet, since that no longer
-// happens at signup (create_organisation() in schema.sql) — the org isn't
-// usable at all until payment completes. Deploy instructions: STRIPE-SETUP.md.
+// org's first venue and its first location if they don't exist yet, since
+// that no longer happens at signup (create_organisation() in schema.sql) —
+// the org isn't usable at all until payment completes. Deploy instructions:
+// STRIPE-SETUP.md.
 //
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   STRIPE_WEBHOOK_SECRET  - the "whsec_..." signing secret of the webhook endpoint
@@ -124,11 +125,45 @@ async function setPlanByCustomer(customerId: string, tier: string) {
   if (!res.ok) throw new Error(`organisations update failed: ${res.status} ${await res.text()}`);
 }
 
-// Creates the org's first location if it doesn't have one yet — a no-op
-// for a tier-change checkout on an org that already has locations (e.g.
-// single -> multi via a fresh checkout rather than the portal).
-async function ensureFirstLocation(orgId: string) {
-  const countRes = await db(`locations?org_id=eq.${encodeURIComponent(orgId)}&select=id`, {
+// Ensures the org has at least one venue, returning its id — creates one
+// ("Main") if it doesn't, a no-op returning the existing one for a
+// tier-change checkout on an org that already has a venue (e.g. single ->
+// multi via a fresh checkout rather than the portal). The create path also
+// writes an explicit audit_log row: the venues audit trigger (schema.sql)
+// no-ops for this insert since it runs under the service role with no
+// end-user JWT (auth.uid() is null there), so this is the only place that
+// ever logs it — same reasoning as every other service-role write here.
+async function ensureFirstVenue(orgId: string): Promise<string> {
+  const existingRes = await db(`venues?org_id=eq.${encodeURIComponent(orgId)}&select=id&order=created_at&limit=1`);
+  const existing = await existingRes.json();
+  if (existing.length > 0) return existing[0].id;
+
+  const res = await db(`venues`, {
+    method: "POST",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ org_id: orgId, name: "Main" }),
+  });
+  if (!res.ok) throw new Error(`venue create failed: ${res.status} ${await res.text()}`);
+  const [venue] = await res.json();
+
+  const orgRes = await db(`organisations?id=eq.${encodeURIComponent(orgId)}&select=name`);
+  const [org] = await orgRes.json();
+
+  await db(`audit_log`, {
+    method: "POST",
+    body: JSON.stringify({
+      org_id: orgId, org_label: org?.name ?? "Unknown organisation", actor_id: null,
+      actor_label: "Stripe checkout", action: "venue.created", entity_type: "venue",
+      entity_id: venue.id, target_label: venue.name, after: venue,
+    }),
+  });
+  return venue.id;
+}
+
+// Creates the given venue's first location if it doesn't have one yet —
+// same no-op-if-exists shape as ensureFirstVenue() above, one level down.
+async function ensureFirstLocation(orgId: string, venueId: string) {
+  const countRes = await db(`locations?venue_id=eq.${encodeURIComponent(venueId)}&select=id`, {
     headers: { Prefer: "count=exact" },
   });
   const contentRange = countRes.headers.get("content-range") ?? "";
@@ -137,7 +172,7 @@ async function ensureFirstLocation(orgId: string) {
 
   const res = await db(`locations`, {
     method: "POST",
-    body: JSON.stringify({ org_id: orgId, name: "Main" }),
+    body: JSON.stringify({ org_id: orgId, venue_id: venueId, name: "Main" }),
   });
   if (!res.ok) throw new Error(`location create failed: ${res.status} ${await res.text()}`);
 }
@@ -182,7 +217,8 @@ Deno.serve(async (req) => {
           break;
         }
         await setOrgPlan(orgId, tier, { customerId, subscriptionId, subscriptionItemId });
-        await ensureFirstLocation(orgId);
+        const venueId = await ensureFirstVenue(orgId);
+        await ensureFirstLocation(orgId, venueId);
         break;
       }
       case "customer.subscription.deleted": {

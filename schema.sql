@@ -15,6 +15,7 @@ drop table if exists public.stocktake_items cascade;
 drop table if exists public.stocktakes cascade;
 drop table if exists public.memberships cascade;
 drop table if exists public.locations cascade;
+drop table if exists public.venues cascade;
 drop table if exists public.organisations cascade;
 drop table if exists public.profiles cascade;
 
@@ -104,15 +105,32 @@ create table public.organisations (
   created_at timestamptz not null default now()
 );
 
--- ---- Locations: pre-created venues staff scan against. Staff can only
--- start stocktakes at locations that already exist here (enforced in the
--- stocktakes insert policy below), not invent their own on the fly. ----
-create table public.locations (
+-- ---- Venues: the plan-tier boundary lives here now — single-venue orgs
+-- get exactly one of these, ever; multi-venue is unlimited. Locations
+-- underneath a venue carry no billing consequence on any tier any more
+-- (unlimited, free — see the locations insert policy below, where the old
+-- per-tier location cap used to live before this layer existed).
+-- Concretely: single-tier goes from "1 location, period" to "1 venue,
+-- unlimited locations within it". ----
+create table public.venues (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.organisations(id) on delete cascade,
   name text not null,
   created_at timestamptz not null default now(),
   unique (org_id, name)
+);
+
+-- ---- Locations: pre-created spots within a venue that staff scan against.
+-- Staff can only start stocktakes at locations that already exist here
+-- (enforced in the stocktakes insert policy below), not invent their own on
+-- the fly. ----
+create table public.locations (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.organisations(id) on delete cascade,
+  venue_id uuid not null references public.venues(id) on delete cascade,
+  name text not null,
+  created_at timestamptz not null default now(),
+  unique (venue_id, name)
 );
 
 -- ---- Memberships: who belongs to which org, and with what role.
@@ -428,6 +446,7 @@ grant execute on function public.list_org_members() to authenticated;
 -- ---- Row Level Security ----
 
 alter table public.organisations enable row level security;
+alter table public.venues enable row level security;
 alter table public.locations enable row level security;
 alter table public.memberships enable row level security;
 alter table public.stocktakes enable row level security;
@@ -449,17 +468,44 @@ grant update (name, logo_url, export_format, join_code, country, roster_last_vie
 -- No insert policy: organisations are only ever created via
 -- create_organisation() above (security definer, bypasses RLS).
 
--- locations: any org member reads; owner/manager manage. There's no plain
--- client insert path any more for a 'pending' org's very first location —
--- that's created by stripe-webhook (service role, bypasses RLS) once
--- checkout completes, which is exactly what makes 'pending' a hard
--- paywall: no location exists yet, so no stocktake can exist either (see
--- the stocktakes insert policy), regardless of what a client tries. The
--- one remaining plain-RLS insert case is a 'single'-tier org's first
--- location (their only one, ever). Adding a 2nd+ location to a
--- multi-tier org goes through the create_location Edge Function instead
--- (Phase D) so the Stripe subscription quantity gets incremented first —
--- a plain Postgres policy can't make that outbound call.
+-- venues: any org member reads; owner/manager manage. There's no plain
+-- client insert path for a 'pending' org's very first venue — that's
+-- created by stripe-webhook (service role, bypasses RLS) once checkout
+-- completes (ensureFirstVenue()), which is exactly what makes 'pending' a
+-- hard paywall: no venue exists yet, so no location or stocktake can exist
+-- either. The one remaining plain-RLS insert case is a 'single'-tier org's
+-- first venue (their only one, ever) — 'multi' is unlimited.
+create policy "read org venues" on public.venues
+  for select using (org_id = public.my_org_id());
+
+create policy "owner manager update venues" on public.venues
+  for update using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'))
+  with check (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+create policy "owner manager insert venues" on public.venues
+  for insert with check (
+    org_id = public.my_org_id()
+    and public.my_role() in ('owner', 'manager')
+    and (
+      (select plan_tier from public.organisations where id = venues.org_id) = 'multi'
+      or (
+        (select plan_tier from public.organisations where id = venues.org_id) = 'single'
+        and (select count(*) from public.venues where org_id = venues.org_id) = 0
+      )
+    )
+  );
+
+create policy "owner manager delete venues" on public.venues
+  for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- locations: any org member reads; owner/manager manage. No plan-tier cap
+-- of its own any more — that boundary moved up to venues (see above), so
+-- every tier gets unlimited locations within whatever venue(s) it has. The
+-- insert check instead verifies venue_id actually belongs to a venue in the
+-- SAME org as the location's own org_id — mirrors the exact pattern the
+-- stocktakes insert policy below already uses for location_id; without it,
+-- a client could satisfy org_id = my_org_id() while pointing venue_id at a
+-- different org's venue.
 create policy "read org locations" on public.locations
   for select using (org_id = public.my_org_id());
 
@@ -471,12 +517,8 @@ create policy "owner manager insert locations" on public.locations
   for insert with check (
     org_id = public.my_org_id()
     and public.my_role() in ('owner', 'manager')
-    and (
-      (select plan_tier from public.organisations where id = locations.org_id) = 'multi'
-      or (
-        (select plan_tier from public.organisations where id = locations.org_id) = 'single'
-        and (select count(*) from public.locations where org_id = locations.org_id) = 0
-      )
+    and exists (
+      select 1 from public.venues v where v.id = locations.venue_id and v.org_id = locations.org_id
     )
   );
 
@@ -566,7 +608,7 @@ create table if not exists public.audit_log (
   actor_id uuid,
   actor_label text not null,
   action text not null,           -- dot-namespaced, e.g. 'location.renamed'
-  entity_type text not null,      -- 'location' | 'membership' | 'organisation' | 'stocktake'
+  entity_type text not null,      -- 'venue' | 'location' | 'membership' | 'organisation' | 'stocktake'
   entity_id uuid,                 -- NOT a FK — the referenced row may be long gone
   target_label text,              -- human label for what was affected
   before jsonb,
@@ -633,6 +675,9 @@ begin
   elsif TG_OP = 'UPDATE' and old.name is distinct from new.name then
     insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
     values (new.org_id, org_label, actor, actor_label, 'location.renamed', 'location', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  elsif TG_OP = 'UPDATE' and old.venue_id is distinct from new.venue_id then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.org_id, org_label, actor, actor_label, 'location.moved', 'location', new.id, new.name, to_jsonb(old), to_jsonb(new));
   elsif TG_OP = 'DELETE' then
     insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
     values (old.org_id, org_label, actor, actor_label, 'location.removed', 'location', old.id, old.name, to_jsonb(old));
@@ -643,6 +688,46 @@ end $$;
 create trigger log_locations_audit
   after insert or update or delete on public.locations
   for each row execute function public.log_locations_change();
+
+-- venues: same null-actor guard, same watched-column-only-on-name-change
+-- shape as locations above. The org's very first venue (created by
+-- stripe-webhook's ensureFirstVenue(), service role, no end-user JWT) is
+-- deliberately NOT logged here — that no-ops via the null-actor guard, same
+-- as ensureFirstLocation() always has; stripe-webhook logs that one
+-- explicitly instead, since it's the only place that knows there's no real
+-- human actor to attribute it to ('Stripe checkout').
+create or replace function public.log_venues_change()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+begin
+  if actor is null then
+    return coalesce(new, old);
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o
+    where o.id = coalesce(new.org_id, old.org_id);
+
+  if TG_OP = 'INSERT' then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, after)
+    values (new.org_id, org_label, actor, actor_label, 'venue.created', 'venue', new.id, new.name, to_jsonb(new));
+  elsif TG_OP = 'UPDATE' and old.name is distinct from new.name then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.org_id, org_label, actor, actor_label, 'venue.renamed', 'venue', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  elsif TG_OP = 'DELETE' then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
+    values (old.org_id, org_label, actor, actor_label, 'venue.removed', 'venue', old.id, old.name, to_jsonb(old));
+  end if;
+  return coalesce(new, old);
+end $$;
+
+create trigger log_venues_audit
+  after insert or update or delete on public.venues
+  for each row execute function public.log_venues_change();
 
 -- membership INSERT is deliberately not logged — join_organisation() already
 -- durably records who joined and when via the row itself (created_at).
@@ -805,14 +890,26 @@ grant execute on function public.clear_stocktake_items(uuid) to authenticated;
 -- only happen via the security-definer RPCs below, same "RLS blocks it,
 -- security definer bypasses it" pattern as audit_log.
 -- ==========================================================================
-create table public.active_sessions (
+-- Not dropped/recreated like every table above (same reason as audit_log:
+-- it must survive this file being re-run against a live org) — so it needs
+-- the same `if not exists` + unconditional FK drop/re-add treatment
+-- audit_log already uses, since a plain inline `references
+-- organisations(id)` would otherwise silently vanish the next time this
+-- file's `drop table organisations cascade` runs (the cascade drops the FK
+-- constraint pointing at it, not this table itself).
+create table if not exists public.active_sessions (
   user_id uuid primary key references auth.users(id) on delete cascade,
-  org_id uuid not null references public.organisations(id) on delete cascade,
+  org_id uuid not null,
   last_seen_at timestamptz not null default now()
 );
 
+alter table public.active_sessions drop constraint if exists active_sessions_org_id_fkey;
+alter table public.active_sessions add constraint active_sessions_org_id_fkey
+  foreign key (org_id) references public.organisations(id) on delete cascade;
+
 alter table public.active_sessions enable row level security;
 
+drop policy if exists "owner manager read active sessions" on public.active_sessions;
 create policy "owner manager read active sessions" on public.active_sessions
   for select using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
 
@@ -958,10 +1055,16 @@ grant execute on function public.list_active_sessions() to authenticated;
 --    where id = (select org_id from public.memberships m
 --                  join auth.users u on u.id = m.user_id
 --                 where u.email = 'person@example.com');
--- A 'pending' org has no locations yet (see the plan_tier column comment
--- above) — stripe-webhook normally creates the first one alongside the
--- tier flip, so doing this manually also needs:
---   insert into public.locations (org_id, name)
---   values ((select org_id from public.memberships m
---              join auth.users u on u.id = m.user_id
---             where u.email = 'person@example.com'), 'Main');
+-- A 'pending' org has no venue or location yet (see the plan_tier column
+-- comment above) — stripe-webhook normally creates both alongside the tier
+-- flip (ensureFirstVenue()/ensureFirstLocation()), so doing this manually
+-- also needs:
+--   with v as (
+--     insert into public.venues (org_id, name)
+--     values ((select org_id from public.memberships m
+--                join auth.users u on u.id = m.user_id
+--               where u.email = 'person@example.com'), 'Main')
+--     returning id, org_id
+--   )
+--   insert into public.locations (org_id, venue_id, name)
+--   select org_id, id, 'Main' from v;

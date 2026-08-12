@@ -19,3 +19,6 @@ ios/App/*.xcodeproj/xcuserdata/
 ios/App/*.xcodeproj/project.xcworkspace/xcuserdata/
 
 .DS_Store
+
+# Supabase CLI's local project-ref cache
+supabase/.temp/
