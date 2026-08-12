@@ -1,4 +1,4 @@
-// Barscan owner-provisioned team member creation — runs as a Supabase Edge Function.
+// Gantry owner-provisioned team member creation — runs as a Supabase Edge Function.
 //
 // Lets an org owner create a teammate's login directly from admin.html —
 // email, name, and a role (manager = gets admin.html access, staff =

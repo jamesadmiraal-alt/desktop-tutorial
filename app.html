@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#111827">
-<title>Barscan</title>
+<title>Gantry</title>
+<link rel="icon" type="image/svg+xml" href="icons/favicon.svg">
 <script>
 
   // Lucide glyph as an HTML string, for icons set from JS
@@ -47,11 +48,18 @@
     padding: calc(12px + env(safe-area-inset-top)) 16px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
     background: var(--surface); position: sticky; top: 0; z-index: 10;
   }
-  header h1 { font-size: 1.1rem; font-weight: 600; white-space: nowrap; }
+  header h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; white-space: nowrap; display: flex; align-items: center; }
   header .right { display: flex; align-items: center; gap: 8px; min-width: 0; }
   header #user-badge { font-size: 0.8rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
   header button { padding: 8px 12px; font-size: 0.8rem; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #theme-toggle { font-size: 1rem; padding: 6px 10px; }
+  /* Gantry mark — see icons/gantry-mark.svg. Inline (not the .ico mask
+     system every other icon uses) since it needs the amber accent bottle
+     alongside currentColor rails, which a single-color mask can't do. No
+     explicit color — inherits whichever ambient text color its container
+     already has, matching the lockup rule that mark and wordmark stay the
+     same colour. */
+  .brand-mark { flex: none; margin-right: 8px; vertical-align: -4px; }
 
   /* ---- Account view ---- */
   #account-view { padding: 16px 12px; overflow-y: auto; }
@@ -233,6 +241,18 @@
   .dialog-actions { display: flex; gap: 8px; }
   .action-sheet { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 
+  /* ---- Team view (single-venue only — see #team-view) ---- */
+  .code-box { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
+    background: var(--bg); padding: 10px; border-radius: 8px; margin: 10px 0; }
+  .team-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .team-row:last-child { border-bottom: none; }
+  .team-row .who { flex: 1; min-width: 0; }
+  .team-row .who .name { font-weight: 600; }
+  .team-row .who .email { font-size: 0.8rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .team-row select { width: auto; padding: 8px 10px; font-size: 0.85rem; }
+  #team-roster-list:empty::after { content: 'No team members yet.'; color: var(--text-dim); font-size: 0.85rem; }
+  .team-btn-row { display: flex; gap: 8px; margin-top: 14px; }
+
   #toast {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
     background: var(--success); color: var(--on-accent); padding: 10px 18px; border-radius: 999px;
@@ -249,7 +269,16 @@
 <body>
 
 <header>
-  <h1 id="home-btn" style="cursor:pointer"><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan</h1>
+  <h1 id="home-btn" style="cursor:pointer">
+    <svg class="brand-mark" viewBox="0 0 40 40" width="20" height="20" aria-hidden="true">
+      <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+      <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+      <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+      <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+      <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+    </svg>
+    Gantry
+  </h1>
   <div class="right">
     <button id="theme-toggle" aria-label="Switch theme"></button>
     <button id="account-btn" style="display:none"><span class="ico" style="--i:url(icons/user.svg)"></span> <span id="user-badge"></span></button>
@@ -260,8 +289,8 @@
 <div id="setup-view" class="view">
   <div class="auth-card setup-card">
     <div class="logo"><span class="lg" style="--i:url(icons/wrench.svg)"></span></div>
-    <h2>Barscan setup</h2>
-    <p>This copy of Barscan isn't connected to a Supabase project yet.</p>
+    <h2>Gantry setup</h2>
+    <p>This copy of Gantry isn't connected to a Supabase project yet.</p>
     <p>Edit <code>config.js</code> and fill in your project's
       <code>supabaseUrl</code> and <code>supabaseAnonKey</code>
       (Supabase Dashboard → Project Settings → API), and run
@@ -272,8 +301,16 @@
 <!-- ===== Auth ===== -->
 <div id="auth-view" class="view">
   <div class="auth-card">
-    <div class="logo"><span class="lg" style="--i:url(icons/wine.svg)"></span></div>
-    <h2 id="auth-heading">Barscan</h2>
+    <div class="logo">
+      <svg viewBox="0 0 40 40" width="36" height="36" aria-hidden="true">
+        <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+        <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+        <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+        <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+        <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+      </svg>
+    </div>
+    <h2 id="auth-heading">Gantry</h2>
     <div class="sub" id="auth-sub">Stocktaking for hospitality</div>
     <div id="auth-credentials">
       <div class="auth-tabs">
@@ -404,6 +441,11 @@
       <button id="change-region-btn" class="link-btn">Change region</button>
     </div>
     <button id="open-admin-btn" class="link-btn" style="display:none;margin-top:10px">Manage staff, locations & plan →</button>
+    <!-- Single-venue equivalent of open-admin-btn — admin.html is
+         multi-venue-only (see checkAccessAndEnter() there), so single-venue
+         owners/managers get an in-app Team view instead of a dead-end
+         external link. See showView('team')/#team-view. -->
+    <button id="open-team-btn" class="link-btn" style="display:none;margin-top:10px">Manage team & location →</button>
   </div>
   <div class="acct-card" id="acct-subscription-card">
     <h3>Subscription</h3>
@@ -417,7 +459,7 @@
           <div class="opt-sub">Unlimited venues and locations</div></span>
         <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
       </button>
-      <div id="acct-note">Thanks for supporting Barscan!</div>
+      <div id="acct-note">Thanks for supporting Gantry!</div>
     </div>
     <div id="acct-plan-multi" style="display:none">
       <span class="plan-badge pro">Multi-venue plan</span>
@@ -431,6 +473,68 @@
   <div class="acct-footer-note">
     <div class="acct-footer-text">Permanently delete your account, all stocktakes, and your subscription. This can't be undone.</div>
     <button id="delete-account-btn">Delete account</button>
+  </div>
+</div>
+
+<!-- ===== Team & location (single-venue only — see open-team-btn in Account.
+     Multi-venue uses admin.html instead; this exists purely because
+     admin.html is gated to multi-venue only, and single-venue orgs still
+     need to rename their one location and manage their team.) ===== -->
+<div id="team-view" class="view">
+  <div class="subheader" style="margin:-16px -12px 14px">
+    <button id="team-back">‹ Back</button>
+    <div class="name">Team & location</div>
+  </div>
+  <div class="acct-card">
+    <h3>Location</h3>
+    <input id="team-location-name" type="text" placeholder="Location name">
+  </div>
+  <div class="acct-card">
+    <h3>Team</h3>
+    <div id="team-roster-list"></div>
+  </div>
+  <div class="acct-card">
+    <h3>Add team member</h3>
+    <p class="plan-desc" style="margin-bottom:10px">Creates their login directly — no join code needed. They can change this password later from this app.</p>
+    <div id="team-add-member-form">
+      <label for="team-member-name">Name</label>
+      <input id="team-member-name" type="text" placeholder="Full name">
+      <label for="team-member-email">Email</label>
+      <input id="team-member-email" type="email" autocapitalize="none" inputmode="email" placeholder="name@example.com">
+      <label for="team-member-role">Admin access</label>
+      <select id="team-member-role">
+        <option value="staff">No access (Staff)</option>
+        <option value="manager">Manager (full access)</option>
+      </select>
+      <button id="team-add-member-btn" class="primary" style="margin-top:14px;width:100%">Add team member</button>
+    </div>
+    <div id="team-add-member-result" style="display:none">
+      <p class="plan-desc" style="color:var(--success);margin-bottom:8px">Account created for <b id="team-add-result-email"></b> — share this temporary password with them.</p>
+      <div class="code-box" id="team-add-result-password"></div>
+      <div class="team-btn-row">
+        <button id="team-add-copy-btn" class="flex">Copy password</button>
+        <button id="team-add-again-btn" class="flex">Add another</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Edit team member (single-venue #team-view only) ===== -->
+<div id="team-edit-member-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Edit team member</div>
+    <p class="plan-desc" id="team-edit-member-email" style="margin-bottom:0"></p>
+    <label for="team-edit-member-name">Name</label>
+    <input id="team-edit-member-name" type="text">
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="team-edit-member-cancel" class="flex">Cancel</button>
+      <button id="team-edit-member-save" class="primary flex">Save name</button>
+    </div>
+    <button id="team-edit-member-reset-pw" class="link-btn" style="display:block;margin-top:14px">Reset password</button>
+    <div id="team-edit-member-pw-result" style="display:none;margin-top:10px">
+      <p class="plan-desc" style="color:var(--success);margin-bottom:6px">New temporary password — share it with them:</p>
+      <div class="code-box" id="team-edit-member-new-password"></div>
+    </div>
   </div>
 </div>
 
@@ -519,7 +623,7 @@
   <div class="dialog">
     <div class="title">Export format</div>
     <div class="action-sheet">
-      <button id="export-full">Full CSV (Barscan)</button>
+      <button id="export-full">Full CSV (Gantry)</button>
       <button id="export-myob">MYOB</button>
       <button id="export-lightspeed">Lightspeed</button>
       <button id="export-format-cancel">Cancel</button>
@@ -711,7 +815,7 @@
   var currentView = null;
   function showView(name) {
     currentView = name;
-    ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view'].forEach(function (id) {
+    ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view', 'team-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
     $('account-btn').style.display = (currentUser && !needsOrgSetup && !paymentPending && !seatsFull) ? '' : 'none';
@@ -1183,10 +1287,13 @@
     var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
     $('change-region-btn').style.display = isOwner ? '' : 'none';
     $('acct-subscription-card').style.display = isOwner ? '' : 'none';
-    // admin.html's own access gate is owner/manager too — matches that here
-    // rather than owner-only like billing, since staff/location management
-    // isn't an owner-exclusive action.
-    $('open-admin-btn').style.display = canManage ? '' : 'none';
+    // admin.html's own access gate is owner/manager AND multi-venue —
+    // matches both conditions here so single-venue never gets a dead-end
+    // link into a "Multi-venue only" denied screen. Single-venue gets the
+    // in-app Team view instead (#team-view) — same capability, different
+    // surface, since it doesn't need admin.html's desktop/multi-venue UI.
+    $('open-admin-btn').style.display = (canManage && currentOrg.planTier === 'multi') ? '' : 'none';
+    $('open-team-btn').style.display = (canManage && currentOrg.planTier === 'single') ? '' : 'none';
     renderCountryDisplay();
   }
   function openAccount() {
@@ -1213,13 +1320,175 @@
   }
   $('account-btn').onclick = function () { if (currentUser) openAccount(); };
   $('acct-back').onclick = function () { loadTakes(); };
+  $('open-team-btn').onclick = function () { openTeam(); };
+  $('team-back').onclick = function () { openAccount(); };
   // Logo-as-home, same destination as the explicit back buttons — only
-  // does anything from the two views that already have a "back" concept;
-  // a no-op elsewhere (home is already home, and auth/setup screens have
-  // no home state to return to yet).
+  // does anything from views that already have a "back" concept; a no-op
+  // elsewhere (home is already home, and auth/setup screens have no home
+  // state to return to yet).
   $('home-btn').onclick = function () {
     if (currentView === 'scan') $('back-btn').onclick();
     else if (currentView === 'account') $('acct-back').onclick();
+    else if (currentView === 'team') $('team-back').onclick();
+  };
+
+  // ---- Team & location (single-venue only — see open-team-btn above).
+  // Deliberately no join-code/daily-code display here — create-team-member
+  // below already fully replaces what codes were for (no code to read
+  // aloud, no separate join step), so it's left admin.html/multi-venue-only.
+  var teamLocation = null;
+  function openTeam() {
+    showView('team');
+    loadTeamView();
+  }
+  function loadTeamView() {
+    Promise.all([
+      sb.from('locations').select('id,name').limit(1).maybeSingle(),
+      sb.rpc('list_org_members')
+    ]).then(function (results) {
+      var locRes = results[0], rosterRes = results[1];
+      if (locRes.error) { fail(locRes.error, 'Could not load location'); }
+      else if (locRes.data) {
+        teamLocation = locRes.data;
+        $('team-location-name').value = locRes.data.name;
+      }
+      if (rosterRes.error) { fail(rosterRes.error, 'Could not load team'); return; }
+      renderTeamRoster(rosterRes.data || []);
+    });
+  }
+  $('team-location-name').addEventListener('change', function () {
+    var name = $('team-location-name').value.trim();
+    if (!teamLocation || !name || name === teamLocation.name) {
+      if (teamLocation) $('team-location-name').value = teamLocation.name;
+      return;
+    }
+    sb.from('locations').update({ name: name }).eq('id', teamLocation.id).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not rename location'); $('team-location-name').value = teamLocation.name; return; }
+      teamLocation.name = name;
+      toast('Location renamed');
+    });
+  });
+
+  function renderTeamRoster(members) {
+    var list = $('team-roster-list');
+    list.innerHTML = '';
+    members.forEach(function (m) {
+      var isSelf = m.user_id === currentUser.id;
+      var row = document.createElement('div');
+      row.className = 'team-row';
+
+      var who = document.createElement('div');
+      who.className = 'who';
+      var nameEl = document.createElement('div');
+      nameEl.className = 'name'; nameEl.textContent = m.full_name || '(no name)';
+      var emailEl = document.createElement('div');
+      emailEl.className = 'email'; emailEl.textContent = m.email + (isSelf ? ' (you)' : '');
+      who.appendChild(nameEl); who.appendChild(emailEl);
+
+      var roleSelect = document.createElement('select');
+      ['owner', 'manager', 'staff'].forEach(function (r) {
+        var opt = document.createElement('option');
+        opt.value = r; opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
+        if (r === m.role) opt.selected = true;
+        roleSelect.appendChild(opt);
+      });
+      // Can't change your own role here — avoids a self-demotion accidentally
+      // leaving the org without an owner able to fix it back.
+      roleSelect.disabled = isSelf;
+      roleSelect.onchange = function () {
+        sb.from('memberships').update({ role: roleSelect.value })
+          .eq('org_id', currentOrg.id).eq('user_id', m.user_id).then(function (res) {
+            if (res.error) { fail(res.error, 'Could not change role'); roleSelect.value = m.role; return; }
+            m.role = roleSelect.value;
+            toast('Role updated');
+          });
+      };
+
+      var editBtn = document.createElement('button');
+      editBtn.textContent = '✎';
+      editBtn.disabled = isSelf;
+      editBtn.title = isSelf ? 'Edit your own name/password from Account' : 'Edit name or reset password';
+      editBtn.onclick = function () { openEditTeamMember(m); };
+
+      var removeBtn = document.createElement('button');
+      removeBtn.textContent = '✕';
+      removeBtn.disabled = isSelf;
+      removeBtn.title = isSelf ? "Can't remove yourself here" : 'Remove from organisation';
+      removeBtn.onclick = function () {
+        if (!confirm('Remove ' + (m.full_name || m.email) + ' from the organisation?')) return;
+        sb.from('memberships').delete()
+          .eq('org_id', currentOrg.id).eq('user_id', m.user_id).then(function (res) {
+            if (res.error) { fail(res.error, 'Could not remove member'); return; }
+            loadTeamView();
+            toast('Member removed');
+          });
+      };
+
+      row.appendChild(who); row.appendChild(roleSelect); row.appendChild(editBtn); row.appendChild(removeBtn);
+      list.appendChild(row);
+    });
+  }
+
+  $('team-add-member-btn').onclick = function () {
+    var name = $('team-member-name').value.trim();
+    var email = $('team-member-email').value.trim();
+    var role = $('team-member-role').value;
+    if (!name || !email) { toast('Enter a name and email', '#b91c1c'); return; }
+    $('team-add-member-btn').disabled = true;
+    sb.functions.invoke('create-team-member', { body: { fullName: name, email: email, role: role } }).then(function (res) {
+      $('team-add-member-btn').disabled = false;
+      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+      if (res.error) { fail(res.error, 'Could not add team member'); return; }
+      $('team-add-member-form').style.display = 'none';
+      $('team-add-result-email').textContent = res.data.email;
+      $('team-add-result-password').textContent = res.data.tempPassword;
+      $('team-add-member-result').style.display = '';
+      loadTeamView();
+    });
+  };
+  $('team-add-copy-btn').onclick = function () {
+    var pw = $('team-add-result-password').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(pw).then(function () { toast('Password copied'); });
+  };
+  $('team-add-again-btn').onclick = function () {
+    $('team-member-name').value = ''; $('team-member-email').value = ''; $('team-member-role').value = 'staff';
+    $('team-add-member-result').style.display = 'none';
+    $('team-add-member-form').style.display = '';
+  };
+
+  var editingTeamMember = null;
+  function openEditTeamMember(m) {
+    editingTeamMember = m;
+    $('team-edit-member-email').textContent = m.email;
+    $('team-edit-member-name').value = m.full_name || '';
+    $('team-edit-member-pw-result').style.display = 'none';
+    $('team-edit-member-overlay').classList.add('open');
+  }
+  $('team-edit-member-cancel').onclick = function () { $('team-edit-member-overlay').classList.remove('open'); };
+  $('team-edit-member-save').onclick = function () {
+    var name = $('team-edit-member-name').value.trim();
+    if (!name) { toast('Enter a name', '#b91c1c'); return; }
+    $('team-edit-member-save').disabled = true;
+    sb.functions.invoke('update-team-member', { body: { userId: editingTeamMember.user_id, fullName: name } }).then(function (res) {
+      $('team-edit-member-save').disabled = false;
+      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+      if (res.error) { fail(res.error, 'Could not update name'); return; }
+      $('team-edit-member-overlay').classList.remove('open');
+      toast('Name updated');
+      loadTeamView();
+    });
+  };
+  $('team-edit-member-reset-pw').onclick = function () {
+    if (!confirm("Reset " + (editingTeamMember.full_name || editingTeamMember.email) + "'s password? Their current password will stop working.")) return;
+    $('team-edit-member-reset-pw').disabled = true;
+    sb.functions.invoke('update-team-member', { body: { userId: editingTeamMember.user_id, resetPassword: true } }).then(function (res) {
+      $('team-edit-member-reset-pw').disabled = false;
+      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
+      if (res.error) { fail(res.error, 'Could not reset password'); return; }
+      $('team-edit-member-new-password').textContent = res.data.tempPassword;
+      $('team-edit-member-pw-result').style.display = '';
+      loadTeamView();
+    });
   };
 
   // ---- Change region (billing country) — owner only ----
@@ -1258,7 +1527,7 @@
     needsOrgSetup = false;
     paymentPending = false;
     seatsFull = false;
-    $('auth-heading').textContent = 'Barscan';
+    $('auth-heading').textContent = 'Gantry';
     $('auth-sub').textContent = 'Stocktaking for hospitality';
     $('auth-credentials').style.display = '';
     $('org-setup-note').style.display = 'none';
@@ -1828,7 +2097,7 @@
   }
 
   // Rigid two-column presets some hospitality POS/inventory systems expect
-  // on import, instead of Barscan's own 5-column export. Same (take,
+  // on import, instead of Gantry's own 5-column export. Same (take,
   // takeItems) signature as buildCsv() so all three can share one export
   // path below; `take` is unused by these two but kept for that symmetry.
   function buildMyobCsv(take, takeItems) {
@@ -1848,7 +2117,7 @@
     var d = new Date();
     var pad = function (n) { return String(n).padStart(2, '0'); };
     var slug = take.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'stocktake';
-    return 'barscan-' + slug + '-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+    return 'gantry-' + slug + '-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
            '-' + pad(d.getHours()) + pad(d.getMinutes()) + (suffix ? '-' + suffix : '') + '.csv';
   }
 
@@ -1878,7 +2147,7 @@
   $('take-actions-cancel').onclick = function () { $('take-actions-overlay').classList.remove('open'); };
 
   // "Export ▾" opens the format picker instead of exporting directly —
-  // Full CSV (Barscan)/MYOB/Lightspeed all funnel through exportWithFormat().
+  // Full CSV (Gantry)/MYOB/Lightspeed all funnel through exportWithFormat().
   $('take-export').onclick = function () {
     $('take-actions-overlay').classList.remove('open');
     $('export-format-overlay').classList.add('open');
@@ -1913,7 +2182,7 @@
       var csv = buildCsv(actionsTake, takeItems);
       var file = new File(['﻿' + csv], fileName(actionsTake), { type: 'text/csv' });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: 'Barscan export: ' + actionsTake.name }).catch(function () {});
+        navigator.share({ files: [file], title: 'Gantry export: ' + actionsTake.name }).catch(function () {});
       } else if (navigator.clipboard) {
         navigator.clipboard.writeText(csv).then(
           function () { toast('CSV copied to clipboard'); },
@@ -1979,6 +2248,7 @@
     App.addListener('backButton', function () {
       if (currentView === 'scan') $('back-btn').onclick();
       else if (currentView === 'account') $('acct-back').onclick();
+      else if (currentView === 'team') $('team-back').onclick();
       // org-setup/payment-pending/seats-full are shown inside 'auth' —
       // without this, hardware back exits the app entirely from a screen
       // the user can't otherwise escape except via the logout button.

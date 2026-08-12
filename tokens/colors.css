@@ -1,4 +1,4 @@
-/* Semantic colour aliases. Dark is the DEFAULT — Barscan was always-dark
+/* Semantic colour aliases. Dark is the DEFAULT — Gantry was always-dark
    first; `:root[data-theme="light"]` is the opt-in override, persisted by the
    app. Consumers should reference these, never the raw palette. */
 :root{

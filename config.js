@@ -1,4 +1,4 @@
-// Barscan Supabase configuration.
+// Gantry Supabase configuration.
 // Get these from your Supabase project: Dashboard -> Project Settings -> API.
 // The anon (publishable) key is safe to embed in a frontend — access is
 // controlled by Row Level Security (see schema.sql).
@@ -15,7 +15,8 @@ window.BARSCAN_CONFIG = {
   // symbol/price(s) drive the displayed price (renderUpgradePrices() in
   // app.html) — keep them in sync with the actual Stripe price amounts.
   // Single-venue links reused from the pre-org-tier "Barscan Pro" product
-  // (renamed to "Barscan Single-venue") — still need to be pasted in below.
+  // (renamed to "Barscan Single-venue" — still named "Barscan..." in the
+  // live Stripe Dashboard as of the Gantry rebrand, see STRIPE-SETUP.md).
   upgradeUrls: {
     AUD: {
       single: {

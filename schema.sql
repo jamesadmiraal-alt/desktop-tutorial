@@ -1,4 +1,4 @@
--- Barscan schema for Supabase — organisation-based multi-tenant model
+-- Gantry schema for Supabase — organisation-based multi-tenant model
 -- Run this once in your Supabase project: Dashboard -> SQL Editor -> New query -> paste -> Run
 --
 -- THIS IS A CLEAN REPLACEMENT of the earlier per-user schema, not an additive

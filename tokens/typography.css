@@ -1,4 +1,4 @@
-/* Barscan ships NO webfont. It uses the platform UI stack so the product
+/* Gantry ships NO webfont. It uses the platform UI stack so the product
    looks native on the phone it's held in, and ui-monospace for barcodes.
    There are no @font-face rules in the source and none are invented here. */
 :root{

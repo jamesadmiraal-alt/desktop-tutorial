@@ -1,4 +1,4 @@
-/* Radii + borders. Barscan has NO shadow system at all — depth comes from
+/* Radii + borders. Gantry has NO shadow system at all — depth comes from
    surface lifts (--bg vs --surface) and 1px borders only. */
 :root{
   --radius-sm:6px;    /* inline code */

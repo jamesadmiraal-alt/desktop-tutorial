@@ -1,4 +1,4 @@
-# 🍾 Barscan
+# Gantry
 
 A phone-friendly web app for hospitality stocktaking, backed by [Supabase](https://supabase.com). The site has a marketing landing page (`index.html`) with pricing, and the app itself (`app.html`):
 
@@ -97,7 +97,7 @@ Phone cameras only work on pages served over **HTTPS**, which GitHub Pages provi
 
 ## Native apps
 
-Barscan also ships as native iOS/Android apps, wrapping the same `app.html` with
+Gantry also ships as native iOS/Android apps, wrapping the same `app.html` with
 [Capacitor](https://capacitorjs.com). This doesn't change anything about the web
 deploy above — see [`NATIVE-SETUP.md`](NATIVE-SETUP.md) for the build runbook.
 

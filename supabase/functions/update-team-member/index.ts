@@ -1,4 +1,4 @@
-// Barscan team member edit / password reset — runs as a Supabase Edge Function.
+// Gantry team member edit / password reset — runs as a Supabase Edge Function.
 //
 // Owner-only. Two independent, optional actions in one call: rename
 // (updates profiles.full_name — a plain field, not security-sensitive

@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#111827">
-<meta name="description" content="Barscan — barcode stocktaking for hospitality. Scan bottles with your phone, count stock by location, export to CSV.">
-<title>Barscan — stocktaking for hospitality</title>
+<meta name="description" content="Gantry — barcode stocktaking for hospitality. Scan bottles with your phone, count stock by location, export to CSV.">
+<title>Gantry — stocktaking for hospitality</title>
+<link rel="icon" type="image/svg+xml" href="icons/favicon.svg">
 <link rel="stylesheet" href="styles.css">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -20,10 +21,17 @@
     display: flex; align-items: center; justify-content: space-between;
     padding: 16px 20px; max-width: 960px; margin: 0 auto;
   }
-  nav .brand { font-size: 1.2rem; font-weight: 700; }
+  nav .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; }
   nav .links { display: flex; gap: 10px; align-items: center; }
   nav a.plain { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; padding: 8px 10px; }
   nav a.plain:hover { color: var(--text); }
+  /* Gantry mark — see icons/gantry-mark.svg. Inline (not the .ico mask
+     system every other icon uses) since it needs the amber accent bottle
+     alongside currentColor rails, which a single-color mask can't do. No
+     explicit color here — it inherits whichever ambient text color its
+     container already has (nav vs. the dimmer footer), matching the
+     lockup rule that the mark and wordmark stay the same colour. */
+  .brand-mark { flex: none; margin-right: 8px; vertical-align: -4px; }
 
   .btn {
     display: inline-block; text-decoration: none; text-align: center;
@@ -35,7 +43,6 @@
   .btn.success { background: var(--success); }
 
   .hero { text-align: center; padding: 64px 20px 48px; }
-  .hero .emoji { font-size: 4rem; }
   .hero h1 { font-size: clamp(2rem, 6vw, 3.2rem); line-height: 1.15; margin: 16px 0 12px; }
   .hero h1 span { color: var(--warning); }
   .hero p { color: var(--text-dim); font-size: 1.15rem; max-width: 620px; margin: 0 auto 28px; }
@@ -104,7 +111,16 @@
 <body>
 
 <nav>
-  <div class="brand"><span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan</div>
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 40 40" width="20" height="20" aria-hidden="true">
+      <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+      <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+      <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+      <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+      <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+    </svg>
+    Gantry
+  </div>
   <div class="links">
     <a class="plain" href="#pricing">Pricing</a>
     <a class="btn primary" href="app.html">Log in</a>
@@ -112,9 +128,17 @@
 </nav>
 
 <section class="hero">
-  <div class="emoji"><span class="ico" style="--i:url(icons/wine.svg)"></span></div>
+  <div class="emoji">
+    <svg viewBox="0 0 40 40" width="64" height="64" aria-hidden="true">
+      <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+      <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+      <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+      <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+      <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+    </svg>
+  </div>
   <h1>Stocktake your bar<br>in <span>minutes</span>, not hours</h1>
-  <p>Barscan turns any phone into a barcode scanner for hospitality stocktaking.
+  <p>Gantry turns any phone into a barcode scanner for hospitality stocktaking.
      Scan bottles, cans and kegs, punch in the count, and export a clean CSV —
      no hardware, nothing to install.</p>
   <div class="cta-row">
@@ -216,7 +240,14 @@
 </section>
 
 <footer class="site">
-  <span class="ico" style="--i:url(icons/wine.svg)"></span> Barscan — stocktaking for hospitality · <a href="app.html">Open the app</a>
+  <svg class="brand-mark" viewBox="0 0 40 40" width="16" height="16" aria-hidden="true">
+    <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+    <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+    <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+    <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+    <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+  </svg>
+  Gantry — stocktaking for hospitality · <a href="app.html">Open the app</a>
 </footer>
 
 </body>

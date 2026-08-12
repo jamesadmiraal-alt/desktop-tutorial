@@ -1,6 +1,6 @@
-# Connecting Stripe to Barscan (test mode)
+# Connecting Stripe to Gantry (test mode)
 
-Barscan uses **Stripe Payment Links** for checkout and a **Supabase Edge Function**
+Gantry uses **Stripe Payment Links** for checkout and a **Supabase Edge Function**
 webhook to activate a paid plan automatically after payment. No server of your own
 is needed.
 
@@ -16,7 +16,17 @@ mode and swap the URLs/secrets.
 
 ## 1. Create the two products and their prices (Stripe Dashboard)
 
-Barscan picks a Stripe Payment Link based on the organisation's country (set when
+**Note on naming**: the product names below ("Barscan Single-venue" etc.)
+match what's actually live in the Stripe Dashboard today — this doc's
+instructions describe the existing setup, they don't rename it. Renaming
+the live Stripe products to "Gantry Single-venue"/"Gantry Multi-venue" (and
+updating this doc to match) is a separate, deliberate step — Stripe product
+names are cosmetic (shown on invoices/receipts) and don't affect the price
+IDs or Payment Links already wired into `config.js`, so there's no urgency,
+but do it in the Stripe Dashboard directly rather than just editing this
+file if you want the rebrand to be complete end to end.
+
+Gantry picks a Stripe Payment Link based on the organisation's country (set when
 the org is created, editable by the owner in 👤 Account → Change region) — see
 `COUNTRY_CURRENCY` in `app.html`. Today that maps to four currencies: **AUD**
 (default/home currency), **USD**, **GBP**, **EUR**. Two tiers × four currencies ×

@@ -1,4 +1,4 @@
-// Barscan Stripe webhook — runs as a Supabase Edge Function.
+// Gantry Stripe webhook — runs as a Supabase Edge Function.
 //
 // Flips organisations.plan_tier when Stripe reports a completed checkout,
 // a cancelled subscription, or a tier change. There's no free plan — a
@@ -31,7 +31,9 @@ const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 // ids once the products/prices exist.
 const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
   // Reused from the pre-org-tier "Barscan Pro" product (renamed to "Barscan
-  // Single-venue" — same price ids, nothing about the price itself changed).
+  // Single-venue" — same price ids, nothing about the price itself changed.
+  // Still named "Barscan..." in the live Stripe Dashboard as of the Gantry
+  // rebrand — see STRIPE-SETUP.md's note on renaming the live products).
   "price_1TvX8tEiJERMRN7vG2cavZde": "single", // EUR annual  ($270/yr)
   "price_1TvVCKEiJERMRN7vJzOdO9Qp": "single", // EUR monthly ($27/mo)
   "price_1TvVC4EiJERMRN7vKoqap7Mj": "single", // GBP annual  (£250/yr)

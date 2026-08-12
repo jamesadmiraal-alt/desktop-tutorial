@@ -1,6 +1,6 @@
 {
-  "appId": "com.barscan.app",
-  "appName": "Barscan",
+  "appId": "com.gantry.app",
+  "appName": "Gantry",
   "webDir": "native-www",
   "backgroundColor": "#111827"
 }

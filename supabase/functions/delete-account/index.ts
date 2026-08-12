@@ -1,4 +1,4 @@
-// Barscan account deletion — runs as a Supabase Edge Function.
+// Gantry account deletion — runs as a Supabase Edge Function.
 //
 // Called by the app's "Delete account" confirmation. Identifies the caller
 // from their own Supabase session (keeps "Enforce JWT verification" ON, same

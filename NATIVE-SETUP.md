@@ -1,6 +1,6 @@
-# Building Barscan's native iOS/Android apps (Capacitor)
+# Building Gantry's native iOS/Android apps (Capacitor)
 
-Barscan's web app (`app.html`, `index.html`, and friends at the repo root) has
+Gantry's web app (`app.html`, `index.html`, and friends at the repo root) has
 no build step and deploys to GitHub Pages exactly as committed — that's
 unchanged. The native iOS/Android apps are a separate Capacitor wrapper
 layered on top; this doc is the runbook for it.
@@ -30,7 +30,7 @@ layered on top; this doc is the runbook for it.
   repo (standard Capacitor convention). Build artifacts under them
   (`android/app/build/`, `ios/App/Pods/`, etc.) are gitignored, not the
   projects themselves.
-- `capacitor.config.json` — `appId: "com.barscan.app"` is a **placeholder**.
+- `capacitor.config.json` — `appId: "com.gantry.app"` is a **placeholder**.
   Change it to your real reverse-DNS bundle ID before either store
   submission (it has to match what you register in App Store Connect / Play
   Console) — then re-run `npx cap sync` for both platforms.
@@ -99,9 +99,9 @@ installed, so this is as far as it goes here):
   `npx cap sync ios` again there, which retries it automatically.
 
 Still needed before either app is store-ready:
-1. **Real bundle ID/package name** — replace the `com.barscan.app` placeholder
+1. **Real bundle ID/package name** — replace the `com.gantry.app` placeholder
    in `capacitor.config.json`, then `npx cap sync` both platforms.
-2. **App icons & splash screen** — need a real Barscan logo (1024×1024 PNG is
+2. **App icons & splash screen** — need a real Gantry logo (1024×1024 PNG is
    enough) from you; run `npx @capacitor/assets generate` once you have one.
    The platform projects currently ship Capacitor's default placeholder icon.
 3. **Apple Developer / Google Play Console accounts**, signing
@@ -112,7 +112,7 @@ Still needed before either app is store-ready:
 5. **App Store review risk, accepted knowingly**: the iOS build keeps the
    same external Stripe Payment Link checkout as Android and the web. Apple's
    guideline 3.1.1 restricts external payment for digital content/subscriptions
-   consumed in-app; B2B/productivity tools like Barscan often get an
+   consumed in-app; B2B/productivity tools like Gantry often get an
    exception, but reviewers apply this case by case, so there's a real chance
    of a rejection and a resubmission cycle. This was a deliberate choice to
    keep things simple rather than build In-App Purchase support — revisit if

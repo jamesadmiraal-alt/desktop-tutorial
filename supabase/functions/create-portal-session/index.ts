@@ -1,4 +1,4 @@
-// Barscan Stripe billing portal — runs as a Supabase Edge Function.
+// Gantry Stripe billing portal — runs as a Supabase Edge Function.
 //
 // Called by the app's "Manage subscription" button. Identifies the caller
 // from their own Supabase session (unlike stripe-webhook, this function

@@ -1,4 +1,4 @@
-// Barscan multi-venue concurrent-seat billing — runs as a Supabase Edge Function.
+// Gantry multi-venue concurrent-seat billing — runs as a Supabase Edge Function.
 //
 // Owner-only, multi-venue-tier-only. Lets the owner set how many
 // CONCURRENT seats they're paying for beyond themselves (they're always

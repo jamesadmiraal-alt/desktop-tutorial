@@ -1,5 +1,5 @@
-/* Base palette — every hex literal that appears in the Barscan source, named.
-   Barscan hand-writes its colours; the ramp lines up with Tailwind's gray /
+/* Base palette — every hex literal that appears in the Gantry source, named.
+   Gantry hand-writes its colours; the ramp lines up with Tailwind's gray /
    blue / emerald / amber / red 500-700 stops. Never introduce a hex that is
    not in this file. */
 :root{

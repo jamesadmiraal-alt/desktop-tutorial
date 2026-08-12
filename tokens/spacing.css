@@ -1,4 +1,4 @@
-/* Barscan is NOT on a 4/8 grid — it uses odd steps (5, 14, 18, 22, 26) freely.
+/* Gantry is NOT on a 4/8 grid — it uses odd steps (5, 14, 18, 22, 26) freely.
    These are the literal values in the source; do not round them. */
 :root{
   --space-0:0;

@@ -1,6 +1,6 @@
-# Barscan — project guide for Claude Code
+# Gantry — project guide for Claude Code
 
-Barscan is a phone-first barcode stocktaking SaaS for hospitality (bars, venues).
+Gantry is a phone-first barcode stocktaking SaaS for hospitality (bars, venues).
 Static frontend, Supabase backend, Stripe Payment Links for billing.
 
 ## Architecture
