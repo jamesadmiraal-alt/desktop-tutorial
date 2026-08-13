@@ -357,6 +357,25 @@
     toast((what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed'), '#b91c1c');
   }
 
+  // For sb.functions.invoke() results specifically. Our Edge Functions report
+  // problems as a JSON body ({"error": "Only the owner can..."}) with a 4xx
+  // status — but supabase-js turns any non-2xx into a FunctionsHttpError whose
+  // message is the useless "Edge Function returned a non-2xx status code" and
+  // leaves the body unread on error.context (a plain Response). Reading it back
+  // is the difference between a real explanation and an HTTP truism. The 2xx
+  // path still matters too: some of these functions return {error} with a 200.
+  function failFn(res, what) {
+    if (res.data && res.data.error) { fail({ message: res.data.error }, what); return; }
+    var ctx = res.error && res.error.context;
+    if (ctx && typeof ctx.json === 'function') {
+      ctx.json().then(function (body) {
+        fail({ message: (body && body.error) ? body.error : (res.error.message || '') }, what);
+      }, function () { fail(res.error, what); });
+      return;
+    }
+    fail(res.error, what);
+  }
+
   function showView(name) {
     ['login-view', 'denied-view', 'admin-view'].forEach(function (id) {
       $(id).style.display = id === name + '-view' ? '' : 'none';
@@ -624,8 +643,7 @@
     $('add-member-btn').disabled = true;
     sb.functions.invoke('create-team-member', { body: { fullName: name, email: email, role: role } }).then(function (res) {
       $('add-member-btn').disabled = false;
-      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
-      if (res.error) { fail(res.error, 'Could not add team member'); return; }
+      if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not add team member'); return; }
       $('add-member-form').style.display = 'none';
       $('add-member-result-email').textContent = res.data.email;
       $('add-member-result-password').textContent = res.data.tempPassword;
@@ -658,8 +676,7 @@
     $('edit-member-save').disabled = true;
     sb.functions.invoke('update-team-member', { body: { userId: editingMember.user_id, fullName: name } }).then(function (res) {
       $('edit-member-save').disabled = false;
-      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
-      if (res.error) { fail(res.error, 'Could not update name'); return; }
+      if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not update name'); return; }
       $('edit-member-overlay').classList.remove('open');
       toast('Name updated');
       loadRoster();
@@ -670,8 +687,7 @@
     $('edit-member-reset-pw').disabled = true;
     sb.functions.invoke('update-team-member', { body: { userId: editingMember.user_id, resetPassword: true } }).then(function (res) {
       $('edit-member-reset-pw').disabled = false;
-      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
-      if (res.error) { fail(res.error, 'Could not reset password'); return; }
+      if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not reset password'); return; }
       $('edit-member-new-password').textContent = res.data.tempPassword;
       $('edit-member-pw-result').style.display = '';
       loadRoster();
@@ -698,8 +714,7 @@
     $('seat-count-save').disabled = true;
     sb.functions.invoke('set-seat-count', { body: { seats: seats } }).then(function (res) {
       $('seat-count-save').disabled = false;
-      if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
-      if (res.error) { fail(res.error, 'Could not update seat count'); return; }
+      if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not update seat count'); return; }
       currentOrg.concurrentSeats = seats;
       toast('Seat count updated');
     });
@@ -742,8 +757,7 @@
         // forever. Not an instant kill — see the function's own comment.
         sb.functions.invoke('kick-user', { body: { userId: s.user_id } }).then(function (res) {
           kickBtn.disabled = false;
-          if (!res.error && res.data && res.data.error) res.error = { message: res.data.error };
-          if (res.error) { fail(res.error, 'Could not log out this person'); return; }
+          if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not log out this person'); return; }
           toast('Logged out ' + (s.full_name || s.email));
           loadActiveSessions();
         });
