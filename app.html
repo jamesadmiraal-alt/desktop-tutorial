@@ -537,6 +537,13 @@
     <div id="team-add-member-result" style="display:none">
       <p class="plan-desc" style="color:var(--success);margin-bottom:8px">Account created for <b id="team-add-result-email"></b> — share this temporary password with them.</p>
       <div class="code-box" id="team-add-result-password"></div>
+      <!-- Shown instead of the password block when an existing account was
+           adopted (see adopt_existing_team_member in schema.sql) — there's no
+           new password to hand over, so offering one would be a lie. -->
+      <p class="plan-desc" id="team-add-result-adopted" style="color:var(--success);margin-bottom:8px;display:none">
+        <b id="team-add-result-adopted-email"></b> already had a Gantry account, so they've been added to your team with it —
+        they log in with their existing password. If they've forgotten it, they can use “Forgot password?” on the login screen.
+      </p>
       <div class="team-btn-row">
         <button id="team-add-copy-btn" class="flex">Copy password</button>
         <button id="team-add-again-btn" class="flex">Add another</button>
@@ -1626,8 +1633,18 @@
       $('team-add-member-btn').disabled = false;
       if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not add team member'); return; }
       $('team-add-member-form').style.display = 'none';
-      $('team-add-result-email').textContent = res.data.email;
-      $('team-add-result-password').textContent = res.data.tempPassword;
+      // Adopted an existing account (no temp password issued) vs. created a new
+      // one — show one panel or the other, never an empty password box.
+      var adopted = !!res.data.adopted;
+      $('team-add-result-email').parentNode.style.display = adopted ? 'none' : '';
+      $('team-add-result-password').style.display = adopted ? 'none' : '';
+      $('team-add-copy-btn').style.display = adopted ? 'none' : '';
+      $('team-add-result-adopted').style.display = adopted ? '' : 'none';
+      if (adopted) $('team-add-result-adopted-email').textContent = res.data.email;
+      else {
+        $('team-add-result-email').textContent = res.data.email;
+        $('team-add-result-password').textContent = res.data.tempPassword;
+      }
       $('team-add-member-result').style.display = '';
       loadTeamView();
     });

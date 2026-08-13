@@ -103,7 +103,33 @@ Deno.serve(async (req) => {
     if (createError || !created.user) {
       const msg = createError?.message ?? "";
       const duplicate = /already registered|already exists|already been registered/i.test(msg);
-      return jsonResponse({ error: duplicate ? "An account with that email already exists." : "Could not create the account." }, 400);
+      if (!duplicate) return jsonResponse({ error: "Could not create the account." }, 400);
+
+      // The email exists — but existing-and-unattached is the common case (a
+      // staff member who started a signup and stopped), not a real conflict.
+      // Adopt that account into this org rather than dead-ending: without this
+      // the address can never be onboarded, since we can't create it and they
+      // can't join. adopt_existing_team_member() (schema.sql) does the owner
+      // check, refuses anyone who already has a membership, and delegates the
+      // actual membership write to add_team_member(). No password is issued —
+      // they keep the credentials they already have.
+      const adoptRes = await userDb(authHeader, `rpc/adopt_existing_team_member`, {
+        method: "POST",
+        body: JSON.stringify({ p_email: email, p_role: role }),
+      });
+      if (!adoptRes.ok) {
+        const detail = await adoptRes.text();
+        const taken = /already belongs/i.test(detail);
+        return jsonResponse(
+          {
+            error: taken
+              ? "That email already belongs to someone in another organisation."
+              : "An account with that email already exists and couldn't be added.",
+          },
+          400,
+        );
+      }
+      return jsonResponse({ email, adopted: true });
     }
 
     const rpcRes = await userDb(authHeader, `rpc/add_team_member`, {

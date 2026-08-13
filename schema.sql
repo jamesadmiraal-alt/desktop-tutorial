@@ -464,6 +464,52 @@ end $$;
 
 grant execute on function public.add_team_member(uuid, text) to authenticated;
 
+-- Adopts an account that ALREADY exists in auth.users but belongs to no
+-- organisation, instead of leaving it stranded. Without this, an email that
+-- once started a signup and stopped is a permanent dead end: create-team-member
+-- can't create it (the Admin API rejects the duplicate) and the person can't
+-- join either, so that address becomes un-hireable. Real staff do abandon
+-- signups, so the owner needs a way through.
+--
+-- The owner check comes FIRST and deliberately so: this function resolves an
+-- arbitrary email against auth.users, which is an enumeration oracle if anyone
+-- can call it. Non-owners are rejected before the lookup happens, so a staff
+-- account can't use it to probe which addresses have signed up. It also refuses
+-- anyone who already has a membership rather than silently moving them between
+-- organisations — the caller gets told, and stealing a rival org's member is
+-- not something an owner should be able to do by typing an email.
+--
+-- Note it does NOT touch the existing account's password: they already have
+-- credentials, so create-team-member returns no temp password on this path and
+-- the UI says to use their existing one. Membership creation and the audit
+-- entry are delegated to add_team_member() above so there's exactly one place
+-- that writes a membership.
+create or replace function public.adopt_existing_team_member(p_email text, p_role text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_user_id uuid;
+begin
+  if public.my_role() != 'owner' then
+    raise exception 'Only the owner can add team members.';
+  end if;
+
+  select u.id into v_user_id
+    from auth.users u
+   where lower(u.email) = lower(trim(p_email));
+
+  if v_user_id is null then
+    raise exception 'No existing account uses that email.';
+  end if;
+
+  if exists (select 1 from public.memberships where user_id = v_user_id) then
+    raise exception 'That person already belongs to an organisation.';
+  end if;
+
+  perform public.add_team_member(v_user_id, p_role);
+end $$;
+
+grant execute on function public.adopt_existing_team_member(text, text) to authenticated;
+
 -- Lazy daily-code rotation — called by admin.html whenever the roster/join
 -- screen is opened, rather than a pg_cron job (avoids depending on an
 -- extension just to rotate a code once a day). Owner/manager only.
