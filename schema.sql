@@ -4,20 +4,19 @@
 -- *** DO NOT RUN THIS WHOLE FILE AGAINST THE LIVE PROJECT. ***
 --
 -- It was written as a CLEAN REPLACEMENT of the earlier per-user schema, not an
--- additive migration: lines 14-20 below drop and recreate every app table.
+-- additive migration: the `drop table ... cascade` run immediately below the
+-- safety guard drops and recreates every app table.
 -- That was safe when there was no production data to preserve. That is NO
 -- LONGER TRUE — vfixdchbkmqryfhirphx now has a real organisation, memberships
 -- and user accounts. Re-running this as-is deletes all of it.
 --
--- Two things make the danger easy to miss:
---   * IT NO LONGER ERRORS OUT. A re-run used to die partway with a 23503 on
---     active_sessions_org_id_fkey, which the Supabase SQL editor rolled back
---     wholesale (it batches a script into one implicit transaction) — so the
---     file appeared to "just fail" while quietly leaving the data intact. That
---     was luck, not protection, and the orphan sweeps added beside both
---     re-added FKs below have now removed it. A re-run today is far more
---     likely to SUCCEED, and succeed all the way through the drops. The
---     accidental safety net is gone; the warning above is the only one left.
+-- A guard at the top now enforces this rather than relying on you reading it:
+-- the DO block below the header aborts the script if public.organisations has
+-- any rows, so a stray paste fails immediately and explains itself instead of
+-- silently wiping the project. Comment that block out to rebuild deliberately.
+--
+-- The other trap, which the guard does NOT undo — worth knowing if a wipe ever
+-- does happen:
 --   * auth.users is NOT dropped here, but public.profiles IS. So a re-run
 --     leaves every existing login intact while wiping its profile row, and
 --     handle_new_user() only fires for NEW signups — the rows never come back
@@ -30,6 +29,46 @@
 --
 -- To change the schema from here on: write a real migration (e.g.
 -- add-column-with-backfill, or a single CREATE POLICY) and run only that.
+
+-- ==========================================================================
+-- SAFETY GUARD — deliberately the first executable statement in this file.
+--
+-- Aborts the whole script if this project already has a real organisation,
+-- rather than trusting whoever pasted it to have read the warning above. The
+-- SQL editor batches a script into one implicit transaction, so raising here
+-- rolls back everything: none of the drops below run.
+--
+-- This replaces a safety net that used to exist by accident — a re-run died
+-- partway on a foreign-key violation, and the same implicit-transaction
+-- rollback undid the drops. The orphan sweeps further down (audit_log /
+-- active_sessions) fixed that violation, which also removed the accident. This
+-- guard is the intentional version, and it fails EARLY and says why, instead of
+-- failing late with a 23503 that reads like an unrelated validation error.
+--
+-- to_regclass() rather than a bare EXISTS: on a genuinely fresh project the
+-- table doesn't exist yet, and querying a missing table would raise the wrong
+-- error and block the legitimate first run.
+--
+-- TO INTENTIONALLY WIPE AND REBUILD: comment out this whole DO block. That is
+-- meant to be a conscious act with a backup taken first (Dashboard -> Database
+-- -> Backups), not something you can do by pasting the file out of habit.
+-- ==========================================================================
+do $$
+begin
+  if to_regclass('public.organisations') is not null
+     and exists (select 1 from public.organisations) then
+    raise exception using
+      errcode = 'raise_exception',
+      message = 'schema.sql refused to run: public.organisations already has data.',
+      detail  = 'This file DROPS every app table (profiles, organisations, venues, '
+                || 'locations, memberships, stocktakes, stocktake_items) and would '
+                || 'delete that organisation, its team and all of its stocktakes.',
+      hint    = 'To change the live schema, run only the specific statements you '
+                || 'need (a CREATE POLICY, an ALTER TABLE ... ADD COLUMN with a '
+                || 'backfill). To intentionally rebuild from scratch, take a '
+                || 'backup and comment out the DO block at the top of this file.';
+  end if;
+end $$;
 
 -- ---- Profiles: one row per user, personal identity only ----
 -- No billing/plan fields here any more — those are now on `organisations`,
