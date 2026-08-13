@@ -10,12 +10,14 @@
 -- and user accounts. Re-running this as-is deletes all of it.
 --
 -- Two things make the danger easy to miss:
---   * A partial run can look like it "just errored". Re-running this with a
---     live session present fails at active_sessions_org_id_fkey (line ~923)
---     with a 23503 — because the drops at the top already ran and orphaned
---     that row. The Supabase SQL editor batches the script into one implicit
---     transaction, so that error rolls the whole thing back, which is the only
---     reason a re-run has survived so far. Do not rely on that.
+--   * IT NO LONGER ERRORS OUT. A re-run used to die partway with a 23503 on
+--     active_sessions_org_id_fkey, which the Supabase SQL editor rolled back
+--     wholesale (it batches a script into one implicit transaction) — so the
+--     file appeared to "just fail" while quietly leaving the data intact. That
+--     was luck, not protection, and the orphan sweeps added beside both
+--     re-added FKs below have now removed it. A re-run today is far more
+--     likely to SUCCEED, and succeed all the way through the drops. The
+--     accidental safety net is gone; the warning above is the only one left.
 --   * auth.users is NOT dropped here, but public.profiles IS. So a re-run
 --     leaves every existing login intact while wiping its profile row, and
 --     handle_new_user() only fires for NEW signups — the rows never come back
@@ -659,6 +661,17 @@ create table if not exists public.audit_log (
 -- actor_label are snapshotted at write time for the same reason — profiles
 -- cascade-deletes with auth.users, so a join-at-read-time approach would go
 -- blank exactly when a departed operator's history matters most.
+-- Orphan sweep before re-adding the FK. This table deliberately survives the
+-- `drop table organisations cascade` at the top of the file, so on a re-run its
+-- rows still point at org ids that no longer exist and ADD CONSTRAINT would
+-- fail validation with a 23503 — after the drops have already happened. Doing
+-- exactly what the constraint's own `on delete set null` would have done keeps
+-- the history (org_label is snapshotted at write time precisely so a null
+-- org_id stays readable) instead of losing it.
+update public.audit_log a set org_id = null
+ where a.org_id is not null
+   and not exists (select 1 from public.organisations o where o.id = a.org_id);
+
 alter table public.audit_log drop constraint if exists audit_log_org_id_fkey;
 alter table public.audit_log add constraint audit_log_org_id_fkey
   foreign key (org_id) references public.organisations(id) on delete set null;
@@ -939,6 +952,19 @@ create table if not exists public.active_sessions (
   org_id uuid not null,
   last_seen_at timestamptz not null default now()
 );
+
+-- Orphan sweep before re-adding the FK — same hazard as audit_log above, and
+-- this is the one that actually bit: re-running this file with anyone logged in
+-- failed here with
+--   23503 ... "active_sessions_org_id_fkey" ... Key (org_id)=(...) is not
+--   present in table "organisations"
+-- which reads like a harmless validation error but only happens *after* the
+-- drops at the top have run. Unlike audit_log, these rows are ephemeral seat
+-- claims with nothing worth preserving, and the constraint is `on delete
+-- cascade` — so deleting them is precisely what the FK itself would do. The
+-- affected devices just re-claim a seat on their next heartbeat.
+delete from public.active_sessions s
+ where not exists (select 1 from public.organisations o where o.id = s.org_id);
 
 alter table public.active_sessions drop constraint if exists active_sessions_org_id_fkey;
 alter table public.active_sessions add constraint active_sessions_org_id_fkey
