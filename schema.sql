@@ -1,12 +1,33 @@
 -- Gantry schema for Supabase — organisation-based multi-tenant model
 -- Run this once in your Supabase project: Dashboard -> SQL Editor -> New query -> paste -> Run
 --
--- THIS IS A CLEAN REPLACEMENT of the earlier per-user schema, not an additive
--- migration: it drops and recreates every app table. That's deliberate (see
--- the planning doc) — there is no production data to preserve. If that ever
--- stops being true, do NOT re-run this file as-is; write a real migration
--- instead (add-column-with-backfill), since running this against a live org
--- would delete all of it.
+-- *** DO NOT RUN THIS WHOLE FILE AGAINST THE LIVE PROJECT. ***
+--
+-- It was written as a CLEAN REPLACEMENT of the earlier per-user schema, not an
+-- additive migration: lines 14-20 below drop and recreate every app table.
+-- That was safe when there was no production data to preserve. That is NO
+-- LONGER TRUE — vfixdchbkmqryfhirphx now has a real organisation, memberships
+-- and user accounts. Re-running this as-is deletes all of it.
+--
+-- Two things make the danger easy to miss:
+--   * A partial run can look like it "just errored". Re-running this with a
+--     live session present fails at active_sessions_org_id_fkey (line ~923)
+--     with a 23503 — because the drops at the top already ran and orphaned
+--     that row. The Supabase SQL editor batches the script into one implicit
+--     transaction, so that error rolls the whole thing back, which is the only
+--     reason a re-run has survived so far. Do not rely on that.
+--   * auth.users is NOT dropped here, but public.profiles IS. So a re-run
+--     leaves every existing login intact while wiping its profile row, and
+--     handle_new_user() only fires for NEW signups — the rows never come back
+--     on their own. Symptom: operators with no display name, and existing
+--     accounts landing on the "Set up your organisation" screen.
+--     Backfill with:
+--       insert into public.profiles (id, full_name)
+--       select u.id, u.raw_user_meta_data->>'full_name' from auth.users u
+--       where not exists (select 1 from public.profiles p where p.id = u.id);
+--
+-- To change the schema from here on: write a real migration (e.g.
+-- add-column-with-backfill, or a single CREATE POLICY) and run only that.
 
 -- ---- Profiles: one row per user, personal identity only ----
 -- No billing/plan fields here any more — those are now on `organisations`,
@@ -30,8 +51,11 @@ alter table public.profiles enable row level security;
 -- after public.memberships exists — it references that table in a
 -- subquery, and CREATE POLICY validates its SQL immediately, so it can't
 -- be declared before the table it depends on exists yet.
--- No insert/update policy for clients: the row is created by the
--- handle_new_user() trigger below and there's currently no edit-name UI.
+-- No insert policy for clients: the row is only ever created by the
+-- handle_new_user() trigger below. Updates ARE allowed, but only to your own
+-- row and only to full_name — see the "update own profile" policy and its
+-- column-scoped GRANT further down (same place as the read policy, and for
+-- the same reason: it has to come after public.memberships exists).
 
 -- ---- Organisations: the billing/tenant entity. Every stocktake and every
 -- location belongs to one of these, not to a user. ----
@@ -161,6 +185,19 @@ create policy "read own or org profile" on public.profiles
        where mine.user_id = auth.uid() and theirs.user_id = profiles.id
     )
   );
+
+-- Set your OWN display name (👤 Account → Your name in app.html). Editing
+-- anyone ELSE's name stays owner-only and goes through the
+-- update-team-member Edge Function instead, which is also why this is scoped
+-- to auth.uid() = id on both sides: without the `with check` half, a client
+-- could satisfy `using` on their own row and then reassign it to someone
+-- else's id. The column GRANT below is what keeps this to full_name only, so
+-- created_at/id aren't client-writable even on your own row.
+create policy "update own profile" on public.profiles
+  for update using (auth.uid() = id) with check (auth.uid() = id);
+
+revoke update on public.profiles from authenticated;
+grant update (full_name) on public.profiles to authenticated;
 
 -- ---- Helper functions used throughout RLS below ----
 -- security definer (like the existing enforce_country_cooldown/

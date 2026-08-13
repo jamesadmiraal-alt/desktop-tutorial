@@ -70,6 +70,13 @@ https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html?upgraded=1
 Copy each resulting link (`https://buy.stripe.com/test_...`). Keep track of which
 is which (currency/tier/period) — you'll need that mapping for both steps below.
 
+**Don't skip the redirect.** If a link is left on Stripe's default
+"Thanks for subscribing" confirmation page, the operator is stranded there after
+paying — the app never sees `?upgraded=1`, so it never posts the confirmation
+toast or re-checks the plan, and they have to find their own way back to Gantry.
+The redirect is per-link, so a link added later can silently miss it while every
+other link works. Worth re-checking all 16 whenever checkout "feels" wrong.
+
 ## 3. Put the links into the app
 
 In `config.js`'s `upgradeUrls`, keyed by currency → tier → period (leave a
@@ -193,12 +200,20 @@ It's shared across every Edge Function in the project, so this is a one-time ste
 
 ## 9. Deploy the account/billing-management functions
 
-Four functions besides the webhook: `create-portal-session` (Manage
+Five functions besides the webhook: `create-portal-session` (Manage
 subscription), `delete-account`, `create-team-member`/`update-team-member`
-(owner-provisioned logins — no billing involved), and **`set-seat-count`**
-(only used on the multi-venue tier, when the owner changes how many extra
-concurrent seats they're paying for — see the org-model planning doc for
-why this needs to be server-side at all).
+(owner-provisioned logins — no billing involved), **`kick-user`** (the admin
+console's "Log out" on an active session — frees a concurrent seat), and
+**`set-seat-count`** (only used on the multi-venue tier, when the owner changes
+how many extra concurrent seats they're paying for — see the org-model planning
+doc for why this needs to be server-side at all).
+
+**Every one of these must actually be deployed.** A function that exists in the
+repo but was never deployed fails in the app as
+*"Failed to send a request to the Edge Function"* — that's supabase-js unable to
+**reach** the function (404), not the function rejecting the request, so it
+looks like a client bug rather than a missing deploy. If you see that message,
+check this list first.
 
 **Important — opposite of the webhook**: leave **"Enforce JWT verification" ON**
 for all of these. They act on behalf of whoever calls them, using that
@@ -209,6 +224,7 @@ supabase functions deploy create-portal-session --project-ref vfixdchbkmqryfhirp
 supabase functions deploy delete-account --project-ref vfixdchbkmqryfhirphx
 supabase functions deploy create-team-member --project-ref vfixdchbkmqryfhirphx
 supabase functions deploy update-team-member --project-ref vfixdchbkmqryfhirphx
+supabase functions deploy kick-user --project-ref vfixdchbkmqryfhirphx
 supabase functions deploy set-seat-count --project-ref vfixdchbkmqryfhirphx
 ```
 

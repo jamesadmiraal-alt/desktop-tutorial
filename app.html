@@ -434,7 +434,23 @@
   <div class="acct-card">
     <h3>Signed in as</h3>
     <div class="acct-email" id="acct-email"></div>
-    <div class="plan-desc" id="acct-name" style="margin-top:2px"></div>
+    <!-- Your own display name. The roster's ✎ button (both #team-view here and
+         admin.html) is deliberately disabled on your own row and points here
+         instead — editing anyone else's name is owner-only and goes via the
+         update-team-member Edge Function, but your own is a plain self-update
+         (see the "update own profile" policy in schema.sql). -->
+    <label>Your name <small style="color:var(--text-dim)">(shown on stocktake records)</small></label>
+    <div class="acct-country-row" id="acct-name-display-row">
+      <span id="acct-name"></span>
+      <button id="acct-name-edit-btn" class="link-btn">Edit</button>
+    </div>
+    <div id="acct-name-edit-row" style="display:none">
+      <input id="acct-name-input" type="text" autocomplete="name" placeholder="e.g. Alex Taylor">
+      <div class="dialog-actions" style="margin-top:10px">
+        <button id="acct-name-cancel" class="flex">Cancel</button>
+        <button id="acct-name-save" class="primary flex">Save name</button>
+      </div>
+    </div>
   </div>
   <div class="acct-card">
     <h3>Organisation</h3>
@@ -1322,20 +1338,62 @@
     $('open-team-btn').style.display = (canManage && currentOrg.planTier === 'single') ? '' : 'none';
     renderCountryDisplay();
   }
+  // Shows the name (or an explicit prompt when it's never been set — accounts
+  // created before the signup form had a Name field have a null full_name, and
+  // a silently blank row read as "broken" rather than "unset") and drops back
+  // out of edit mode, so re-entering Account never leaves a half-edited input.
+  function renderAccountName() {
+    var name = currentUser.name || '';
+    $('acct-name').textContent = name || 'Not set';
+    $('acct-name').style.color = name ? '' : 'var(--text-dim)';
+    $('acct-name-display-row').style.display = 'flex';
+    $('acct-name-edit-row').style.display = 'none';
+  }
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
-    $('acct-name').textContent = currentUser.name || '';
+    renderAccountName();
     renderOrgAccountInfo();
     renderPlan();
     renderUpgradePrices();
     showView('account');
     // Refresh the org/plan from the server so a just-completed upgrade shows up
     refreshOrgStatus(function () {
-      $('acct-name').textContent = currentUser.name || '';
+      renderAccountName();
       renderOrgAccountInfo();
       renderUpgradePrices();
     });
   }
+  $('acct-name-edit-btn').onclick = function () {
+    $('acct-name-input').value = currentUser.name || '';
+    $('acct-name-display-row').style.display = 'none';
+    $('acct-name-edit-row').style.display = '';
+    $('acct-name-input').focus();
+  };
+  $('acct-name-cancel').onclick = renderAccountName;
+  $('acct-name-save').onclick = function () {
+    var name = $('acct-name-input').value.trim();
+    if (!name) { toast('Enter your name', '#b91c1c'); return; }
+    $('acct-name-save').disabled = true;
+    // Self-update only — full_name is the one column the "update own profile"
+    // policy's GRANT exposes to clients (schema.sql). The trailing .select()
+    // isn't cosmetic: an UPDATE matching zero rows is a *success* in Postgres,
+    // and a user can genuinely have no profiles row (the handle_new_user
+    // trigger only fires at signup, so anyone whose row predates a
+    // profiles-dropping schema re-run has none). Without checking what came
+    // back, that case would toast "Name updated" and save nothing.
+    sb.from('profiles').update({ full_name: name }).eq('id', currentUser.id).select('id')
+      .then(function (res) {
+        $('acct-name-save').disabled = false;
+        if (res.error) { fail(res.error, 'Could not save your name'); return; }
+        if (!res.data || !res.data.length) {
+          fail({ message: 'Your profile record is missing — log out and back in, then try again.' }, '');
+          return;
+        }
+        currentUser.name = name;
+        renderAccountName();
+        toast('Name updated');
+      });
+  };
   function renderPlan() {
     // Only ever called once currentOrg exists and isn't 'pending' —
     // refreshOrgStatus() intercepts and gates out the 'pending' case
@@ -1443,17 +1501,40 @@
       list.appendChild(row);
     });
   }
+  // Locations hang off a venue, so there's nothing to attach one to until the
+  // org has its venue. Normally stripe-webhook's ensureFirstVenue() created it
+  // at checkout — but if that never ran (e.g. the org was flipped to a paid
+  // tier by hand in the dashboard instead of through a real checkout), we'd
+  // otherwise have no venue and this button used to `return` silently, which
+  // just looked broken. Create the missing venue the same way the webhook
+  // would ("Main"; RLS permits a single-tier org's first venue — see the
+  // venues insert policy in schema.sql) and carry on, rather than dead-ending.
   $('team-add-location-btn').onclick = function () {
-    if (!teamVenue) return;
     var name = $('team-new-location-name').value.trim();
     if (!name) { toast('Enter a location name', '#b91c1c'); return; }
     $('team-add-location-btn').disabled = true;
-    sb.from('locations').insert({ name: name, org_id: currentOrg.id, venue_id: teamVenue.id }).then(function (res) {
-      $('team-add-location-btn').disabled = false;
-      if (res.error) { fail(res.error, 'Could not add location'); return; }
-      $('team-new-location-name').value = '';
-      loadTeamView();
-    });
+
+    function insertLocation(venueId) {
+      sb.from('locations').insert({ name: name, org_id: currentOrg.id, venue_id: venueId }).then(function (res) {
+        $('team-add-location-btn').disabled = false;
+        if (res.error) { fail(res.error, 'Could not add location'); return; }
+        $('team-new-location-name').value = '';
+        loadTeamView();
+      });
+    }
+
+    if (teamVenue) { insertLocation(teamVenue.id); return; }
+    sb.from('venues').insert({ name: 'Main', org_id: currentOrg.id }).select('id,name').maybeSingle()
+      .then(function (res) {
+        if (res.error || !res.data) {
+          $('team-add-location-btn').disabled = false;
+          fail(res.error || { message: "Couldn't set up your venue — reload and try again." }, 'Could not add location');
+          return;
+        }
+        teamVenue = { id: res.data.id, name: res.data.name, locations: [] };
+        $('team-venue-name').value = teamVenue.name;
+        insertLocation(teamVenue.id);
+      });
   };
 
   function renderTeamRoster(members) {
@@ -1494,7 +1575,7 @@
       var editBtn = document.createElement('button');
       editBtn.textContent = '✎';
       editBtn.disabled = isSelf;
-      editBtn.title = isSelf ? 'Edit your own name/password from Account' : 'Edit name or reset password';
+      editBtn.title = isSelf ? 'Edit your own name under 👤 Account' : 'Edit name or reset password';
       editBtn.onclick = function () { openEditTeamMember(m); };
 
       var removeBtn = document.createElement('button');
@@ -2342,10 +2423,29 @@
     var session = res.data ? res.data.session : null;
     if (session) enterApp(session.user);
     else showView('auth');
-    // Returning from Stripe checkout (Payment Link after-payment redirect)
+    // Returning from Stripe checkout (Payment Link after-payment redirect).
+    // The webhook that actually flips plan_tier races this redirect and often
+    // hasn't landed yet, so the first refreshOrgStatus() in enterApp() can
+    // still see 'pending' (i.e. the paywall). Re-check a few times on a short
+    // backoff so the account/plan panel activates on its own — otherwise the
+    // operator sits on the "choose a plan" screen having just paid, and has to
+    // reload to see it. announceTierChangeIfAny() in refreshOrgStatus() posts
+    // the 🎉 confirmation once the tier actually changes, so this only needs
+    // to set the expectation while we wait.
     if (/[?&]upgraded=1/.test(location.search)) {
       history.replaceState(null, '', location.pathname);
-      toast('🎉 Payment received — your Pro access activates within a minute', '#059669');
+      toast('Payment received — activating your plan…', '#059669');
+      if (session) {
+        var upgradeChecks = 0;
+        (function pollForUpgrade() {
+          if (++upgradeChecks > 5) return;
+          setTimeout(function () {
+            if (currentOrg && currentOrg.planTier !== 'pending') return;
+            refreshOrgStatus();
+            pollForUpgrade();
+          }, upgradeChecks * 2000);
+        })();
+      }
     }
     // Returning from the Stripe billing portal (manage/cancel subscription)
     if (/[?&]billing_updated=1/.test(location.search)) {
