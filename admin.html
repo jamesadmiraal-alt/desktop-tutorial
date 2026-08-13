@@ -513,6 +513,9 @@
           if (res.error) { fail(res.error, 'Could not add location'); return; }
           addLocInput.value = '';
           loadVenues();
+          // Its rename/remove siblings both confirm; this didn't, so a
+          // successful add looked identical to a dead button.
+          toast('Location added');
         });
       };
       addLocRow.appendChild(addLocInput); addLocRow.appendChild(addLocBtn);

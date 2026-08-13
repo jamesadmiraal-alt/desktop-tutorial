@@ -66,6 +66,20 @@ directly.
 
 ## Gotchas
 
+- When faking Supabase at the HTTP boundary (`page.route('**/rest/v1/**')`),
+  return a **JSON array** for every select — including `.single()`/
+  `.maybeSingle()`. The vendored `supabase.min.js` implements those
+  client-side (`isMaybeSingle && Array.isArray(r) && (r = r.length===1 ?
+  r[0] : null)`); it does NOT send
+  `Accept: application/vnd.pgrst.object+json`. So "no rows" is a plain
+  `200 []`, never a `406`/`PGRST116`. Faking the 406 invents an error the
+  real backend cannot produce, and returning a bare object makes the client
+  hand `null` to code that expected a row — both look like app bugs.
+- Seed a session by writing `sb-<project-ref>-auth-token` into localStorage in
+  an `addInitScript` (a hand-built JWT with a future `exp` is enough — nothing
+  verifies the signature client-side). That gets you past `#auth-view` without
+  real credentials.
+
 - unpkg/CDNs are blocked by the sandbox proxy; registry.npmjs.org is
   direct-allowed, so vendor libraries via `npm pack`.
 - Don't restrict the scanner's `qrbox` to a wide strip — it silently
