@@ -443,7 +443,13 @@ declare
   org_id uuid := public.my_org_id();
   target_label text;
 begin
-  if public.my_role() != 'owner' then
+  -- `is distinct from` rather than `!=`: my_role() is NULL for a caller with no
+  -- membership, and `NULL != 'owner'` is NULL, which plpgsql treats as false —
+  -- so `!=` would wave through precisely the callers who belong to no org. They
+  -- fail later on memberships.org_id's not-null constraint rather than
+  -- succeeding, but relying on that is defence by accident, and the error the
+  -- caller gets is a constraint violation instead of "you're not the owner".
+  if public.my_role() is distinct from 'owner' then
     raise exception 'Only the owner can add team members.';
   end if;
   if p_role not in ('manager', 'staff') then
@@ -489,7 +495,16 @@ returns void language plpgsql security definer set search_path = public as $$
 declare
   v_user_id uuid;
 begin
-  if public.my_role() != 'owner' then
+  -- `is distinct from`, NOT `!=`. my_role() returns NULL for a caller with no
+  -- membership at all, and `NULL != 'owner'` is NULL, which plpgsql treats as
+  -- false — so a plain `!=` lets exactly the callers with no org straight past
+  -- the guard. They can't ultimately create a membership (my_org_id() is NULL
+  -- and memberships.org_id is not-null), but they DO reach the email lookup
+  -- below, and its two distinct error messages ("No existing account uses that
+  -- email" vs "already belongs to an organisation") then leak whether any given
+  -- address has a Gantry account. That enumeration oracle is the whole thing
+  -- this check exists to prevent.
+  if public.my_role() is distinct from 'owner' then
     raise exception 'Only the owner can add team members.';
   end if;
 
@@ -520,7 +535,10 @@ declare
   v_code text;
   v_date date;
 begin
-  if public.my_role() not in ('owner', 'manager') then
+  -- coalesce, because my_role() is NULL for a caller with no membership and
+  -- `NULL not in (...)` is NULL — which plpgsql treats as false, letting them
+  -- past. See add_team_member() for the full explanation.
+  if coalesce(public.my_role(), '') not in ('owner', 'manager') then
     raise exception 'Only owners and managers can view the daily code.';
   end if;
 
@@ -545,7 +563,9 @@ create or replace function public.list_org_members()
 returns table (user_id uuid, email text, full_name text, role text, joined_at timestamptz)
 language plpgsql security definer set search_path = public as $$
 begin
-  if public.my_role() not in ('owner', 'manager') then
+  -- coalesce — see the daily-code function above; a NULL role would otherwise
+  -- slip past this check.
+  if coalesce(public.my_role(), '') not in ('owner', 'manager') then
     raise exception 'Only owners and managers can view the roster.';
   end if;
 
@@ -1142,17 +1162,28 @@ returns void language plpgsql security definer set search_path = public as $$
 declare
   actor uuid := auth.uid();
   actor_label text;
-  org_id uuid := public.my_org_id();
+  -- v_org_id, NOT org_id: named `org_id` it shadowed the identically-named
+  -- COLUMN in the memberships/active_sessions predicates below, so
+  -- `org_id = org_id` was ambiguous. Postgres's default
+  -- plpgsql.variable_conflict = error means that raised
+  -- 'column reference "org_id" is ambiguous' at runtime for every caller,
+  -- including a legitimate owner — this function could never have worked.
+  -- (It has no client call site today: the kick-user Edge Function replaced it
+  -- and does its own deletes. But it's still granted to `authenticated`, so it
+  -- stays reachable over /rest/v1/rpc and worth being correct.)
+  v_org_id uuid := public.my_org_id();
   target_label text;
 begin
-  if public.my_role() != 'owner' then
+  -- `is distinct from` rather than `!=` — see add_team_member() for why a NULL
+  -- role would otherwise slip past.
+  if public.my_role() is distinct from 'owner' then
     raise exception 'Only the owner can log out a team member.';
   end if;
-  if not exists (select 1 from public.memberships where user_id = p_user_id and org_id = org_id) then
+  if not exists (select 1 from public.memberships m where m.user_id = p_user_id and m.org_id = v_org_id) then
     raise exception 'That person is not a member of your organisation.';
   end if;
 
-  delete from public.active_sessions where user_id = p_user_id and org_id = org_id;
+  delete from public.active_sessions s where s.user_id = p_user_id and s.org_id = v_org_id;
 
   select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
     from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
@@ -1160,7 +1191,7 @@ begin
     from auth.users u left join public.profiles p on p.id = u.id where u.id = p_user_id;
 
   insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label)
-  values (org_id, (select name from public.organisations where id = org_id), actor, actor_label,
+  values (v_org_id, (select name from public.organisations where id = v_org_id), actor, actor_label,
           'membership.force_logged_out_by_owner', 'membership', p_user_id, target_label);
 end $$;
 
@@ -1178,7 +1209,9 @@ declare
   v_org_id uuid := public.my_org_id();
   v_interval_secs integer;
 begin
-  if public.my_role() not in ('owner', 'manager') then
+  -- coalesce — see the daily-code function above; a NULL role would otherwise
+  -- slip past this check.
+  if coalesce(public.my_role(), '') not in ('owner', 'manager') then
     raise exception 'Only owners and managers can view active sessions.';
   end if;
 
