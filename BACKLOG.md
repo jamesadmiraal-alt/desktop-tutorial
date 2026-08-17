@@ -28,32 +28,70 @@ counting is still going on.
   export. Head office currently can't tell "still counting" from "finished but
   not exported" — both read as In Progress.
 
-**So the work is mostly inverting that, not building status from scratch:**
+### The state machine (specified 2026-08-18)
 
-1. Add a "Mark complete" action (the `⋯` actions sheet at
-   [app.html:640-652](app.html#L640-L652) is the natural home, beside Export and
-   Clear items), and a way back — "Reopen" — since a venue will sometimes mark
-   complete too early.
-2. Decide whether export should still auto-complete. Probably yes as a fallback,
-   but it must not be the only route.
-3. Who may complete/reopen? Staff do the counting, so staff should probably be
-   able to complete. Reopening after head office has exported is closer to a
-   manager action. This needs deciding, not assuming — and note `stocktakes`
-   UPDATE is currently open to **all three roles** with no `my_role()` check
-   ([schema.sql:703-705](schema.sql#L703-L705)), so any restriction is new RLS.
-4. Add `check (status in ('in_progress', 'completed'))` while touching this — the
-   column being unconstrained is a latent bug, and a status-driven workflow makes
-   it a real one.
-5. **Log the transition.** `log_stocktakes_change()` is delete-only, and its
-   comment explicitly says the only update today is the automatic export side
-   effect "not an operator decision" ([schema.sql:970-972](schema.sql#L970-L972)).
-   Once completing is a deliberate act that head office relies on, that stops
-   being true — "who marked this ready, and when" belongs in the activity log
-   alongside the deletion trail.
-6. Consider showing completed-but-not-exported distinctly from
-   completed-and-exported. Head office's real question is "what can I export
-   now", which is a third state the current two-way split can't express.
+Three states, not two. `ready_for_export` is the new one and is the whole point:
+it's the signal head office watches for, and today it's unrepresentable — a
+finished-but-unexported count looks identical to one still being counted.
 
-**Open question worth resolving first:** is "complete" per stocktake, or does head
-office want a per-location or per-venue rollup ("all of Bar's counts are in")? The
-answer changes whether this is a status flag or a small workflow feature.
+| Status | Meaning |
+|---|---|
+| `in_progress` | Being counted. Default for a new stocktake. |
+| `ready_for_export` | Venue says counting is done. **Head office's cue to export.** |
+| `completed` | Export has happened. |
+
+Transitions:
+
+| From | To | Trigger | Logged |
+|---|---|---|---|
+| `in_progress` | `ready_for_export` | user marks it ready | yes |
+| `ready_for_export` | `in_progress` | user reverts — more counting needed | yes |
+| `ready_for_export` | `completed` | automatic, on successful export | yes |
+| `completed` | `in_progress` | user reverts to make changes | yes |
+| `completed` | `ready_for_export` | user reverts | yes |
+
+Every transition is logged, including the automatic export one — head office is
+going to rely on this, so "who moved it, when, and which way" needs to be as
+durable as the deletion trail. Distinguish the automatic transition from a manual
+one in the log (actor is the exporter either way, but the *reason* differs).
+
+**Implementation notes**
+
+1. Add `check (status in ('in_progress', 'ready_for_export', 'completed'))`. The
+   column is unconstrained today, which is a latent bug and becomes a real one
+   once a workflow depends on the value. Purely additive for existing rows — they
+   already hold only `in_progress` or `completed`, so no backfill.
+2. **`renderHome()` needs a third section.** Its current filter is binary —
+   `status === 'completed'` versus everything else
+   ([app.html:1948-1958](app.html#L1948-L1958)) — so `ready_for_export` would
+   silently fall into "In Progress" and the feature would appear not to work.
+   Three headings, with Ready for export most prominent: it's the one someone is
+   waiting on.
+3. Actions live in the `⋯` sheet ([app.html:640-652](app.html#L640-L652)),
+   label depending on current status ("Mark ready for export" / "Back to in
+   progress" / "Reopen").
+4. Export keeps auto-completing ([app.html:2411-2417](app.html#L2411-L2417)) but
+   is no longer the only route into `completed`, and must now log the transition.
+5. **Log via a trigger, not the client.** `log_stocktakes_change()` is delete-only
+   and its comment says the only update today is the automatic export side effect,
+   "not an operator decision" ([schema.sql:970-972](schema.sql#L970-L972)) — that
+   stops being true here, and the comment needs updating. A BEFORE/AFTER UPDATE
+   trigger on `stocktakes` firing when `status` changes is tamper-evident in a way
+   a client-side audit insert is not, and matches how every other action is
+   logged.
+
+**Still to decide**
+
+- **Who may revert a `completed` stocktake?** This is the risky transition: head
+  office has already exported, and reverting invites a second export with
+  different numbers. Marking *ready* is clearly a staff action; un-completing may
+  warrant owner/manager. Note `stocktakes` UPDATE is currently open to **all three
+  roles** with no `my_role()` check
+  ([schema.sql:703-705](schema.sql#L703-L705)), so any restriction is new RLS, and
+  a column-level restriction on `status` alone is not expressible in RLS — it
+  would need a trigger or an RPC.
+- Should head office see *which* export produced `completed`? Exports aren't
+  logged at all today, so "exported by X at Y" doesn't exist as a record.
+- Per-stocktake only, or does head office also want a per-location rollup ("all
+  of Bar's counts are ready")? Doesn't change the state machine, but does change
+  whether anything aggregates it.
