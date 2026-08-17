@@ -30,3 +30,5 @@ different product, don't paste into it).
 | `20260818_00_role_guard_fixes.sql` | NULL-role bypass in every plpgsql owner/manager guard; ambiguous `org_id` in `kick_user()` | Independent of 01/02, run any time. This is the un-applied SQL half of commit `b8b16a8` |
 | `20260818_01_stocktake_audit.sql` | Enriched delete logging, `delete_stocktake_items()`, owner/manager guard on `clear_stocktake_items()`, `qty_reduced` trigger | Run **before** deploying the new `app.html` |
 | `20260818_02_revoke_item_delete.sql` | Revokes client DELETE on `stocktake_items` | Run **only after** the new `app.html` is live — it removes the path the old page uses |
+| `20260818_03_seat_minimum_term.sql` | `organisations.seats_increased_at` + `enforce_seat_minimum_term()` trigger | Run **before** deploying `set-seat-count` — the function selects the new column |
+| `20260818_04_seat_denial_notification.sql` | `organisations.seats_full_notified_at` + `record_seat_denial()` | Run **before** deploying `notify-seat-denied` |

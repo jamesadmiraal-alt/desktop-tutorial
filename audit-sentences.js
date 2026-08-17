@@ -34,6 +34,21 @@ window.GANTRY_AUDIT = (function () {
     'membership.password_reset_by_owner': function (r) { return r.actor_label + ' reset ' + r.target_label + '’s password'; },
     'membership.force_logged_out_by_owner': function (r) { return r.actor_label + ' logged out ' + r.target_label; },
     'membership.left_voluntarily': function (r) { return r.target_label + ' left the organisation (account deleted)'; },
+    // Written by record_seat_denial() on EVERY denial, not just the ones that
+    // triggered an email — the owner reviewing this later should be able to see
+    // how often people were actually locked out, which the throttled email
+    // can't tell them.
+    'seat.denied': function (r) {
+      var a = r.after || {};
+      if (typeof a.seats_purchased !== 'number') {
+        return r.target_label + ' was blocked from logging in — no seats free';
+      }
+      if (a.seats_purchased === 0) {
+        return r.target_label + ' was blocked from logging in — no seats purchased';
+      }
+      return r.target_label + ' was blocked from logging in — all '
+        + plural(a.seats_purchased, 'seat') + ' in use';
+    },
 
     // The stocktake_* sentences surface counts wherever they exist, because the
     // count is what makes an entry usable in a dispute: "deleted Friday Bar

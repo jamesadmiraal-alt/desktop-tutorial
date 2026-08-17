@@ -169,6 +169,14 @@ create table public.organisations (
   -- NULL means "no commitment on record" — a brand-new org, or one whose seats
   -- were set by hand before this column existed. Decreases are free in that case.
   seats_increased_at timestamptz,
+  -- When the owner was last emailed that someone hit the seat limit. Throttles
+  -- that email to once per window — a venue at its limit denies people
+  -- repeatedly (every staff member arriving for the same shift), and the owner
+  -- needs telling once, not once per attempt. Read and written inside
+  -- record_seat_denial() so the decision and the stamp are atomic; two devices
+  -- denied in the same second must not both trigger a send. The seat.denied
+  -- audit rows are deliberately NOT throttled.
+  seats_full_notified_at timestamptz,
   -- How often (seconds) a logged-in client checks in via heartbeat() —
   -- governs both how quickly a stale/crashed session frees its seat and
   -- how quickly an owner's kick_user() call actually takes effect on the
@@ -1428,6 +1436,103 @@ begin
 end $$;
 
 grant execute on function public.claim_seat() to authenticated;
+
+-- Records that someone was turned away by the seat limit, and decides whether
+-- the owner should be emailed about it. Called by the notify-seat-denied Edge
+-- Function immediately after claim_seat() returns false.
+--
+-- Why this lives in Postgres rather than in the Edge Function:
+--   * It has to RE-DERIVE the denial rather than trust the caller. Otherwise any
+--     authenticated staff member could hit the notify endpoint in a loop and mail
+--     their owner as often as they liked. The verification has to see the same
+--     seat pool and the same staleness cutoff claim_seat() uses, and the only way
+--     to guarantee that is to compute it right here beside it.
+--   * A staff member cannot read active_sessions at all (owner/manager RLS), so
+--     the count has to come from a security-definer function regardless.
+--   * The throttle stamp has to be read and written atomically with the decision,
+--     or two devices denied in the same second both send an email.
+--
+-- Returns jsonb rather than a scalar because the caller needs several facts and
+-- a second round trip for each would reintroduce the race this avoids.
+-- `notify` is true at most once per throttle window; `denied` false means the
+-- caller was NOT actually blocked (a seat freed up between claim_seat and this
+-- call, or they're the owner) and nothing was recorded.
+create or replace function public.record_seat_denial()
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_org_id uuid := public.my_org_id();
+  v_role text := public.my_role();
+  v_plan text;
+  v_seats integer;
+  v_interval_secs integer;
+  v_occupied integer;
+  v_org_name text;
+  v_notified_at timestamptz;
+  v_owner_id uuid;
+  v_actor_label text;
+  v_should_notify boolean := false;
+  -- One email per org per 30 minutes. A venue hitting the limit does so
+  -- repeatedly — every staff member arriving for the same shift — and the owner
+  -- needs to know once, not eleven times. The seat.denied audit rows are NOT
+  -- throttled, so the full picture is still recoverable from the log.
+  v_throttle interval := interval '30 minutes';
+begin
+  if v_org_id is null then
+    return jsonb_build_object('denied', false, 'notify', false, 'reason', 'no organisation');
+  end if;
+
+  select plan_tier, concurrent_seats, heartbeat_interval_seconds, name, seats_full_notified_at
+    into v_plan, v_seats, v_interval_secs, v_org_name, v_notified_at
+    from public.organisations where id = v_org_id;
+
+  -- The owner is exempt from the pool and single-venue has no pool, so neither
+  -- can genuinely be denied — mirrors claim_seat()'s first branch exactly.
+  if v_plan != 'multi' or v_role = 'owner' then
+    return jsonb_build_object('denied', false, 'notify', false, 'reason', 'not subject to the seat limit');
+  end if;
+
+  -- Holding a seat already means they weren't denied.
+  if exists (select 1 from public.active_sessions where user_id = auth.uid()) then
+    return jsonb_build_object('denied', false, 'notify', false, 'reason', 'caller holds a seat');
+  end if;
+
+  select count(*) into v_occupied from public.active_sessions
+   where org_id = v_org_id
+     and last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5);
+
+  if v_occupied < v_seats then
+    return jsonb_build_object('denied', false, 'notify', false, 'reason', 'a seat is available');
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into v_actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = auth.uid();
+
+  -- Unthrottled: every denial is logged even when no email goes out, so an owner
+  -- reviewing the activity log later can see how often people were locked out.
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, after)
+  values (v_org_id, v_org_name, auth.uid(), v_actor_label, 'seat.denied', 'membership', auth.uid(), v_actor_label,
+          jsonb_build_object('seats_purchased', v_seats, 'seats_occupied', v_occupied));
+
+  if v_notified_at is null or v_notified_at < now() - v_throttle then
+    v_should_notify := true;
+    update public.organisations set seats_full_notified_at = now() where id = v_org_id;
+  end if;
+
+  select m.user_id into v_owner_id
+    from public.memberships m where m.org_id = v_org_id and m.role = 'owner' limit 1;
+
+  return jsonb_build_object(
+    'denied', true,
+    'notify', v_should_notify,
+    'org_name', v_org_name,
+    'owner_user_id', v_owner_id,
+    'blocked_person', v_actor_label,
+    'seats_purchased', v_seats,
+    'seats_occupied', v_occupied
+  );
+end $$;
+
+grant execute on function public.record_seat_denial() to authenticated;
 
 -- The repeating call (every heartbeat_interval_seconds while the app is
 -- open, multi-tier only). Deliberately does NOT insert a row if one

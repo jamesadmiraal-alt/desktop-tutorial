@@ -1062,6 +1062,25 @@
     showView('auth');
   }
 
+  // Lets the owner know somebody was locked out, since claim_seat() returning
+  // false is otherwise invisible to the one person who can fix it — the blocked
+  // staff member's only other option is to phone someone.
+  //
+  // Fire-and-forget on purpose. The person is already looking at the seats-full
+  // screen; whether the email went out changes nothing they can act on, so a
+  // failure must never produce a second error message on top of the one they're
+  // already reading. Everything that matters (verifying the denial is real,
+  // writing the audit row, throttling to one email per 30 minutes) happens
+  // server-side in record_seat_denial() — this call carries no arguments at all,
+  // precisely so a staff member can't influence what gets sent or to whom.
+  function notifySeatDenied() {
+    sb.functions.invoke('notify-seat-denied').then(function (res) {
+      if (res.error) console.error('notify-seat-denied failed', res.error);
+    }, function (err) {
+      console.error('notify-seat-denied threw', err);
+    });
+  }
+
   // Calls create_organisation()/join_organisation() (see schema.sql) using
   // whatever's currently in the org-create/join fields. Deliberately a
   // separate step from signUp() (see schema.sql's own comment on this) so a
@@ -1225,6 +1244,13 @@
         sb.rpc('claim_seat').then(function (res) {
           if (res.error || res.data === false) {
             showSeatsFullPrompt();
+            // Only on a genuine `false`, never on an RPC error: an error means we
+            // don't actually know whether the pool is full, and emailing the
+            // owner "someone was blocked" on the strength of a network blip
+            // would train them to ignore the alert. The function verifies the
+            // denial server-side anyway and would refuse — this just avoids the
+            // pointless round trip.
+            if (res.data === false) notifySeatDenied();
             return;
           }
           startSeatHeartbeat();
