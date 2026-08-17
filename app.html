@@ -526,9 +526,21 @@
   </div>
   <div class="acct-card">
     <h3>Team</h3>
+    <!-- Keep this in step with the identical explanation in admin.html's Team
+         card. Both are derived from the RLS policies and Edge Function role
+         checks — change a permission, change both, or it becomes a claim the
+         customer can catch you out on. -->
+    <p class="plan-desc" style="margin-bottom:10px">
+      <b>Staff</b> scan and count: they create stocktakes, scan into them, and can remove individual
+      scans to fix a mis-scan. They can't delete a whole stocktake or clear all its items.<br>
+      <b>Managers</b> do all of that, plus manage the venue and its locations, delete stocktakes,
+      clear items, and see the activity log below.<br>
+      <b>Owner</b> — you — additionally controls the team itself (adding people, changing roles,
+      removing them) and everything billing: the plan, region and subscription. There's one owner.
+    </p>
     <div id="team-roster-list"></div>
   </div>
-  <div class="acct-card">
+  <div class="acct-card" id="team-add-member-card">
     <h3>Add team member</h3>
     <p class="plan-desc" style="margin-bottom:10px">Creates their login directly — no join code needed. They can change this password later from this app.</p>
     <div id="team-add-member-form">
@@ -536,10 +548,10 @@
       <input id="team-member-name" type="text" placeholder="Full name">
       <label for="team-member-email">Email</label>
       <input id="team-member-email" type="email" autocapitalize="none" inputmode="email" placeholder="name@example.com">
-      <label for="team-member-role">Admin access</label>
+      <label for="team-member-role">Role</label>
       <select id="team-member-role">
-        <option value="staff">No access (Staff)</option>
-        <option value="manager">Manager (full access)</option>
+        <option value="staff">Staff — scan and count only</option>
+        <option value="manager">Manager — also manages the venue and locations</option>
       </select>
       <button id="team-add-member-btn" class="primary" style="margin-top:14px;width:100%">Add team member</button>
     </div>
@@ -1489,6 +1501,11 @@
       });
   }
   function loadTeamView() {
+    // create-team-member 403s a non-owner, so a manager was previously shown a
+    // full form that could only ever fail on submit. Hidden rather than disabled
+    // — a greyed form still implies the capability exists.
+    $('team-add-member-card').style.display =
+      (currentOrg && currentOrg.role === 'owner') ? '' : 'none';
     loadTeamAuditLog();
     Promise.all([
       sb.from('venues').select('id,name,locations(id,name)').limit(1).maybeSingle(),
@@ -1625,8 +1642,11 @@
         roleSelect.appendChild(opt);
       });
       // Can't change your own role here — avoids a self-demotion accidentally
-      // leaving the org without an owner able to fix it back.
-      roleSelect.disabled = isSelf;
+      // leaving the org without an owner able to fix it back. Managers can't
+      // change anyone's: memberships UPDATE is owner-only RLS, so for them this
+      // only ever produced an error toast. Disabled rather than hidden because
+      // the select doubles as the role display for the row.
+      roleSelect.disabled = isSelf || currentOrg.role !== 'owner';
       roleSelect.onchange = function () {
         sb.from('memberships').update({ role: roleSelect.value })
           .eq('org_id', currentOrg.id).eq('user_id', m.user_id).then(function (res) {
@@ -1636,14 +1656,21 @@
           });
       };
 
+      // Both owner-only at the server (update-team-member 403s a manager;
+      // memberships DELETE is owner-only RLS), so managers get no buttons rather
+      // than two that always fail.
+      var ownerOnly = currentOrg.role === 'owner';
+
       var editBtn = document.createElement('button');
       editBtn.textContent = '✎';
+      editBtn.style.display = ownerOnly ? '' : 'none';
       editBtn.disabled = isSelf;
       editBtn.title = isSelf ? 'Edit your own name under 👤 Account' : 'Edit name or reset password';
       editBtn.onclick = function () { openEditTeamMember(m); };
 
       var removeBtn = document.createElement('button');
       removeBtn.textContent = '✕';
+      removeBtn.style.display = ownerOnly ? '' : 'none';
       removeBtn.disabled = isSelf;
       removeBtn.title = isSelf ? "Can't remove yourself here" : 'Remove from organisation';
       removeBtn.onclick = function () {

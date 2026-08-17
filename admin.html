@@ -228,10 +228,22 @@
 
   <div class="card">
     <h2>Team</h2>
+    <!-- The one place the three roles are actually explained. Everything here is
+         derived from the RLS policies and Edge Function checks — if you change a
+         permission, change this too or it becomes a lie the customer can see. -->
+    <p class="hint">
+      <b>Staff</b> scan and count: they create stocktakes, scan into them, and can remove individual
+      scans to fix a mis-scan. They can't delete a whole stocktake or clear all its items.<br>
+      <b>Managers</b> do all of that, plus manage venues and locations, delete stocktakes, clear items,
+      and see this console — including who's logged in and the activity log.<br>
+      <b>Owner</b> — you — additionally controls the team itself (adding people, changing roles,
+      removing them) and everything billing: the plan, seats, region and codes. There's one owner.<br>
+      <span style="color:var(--text-dim)">Only the owner is free of a concurrent seat; managers and staff each use one while logged in.</span>
+    </p>
     <div id="roster-list"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="add-member-card">
     <h2>Add team member</h2>
     <p class="hint">Creates their login directly — no join code needed. They can change this password later from the app.</p>
     <div id="add-member-form">
@@ -239,10 +251,10 @@
       <input id="new-member-name" type="text" placeholder="Full name">
       <label for="new-member-email">Email</label>
       <input id="new-member-email" type="email" autocapitalize="none" inputmode="email" placeholder="name@example.com">
-      <label for="new-member-role">Admin portal access</label>
+      <label for="new-member-role">Role</label>
       <select id="new-member-role">
-        <option value="staff">No access (Staff)</option>
-        <option value="manager">Manager (full admin access)</option>
+        <option value="staff">Staff — scan and count only</option>
+        <option value="manager">Manager — also manages venues and sees this console</option>
       </select>
       <button id="add-member-btn" class="primary" style="margin-top:14px;width:100%">Add team member</button>
     </div>
@@ -265,18 +277,25 @@
 
   <div class="card" id="seats-card" style="display:none">
     <h2>Concurrent seats</h2>
-    <p class="hint">Venues and locations are unlimited and free on Multi-venue — what's billed is how many people can be logged in at the same moment. You're always free; each extra seat is $29/mo.</p>
-    <label for="seat-count-input">Extra seats purchased</label>
-    <div style="display:flex;gap:8px">
-      <input id="seat-count-input" type="text" inputmode="numeric" placeholder="0">
-      <button id="seat-count-save" class="primary">Update</button>
+    <!-- Owner-only controls are wrapped so a manager still gets the useful
+         read-only half of this card ("who's logged in right now", which
+         list_active_sessions permits for owner/manager) without being shown a
+         seat-count box that set-seat-count would reject with a 403. -->
+    <div id="seats-owner-controls">
+      <p class="hint">Venues and locations are unlimited and free on Multi-venue — what's billed is how many people can be logged in at the same moment. You're always free; each extra seat is $29/mo.</p>
+      <label for="seat-count-input">Extra seats purchased</label>
+      <div style="display:flex;gap:8px">
+        <input id="seat-count-input" type="text" inputmode="numeric" placeholder="0">
+        <button id="seat-count-save" class="primary">Update</button>
+      </div>
+      <label for="heartbeat-interval-input" style="margin-top:16px">Check-in frequency (seconds)</label>
+      <p class="hint" style="margin-top:2px">How often devices check in, and how quickly a forced log-out or a crashed session actually frees its seat. Lower = faster, more requests.</p>
+      <div style="display:flex;gap:8px">
+        <input id="heartbeat-interval-input" type="text" inputmode="numeric" placeholder="60">
+        <button id="heartbeat-interval-save" class="primary">Save</button>
+      </div>
     </div>
-    <label for="heartbeat-interval-input" style="margin-top:16px">Check-in frequency (seconds)</label>
-    <p class="hint" style="margin-top:2px">How often devices check in, and how quickly a forced log-out or a crashed session actually frees its seat. Lower = faster, more requests.</p>
-    <div style="display:flex;gap:8px">
-      <input id="heartbeat-interval-input" type="text" inputmode="numeric" placeholder="60">
-      <button id="heartbeat-interval-save" class="primary">Save</button>
-    </div>
+    <p class="hint" id="seats-manager-note" style="display:none">Seats and billing are managed by the organisation's owner.</p>
     <label style="margin-top:16px">Currently active</label>
     <div id="active-sessions-list"></div>
   </div>
@@ -392,6 +411,30 @@
       $(id).style.display = id === name + '-view' ? '' : 'none';
     });
     $('logout-btn').style.display = name === 'login' ? 'none' : '';
+  }
+
+  function isOwner() {
+    return !!(currentOrg && currentOrg.role === 'owner');
+  }
+
+  // This console admits owners AND managers (see checkAccessAndEnter), but a
+  // large part of it is owner-only at the server: memberships UPDATE/DELETE are
+  // owner-only RLS, organisations UPDATE is owner-only (so join-code rotation and
+  // check-in frequency too), and create-team-member / update-team-member /
+  // kick-user / set-seat-count all 403 a manager. All of it was rendered to
+  // managers anyway, so the only way to discover any of this was to click and
+  // get a red toast. Now that the Team card explains what each role can do, that
+  // mismatch would make the explanation visibly wrong — hence hiding rather than
+  // just documenting.
+  //
+  // Hidden, not disabled: a greyed-out "Add team member" form still implies the
+  // capability exists and is merely unavailable right now. It doesn't.
+  function applyRoleVisibility() {
+    var owner = isOwner();
+    $('add-member-card').style.display = owner ? '' : 'none';
+    $('rotate-join-code-btn').style.display = owner ? '' : 'none';
+    $('seats-owner-controls').style.display = owner ? '' : 'none';
+    $('seats-manager-note').style.display = owner ? 'none' : '';
   }
 
   function renderOrg() {
@@ -612,8 +655,11 @@
         roleSelect.appendChild(opt);
       });
       // Can't change your own role here — avoids a self-demotion accidentally
-      // leaving the org without an owner able to fix it back.
-      roleSelect.disabled = isSelf;
+      // leaving the org without an owner able to fix it back. Managers can't
+      // change anyone's: memberships UPDATE is owner-only RLS, so for them this
+      // was a control that always failed. Disabled rather than hidden here
+      // because the select doubles as the role *display* for the row.
+      roleSelect.disabled = isSelf || !isOwner();
       roleSelect.onchange = function () {
         sb.from('memberships').update({ role: roleSelect.value })
           .eq('org_id', currentOrg.id).eq('user_id', m.user_id).then(function (res) {
@@ -623,14 +669,20 @@
           });
       };
 
+      // Editing someone else and removing them are both owner-only at the
+      // server (update-team-member 403s a manager; memberships DELETE is
+      // owner-only RLS), so managers get no buttons at all rather than two that
+      // always fail.
       var editBtn = document.createElement('button');
       editBtn.textContent = '✎';
+      editBtn.style.display = isOwner() ? '' : 'none';
       editBtn.disabled = isSelf;
       editBtn.title = isSelf ? 'Edit your own name in the app under 👤 Account' : 'Edit name or reset password';
       editBtn.onclick = function () { openEditMember(m); };
 
       var removeBtn = document.createElement('button');
       removeBtn.textContent = '✕';
+      removeBtn.style.display = isOwner() ? '' : 'none';
       removeBtn.disabled = isSelf;
       removeBtn.title = isSelf ? "Can't remove yourself here" : 'Remove from organisation';
       removeBtn.onclick = function () {
@@ -772,6 +824,10 @@
 
       var kickBtn = document.createElement('button');
       kickBtn.textContent = 'Log out';
+      // Owner-only (kick-user 403s a manager). Managers still see WHO is logged
+      // in — list_active_sessions permits owner/manager — they just can't
+      // forcibly free someone's seat, since that's a billing-adjacent action.
+      kickBtn.style.display = isOwner() ? '' : 'none';
       kickBtn.onclick = function () {
         kickBtn.disabled = true;
         // kick-user (Edge Function), not the plain kick_user() RPC — it
@@ -853,10 +909,12 @@
         }
         currentOrg = {
           id: org.id, name: org.name, planTier: org.plan_tier, joinCode: org.join_code,
+          role: role,
           rosterLastViewedAt: org.roster_last_viewed_at,
           concurrentSeats: org.concurrent_seats, heartbeatIntervalSeconds: org.heartbeat_interval_seconds
         };
         showView('admin');
+        applyRoleVisibility();
         renderOrg();
         loadVenues();
         loadRoster();
