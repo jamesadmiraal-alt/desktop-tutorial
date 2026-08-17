@@ -284,10 +284,13 @@
     <div id="seats-owner-controls">
       <p class="hint">Venues and locations are unlimited and free on Multi-venue — what's billed is how many people can be logged in at the same moment. You're always free; each extra seat is $29/mo.</p>
       <label for="seat-count-input">Extra seats purchased</label>
+      <p class="hint" style="margin-top:2px">Added seats are billed for a minimum of one month, so you can't reduce below a
+        level you've just bought up to until that month is up. Adding more restarts the month.</p>
       <div style="display:flex;gap:8px">
         <input id="seat-count-input" type="text" inputmode="numeric" placeholder="0">
         <button id="seat-count-save" class="primary">Update</button>
       </div>
+      <p class="hint" id="seat-term-hint" style="display:none;margin-top:6px;color:var(--warning)"></p>
       <label for="heartbeat-interval-input" style="margin-top:16px">Check-in frequency (seconds)</label>
       <p class="hint" style="margin-top:2px">How often devices check in, and how quickly a forced log-out or a crashed session actually frees its seat. Lower = faster, more requests.</p>
       <div style="display:flex;gap:8px">
@@ -784,14 +787,56 @@
   }
 
   // ---- Concurrent seats (multi-venue only) ----
+  // Client-side mirror of enforce_seat_minimum_term() (schema.sql), the same way
+  // app.html's countryChangeEligible() mirrors enforce_country_cooldown: show the
+  // real next-eligible date rather than making a request the trigger will reject.
+  // The trigger is the boundary; this is the courtesy.
+  var SEAT_MIN_TERM_DAYS = 30;
+  function nextSeatDecreaseDate() {
+    var since = currentOrg && currentOrg.seatsIncreasedAt ? new Date(currentOrg.seatsIncreasedAt) : null;
+    if (!since) return null;
+    return new Date(since.getTime() + SEAT_MIN_TERM_DAYS * 24 * 60 * 60 * 1000);
+  }
+  function seatDecreaseEligible() {
+    var next = nextSeatDecreaseDate();
+    return !next || Date.now() >= next.getTime();
+  }
+  function renderSeatTermHint() {
+    var hint = $('seat-term-hint');
+    if (!currentOrg || seatDecreaseEligible()) { hint.style.display = 'none'; return; }
+    hint.style.display = '';
+    hint.textContent = 'Minimum term: you can reduce below ' + currentOrg.concurrentSeats
+      + ' seat' + (currentOrg.concurrentSeats === 1 ? '' : 's')
+      + ' from ' + nextSeatDecreaseDate().toLocaleDateString() + '.';
+  }
+
   $('seat-count-save').onclick = function () {
     var seats = parseInt($('seat-count-input').value, 10);
     if (!Number.isInteger(seats) || seats < 0) { toast('Enter a whole number of seats (0 or more)', '#b91c1c'); return; }
+    if (seats < currentOrg.concurrentSeats && !seatDecreaseEligible()) {
+      toast('Added seats are billed for a month — you can reduce below ' + currentOrg.concurrentSeats
+            + ' on ' + nextSeatDecreaseDate().toLocaleDateString(), '#b91c1c');
+      $('seat-count-input').value = currentOrg.concurrentSeats;
+      return;
+    }
     $('seat-count-save').disabled = true;
     sb.functions.invoke('set-seat-count', { body: { seats: seats } }).then(function (res) {
       $('seat-count-save').disabled = false;
-      if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not update seat count'); return; }
+      if (res.error || (res.data && res.data.error)) {
+        failFn(res, 'Could not update seat count');
+        // Put the field back to the stored value so it can't sit there showing a
+        // number that was never actually purchased.
+        $('seat-count-input').value = currentOrg.concurrentSeats;
+        return;
+      }
       currentOrg.concurrentSeats = seats;
+      // Take the stamp the trigger actually wrote rather than guessing it
+      // client-side — the trigger only re-stamps on an increase, so assuming
+      // now() here would wrongly extend the term after a decrease.
+      if (res.data && res.data.seatsIncreasedAt !== undefined) {
+        currentOrg.seatsIncreasedAt = res.data.seatsIncreasedAt;
+      }
+      renderSeatTermHint();
       toast('Seat count updated');
     });
   };
@@ -877,7 +922,7 @@
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
     sb.from('memberships')
-      .select('role, organisations(id, name, plan_tier, join_code, roster_last_viewed_at, concurrent_seats, heartbeat_interval_seconds)')
+      .select('role, organisations(id, name, plan_tier, join_code, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds)')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(function (res) {
@@ -911,7 +956,8 @@
           id: org.id, name: org.name, planTier: org.plan_tier, joinCode: org.join_code,
           role: role,
           rosterLastViewedAt: org.roster_last_viewed_at,
-          concurrentSeats: org.concurrent_seats, heartbeatIntervalSeconds: org.heartbeat_interval_seconds
+          concurrentSeats: org.concurrent_seats, seatsIncreasedAt: org.seats_increased_at || null,
+          heartbeatIntervalSeconds: org.heartbeat_interval_seconds
         };
         showView('admin');
         applyRoleVisibility();
@@ -926,6 +972,7 @@
           $('seats-card').style.display = '';
           $('seat-count-input').value = currentOrg.concurrentSeats;
           $('heartbeat-interval-input').value = currentOrg.heartbeatIntervalSeconds;
+          renderSeatTermHint();
           loadActiveSessions();
         }
       });

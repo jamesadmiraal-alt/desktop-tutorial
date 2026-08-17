@@ -80,6 +80,19 @@ window.GANTRY_AUDIT = (function () {
     'organisation.export_format_changed': function (r) { return r.actor_label + ' changed the export format from ' + r.before.export_format + ' to ' + r.after.export_format; },
     'organisation.country_changed': function (r) { return r.actor_label + ' changed the billing country from ' + r.before.country + ' to ' + r.after.country; },
     'organisation.join_code_changed': function (r) { return r.actor_label + ' rotated the join code'; },
+    // Written explicitly by the set-seat-count Edge Function, not by a trigger:
+    // it writes with the service role, so auth.uid() is null and every audit
+    // trigger no-ops. Seat changes cost real money, so they need to be in here.
+    'organisation.seats_changed': function (r) {
+      var b = r.before && r.before.concurrent_seats;
+      var a = r.after && r.after.concurrent_seats;
+      if (typeof a !== 'number' || typeof b !== 'number') {
+        return r.actor_label + ' changed the concurrent seat count';
+      }
+      var d = Math.abs(a - b);
+      return r.actor_label + (a > b ? ' added ' : ' removed ') + plural(d, 'concurrent seat')
+        + ' (' + b + ' → ' + a + ')';
+    },
     'organisation.heartbeat_interval_changed': function (r) { return r.actor_label + ' changed the check-in frequency from ' + r.before.heartbeat_interval_seconds + 's to ' + r.after.heartbeat_interval_seconds + 's'; },
     'organisation.dissolved': function (r) { return r.actor_label + ' deleted their account, dissolving the organisation'; }
   };

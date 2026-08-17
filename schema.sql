@@ -156,6 +156,19 @@ create table public.organisations (
   -- Function, service role, after the matching Stripe PATCH succeeds)
   -- may write it.
   concurrent_seats integer not null default 0,
+  -- When the current seat level was last INCREASED. Structurally the same idea
+  -- as country_changed_at above, for the same kind of reason: a purchased seat
+  -- is billed for a minimum of one month, so an owner must not be able to add
+  -- seats for a busy weekend and drop them on the Monday. Stamped by
+  -- enforce_seat_minimum_term() below, never by a client — and unlike
+  -- country_changed_at it isn't even reachable from one, since concurrent_seats
+  -- itself is outside the column GRANT and only set-seat-count (service role)
+  -- writes it. Triggers still fire for service-role writes even though RLS
+  -- doesn't apply, and that asymmetry is the whole enforcement mechanism.
+  --
+  -- NULL means "no commitment on record" — a brand-new org, or one whose seats
+  -- were set by hand before this column existed. Decreases are free in that case.
+  seats_increased_at timestamptz,
   -- How often (seconds) a logged-in client checks in via heartbeat() —
   -- governs both how quickly a stale/crashed session frees its seat and
   -- how quickly an owner's kick_user() call actually takes effect on the
@@ -361,6 +374,73 @@ end $$;
 create trigger on_org_country_change
   before update on public.organisations
   for each row execute function public.enforce_country_cooldown();
+
+-- Enforces the one-month minimum term on purchased concurrent seats, and it has
+-- to live in Postgres for a reason RLS can't help with: the only writer of
+-- concurrent_seats is set-seat-count using the SERVICE ROLE, which bypasses RLS
+-- entirely. Triggers still fire for service-role writes, so this is the only
+-- layer that can actually hold the line — a check in the Edge Function alone
+-- would be bypassable by anything else holding that key.
+--
+-- One column is enough because the window restarts on every increase: after any
+-- increase no decrease is permitted while the window is open, so the CURRENT
+-- level is always exactly the committed floor. A separate "floor" column would
+-- only be needed to allow partial decreases (8 down to 5), which would need
+-- per-seat term accounting that Stripe's proration would also have to match.
+--
+-- Fires alongside enforce_country_cooldown on the same table and event; they
+-- touch disjoint columns, so relative order is irrelevant.
+create or replace function public.enforce_seat_minimum_term()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  eligible_at timestamptz := old.seats_increased_at + interval '30 days';
+begin
+  -- Leaving the multi-venue tier ends the commitment outright: the subscription
+  -- item the seats were billed on is cancelled or swapped for the single-venue
+  -- price, so there's nothing left to hold them to and Stripe has already
+  -- settled the current period. Zeroing here also closes a pre-existing leak —
+  -- stripe-webhook only ever PATCHes plan_tier, so a cancelled org previously
+  -- kept concurrent_seats = N, and a later re-subscription billed Stripe
+  -- quantity 1 while the database went on granting N seats.
+  if old.plan_tier = 'multi' and new.plan_tier is distinct from 'multi' then
+    new.concurrent_seats := 0;
+    new.seats_increased_at := null;
+    return new;
+  end if;
+
+  if new.concurrent_seats is distinct from old.concurrent_seats then
+    if new.concurrent_seats > old.concurrent_seats then
+      -- Re-stamp on every increase, including one inside an already-open window.
+      -- Stricter than strict per-seat accounting (5 seats committed to day 30
+      -- plus 3 more on day 10 becomes "8 until day 40"), but those extra seats
+      -- genuinely are committed to day 40, seats aren't individually identified,
+      -- and "you can't go below the level you last bought up to, for 30 days
+      -- from that purchase" is the only rule that is both explainable to an
+      -- owner and impossible to game. Matches enforce_country_cooldown's
+      -- any-change-re-stamps behaviour.
+      new.seats_increased_at := now();
+    elsif old.seats_increased_at is not null
+          and old.seats_increased_at > now() - interval '30 days' then
+      -- NULL seats_increased_at is the first-ever-increase case, and any org
+      -- whose seats predate this column: no commitment on record, decrease away.
+      --
+      -- `detail` carries the machine-readable date so set-seat-count can surface
+      -- it without parsing the prose; PostgREST returns `details` alongside
+      -- `message`.
+      raise exception
+        'Added seats are billed for a minimum of one month. You can reduce below % seat(s) from % onwards.',
+        old.concurrent_seats,
+        to_char(eligible_at::date, 'FMDD Mon YYYY')
+        using hint = 'The minimum term restarts each time seats are added.',
+              detail = 'eligible_at=' || eligible_at::text;
+    end if;
+  end if;
+  return new;
+end $$;
+
+create trigger on_org_seat_change
+  before update on public.organisations
+  for each row execute function public.enforce_seat_minimum_term();
 
 -- ---- Signup RPCs ----
 -- Deliberately NOT done inside handle_new_user(): if org-creation or a bad
