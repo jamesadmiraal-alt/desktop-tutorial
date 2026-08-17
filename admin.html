@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -21,6 +21,7 @@
 </script>
 <script src="supabase.min.js"></script>
 <script src="config.js"></script>
+<script src="audit-sentences.js"></script>
 <!-- Design-system tokens: colours, type, spacing, radii, motion -->
 <link rel="stylesheet" href="styles.css">
 <style>
@@ -98,7 +99,10 @@
   .audit-row:last-child { border-bottom: none; }
   .audit-row .msg { font-size: 0.88rem; color: var(--text); }
   .audit-row .when { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
-  #audit-log-list:empty::after { content: 'No activity yet.'; color: var(--text-dim); font-size: 0.85rem; }
+  /* The shared renderer inserts a real .audit-empty node rather than relying
+     on :empty::after, so the same empty state works in app.html's Team view
+     where the surrounding CSS differs. */
+  .audit-empty { color: var(--text-dim); font-size: 0.85rem; }
 
   .session-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .session-row:last-child { border-bottom: none; }
@@ -796,56 +800,18 @@
   }
 
   // ---- Activity log ----
-  // One sentence per row, built from `action` — not a generic diff viewer.
-  // Falls back to a plain "<actor> <action>" string for anything not listed
-  // here, so the list never silently drops a row if the action set grows.
-  var AUDIT_SENTENCES = {
-    'venue.created': function (r) { return r.actor_label + ' added venue "' + r.target_label + '"'; },
-    'venue.renamed': function (r) { return r.actor_label + ' renamed venue "' + r.before.name + '" to "' + r.after.name + '"'; },
-    'venue.removed': function (r) { return r.actor_label + ' removed venue "' + r.target_label + '"'; },
-    'location.created': function (r) { return r.actor_label + ' added location "' + r.target_label + '"'; },
-    'location.renamed': function (r) { return r.actor_label + ' renamed location "' + r.before.name + '" to "' + r.after.name + '"'; },
-    'location.moved': function (r) { return r.actor_label + ' moved location "' + r.target_label + '" to a different venue'; },
-    'location.removed': function (r) { return r.actor_label + ' removed location "' + r.target_label + '"'; },
-    'membership.role_changed': function (r) { return r.actor_label + ' changed ' + r.target_label + '’s role from ' + r.before.role + ' to ' + r.after.role; },
-    'membership.removed': function (r) { return r.actor_label + ' removed ' + r.target_label + ' from the organisation'; },
-    'membership.added_by_owner': function (r) { return r.actor_label + ' added ' + r.target_label + ' to the team as ' + (r.after.role === 'manager' ? 'Manager' : 'Staff'); },
-    'membership.updated_by_owner': function (r) { return r.actor_label + ' renamed ' + (r.before.full_name || 'a team member') + ' to "' + r.after.full_name + '"'; },
-    'membership.password_reset_by_owner': function (r) { return r.actor_label + ' reset ' + r.target_label + '’s password'; },
-    'membership.force_logged_out_by_owner': function (r) { return r.actor_label + ' logged out ' + r.target_label; },
-    'membership.left_voluntarily': function (r) { return r.target_label + ' left the organisation (account deleted)'; },
-    'stocktake.deleted': function (r) { return r.actor_label + ' deleted stocktake "' + r.target_label + '"'; },
-    'stocktake_items.cleared': function (r) { return r.actor_label + ' cleared all items from "' + r.target_label + '"'; },
-    'organisation.name_changed': function (r) { return r.actor_label + ' renamed the organisation from "' + r.before.name + '" to "' + r.after.name + '"'; },
-    'organisation.logo_changed': function (r) { return r.actor_label + ' changed the organisation logo'; },
-    'organisation.export_format_changed': function (r) { return r.actor_label + ' changed the export format from ' + r.before.export_format + ' to ' + r.after.export_format; },
-    'organisation.country_changed': function (r) { return r.actor_label + ' changed the billing country from ' + r.before.country + ' to ' + r.after.country; },
-    'organisation.join_code_changed': function (r) { return r.actor_label + ' rotated the join code'; },
-    'organisation.heartbeat_interval_changed': function (r) { return r.actor_label + ' changed the check-in frequency from ' + r.before.heartbeat_interval_seconds + 's to ' + r.after.heartbeat_interval_seconds + 's'; },
-    'organisation.dissolved': function (r) { return r.actor_label + ' deleted their account, dissolving the organisation'; }
-  };
-
+  // Sentence map and row rendering live in audit-sentences.js, shared with
+  // app.html's Team view so the two surfaces can't drift apart.
   function renderAuditLog(rows) {
-    var list = $('audit-log-list');
-    list.innerHTML = '';
-    rows.forEach(function (r) {
-      var row = document.createElement('div');
-      row.className = 'audit-row';
-      var msg = document.createElement('div');
-      msg.className = 'msg';
-      var describe = AUDIT_SENTENCES[r.action];
-      msg.textContent = describe ? describe(r) : (r.actor_label + ' ' + r.action);
-      var when = document.createElement('div');
-      when.className = 'when';
-      when.textContent = new Date(r.created_at).toLocaleString();
-      row.appendChild(msg); row.appendChild(when);
-      list.appendChild(row);
-    });
+    GANTRY_AUDIT.render($('audit-log-list'), rows);
   }
 
   function loadAuditLog() {
+    // 100, not 30: per-item removals now write a row each, so a single busy
+    // stocktake could previously have pushed a whole day's team and venue
+    // changes off the end of the list.
     sb.from('audit_log').select('*').eq('org_id', currentOrg.id)
-      .order('created_at', { ascending: false }).limit(30).then(function (res) {
+      .order('created_at', { ascending: false }).limit(100).then(function (res) {
         if (res.error) { fail(res.error, 'Could not load activity log'); return; }
         renderAuditLog(res.data || []);
       });

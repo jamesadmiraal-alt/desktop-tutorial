@@ -12,6 +12,7 @@ const outDir = path.join(root, 'native-www');
 
 const copies = [
   ['config.js', 'config.js'],
+  ['audit-sentences.js', 'audit-sentences.js'],
   ['supabase.min.js', 'supabase.min.js'],
   ['barcode-detector.iife.js', 'barcode-detector.iife.js'],
   ['zxing_reader.wasm', 'zxing_reader.wasm'],

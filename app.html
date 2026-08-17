@@ -24,6 +24,7 @@
 <script src="barcode-detector.iife.js"></script>
 <script src="supabase.min.js"></script>
 <script src="config.js"></script>
+<script src="audit-sentences.js"></script>
 <!-- Capacitor runtime, vendored (see NATIVE-SETUP.md). No-ops harmlessly on
      the plain web deploy: capacitorExports.Capacitor.isNativePlatform() is
      false outside a native shell, and all native-only code below is guarded
@@ -257,6 +258,14 @@
   .team-loc-row input { flex: 1; }
   .team-loc-row button { flex: none; padding: 8px 12px; background: transparent; color: var(--danger); }
   #team-locations-list:empty::after { content: 'No locations yet.'; color: var(--text-dim); font-size: 0.85rem; }
+
+  /* Activity log — same class names as admin.html so audit-sentences.js can
+     render into either surface unchanged. */
+  .audit-row { padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .audit-row:last-child { border-bottom: none; }
+  .audit-row .msg { font-size: 0.88rem; color: var(--text); }
+  .audit-row .when { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
+  .audit-empty { color: var(--text-dim); font-size: 0.85rem; }
 
   #toast {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
@@ -549,6 +558,17 @@
         <button id="team-add-again-btn" class="flex">Add another</button>
       </div>
     </div>
+  </div>
+  <!-- Activity log. Previously this existed only in admin.html, which is gated
+       to the multi-venue tier — so single-venue operators, who are the most
+       likely to end up arguing about a deleted stocktake, had no way to see who
+       deleted what. Read-only here: audit_log has no client write policy at
+       all, and RLS restricts SELECT to owners and managers of the same org. -->
+  <div class="acct-card">
+    <h3>Activity</h3>
+    <p class="plan-desc" style="margin-bottom:10px">Who deleted or changed what, most recent first. Stocktake deletions,
+      cleared items and removed scans are all recorded here and can't be edited or removed by anyone, including you.</p>
+    <div id="team-audit-list"></div>
   </div>
 </div>
 
@@ -1454,7 +1474,22 @@
     showView('team');
     loadTeamView();
   }
+  // Read-only, owner/manager-only by RLS. Kept out of the Promise.all below so
+  // a failure here can never stop the venue and roster from rendering — the log
+  // is the least important thing on this screen to get right, and this view is
+  // the only place a single-venue operator can manage their team.
+  function loadTeamAuditLog() {
+    sb.from('audit_log').select('*').eq('org_id', currentOrg.id)
+      .order('created_at', { ascending: false }).limit(100).then(function (res) {
+        if (res.error) {
+          GANTRY_AUDIT.render($('team-audit-list'), [], 'Activity log unavailable.');
+          return;
+        }
+        GANTRY_AUDIT.render($('team-audit-list'), res.data || []);
+      });
+  }
   function loadTeamView() {
+    loadTeamAuditLog();
     Promise.all([
       sb.from('venues').select('id,name,locations(id,name)').limit(1).maybeSingle(),
       sb.rpc('list_org_members')
@@ -1886,10 +1921,18 @@
     };
     var del = document.createElement('button');
     del.className = 'del'; del.textContent = '✕';
+    // Owner/manager only, matching the "owner manager delete stocktakes" policy
+    // in schema.sql. Previously rendered for staff too, who could only ever get
+    // a "Delete failed" toast out of it. The confirm() also now says the
+    // deletion is recorded — the log entry is the point, and telling people it
+    // exists is most of its deterrent value.
+    del.style.display =
+      (currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager')) ? '' : 'none';
     del.onclick = function (e) {
       e.stopPropagation();
       var n = (t.stocktake_items || []).length;
-      if (confirm('Delete stocktake "' + t.name + '" and its ' + n + ' items? Export first if you need the data.')) {
+      if (confirm('Delete stocktake "' + t.name + '" and its ' + n + ' items?\n\n'
+                  + 'Export first if you need the data. This is recorded in the activity log.')) {
         sb.from('stocktakes').delete().eq('id', t.id).then(function (res) {
           if (res.error) { fail(res.error, 'Delete failed'); return; }
           takes.splice(takes.indexOf(t), 1);
@@ -2067,7 +2110,11 @@
       del.className = 'del'; del.textContent = '✕';
       del.onclick = function () {
         if (!confirm('Remove ' + it.barcode + '?')) return;
-        sb.from('stocktake_items').delete().eq('id', it.id).then(function (res) {
+        // RPC, not a direct .delete(): DELETE on stocktake_items is revoked from
+        // `authenticated` (schema.sql), so every removal lands in the activity
+        // log with its barcode and quantity. Array-shaped because the RPC logs
+        // one row per user action — a future multi-select removal is one call.
+        sb.rpc('delete_stocktake_items', { p_item_ids: [it.id] }).then(function (res) {
           if (res.error) { fail(res.error, 'Delete failed'); return; }
           items.splice(items.indexOf(it), 1);
           renderItems();
@@ -2387,6 +2434,13 @@
   function openTakeActions(t) {
     actionsTake = t;
     $('take-actions-title').textContent = t.name;
+    // Clearing every item is owner/manager only — enforced by
+    // clear_stocktake_items() (schema.sql), mirrored here so staff don't get
+    // offered a button that only produces a server error. Same
+    // check-before-asking shape as countryChangeEligible(). Staff can still
+    // remove items individually from inside the stocktake.
+    $('take-clear').style.display =
+      (currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager')) ? '' : 'none';
     $('take-actions-overlay').classList.add('open');
   }
   $('take-actions-cancel').onclick = function () { $('take-actions-overlay').classList.remove('open'); };

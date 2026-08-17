@@ -707,8 +707,9 @@ create policy "org members update stocktakes" on public.stocktakes
 create policy "owner manager delete stocktakes" on public.stocktakes
   for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
 
--- stocktake_items: any org member can read/insert/update/delete within
--- their org's stocktakes. The insert check verifies stocktake_id actually
+-- stocktake_items: any org member can read/insert/update within their org's
+-- stocktakes. DELETE is deliberately NOT granted to clients at all — see the
+-- revoke below. The insert check verifies stocktake_id actually
 -- belongs to a stocktake in the SAME org as the item's own org_id —
 -- without this, a client could satisfy `org_id = my_org_id()` while
 -- pointing stocktake_id at a different org's stocktake, writing items into
@@ -731,8 +732,27 @@ create policy "org members update items" on public.stocktake_items
   for update using (org_id = public.my_org_id())
   with check (org_id = public.my_org_id());
 
-create policy "org members delete items" on public.stocktake_items
-  for delete using (org_id = public.my_org_id());
+-- No delete policy, and DELETE revoked outright. Removing scanned items goes
+-- through delete_stocktake_items() / clear_stocktake_items() (both further
+-- down), which log what was removed before removing it. A policy alone wasn't
+-- enough: the old `"org members delete items"` policy let any org member — staff
+-- included — issue `DELETE /rest/v1/stocktake_items?stocktake_id=eq.<uuid>` and
+-- wipe an entire count with nothing written down, which is precisely the
+-- "Gantry lost our stocktake" scenario we have to be able to disprove.
+--
+-- Both halves on purpose. Dropping the policy alone leaves a table-level GRANT
+-- that a later `create policy` would silently re-enable; revoking alone leaves a
+-- policy that reads as if staff can still delete. Note Supabase's
+-- `alter default privileges ... grant all on tables to anon, authenticated`
+-- re-grants DELETE on every newly created table, so this revoke MUST live in
+-- this file — a rebuild without it reopens the hole invisibly. Same
+-- belt-and-braces shape as the `revoke update on public.profiles` above.
+--
+-- This does not affect `delete from stocktakes`: its cascade to
+-- stocktake_items runs as the table owner with RLS forced off, not as the
+-- caller, so it is unaffected by client privileges.
+drop policy if exists "org members delete items" on public.stocktake_items;
+revoke delete on public.stocktake_items from authenticated, anon;
 
 -- ==========================================================================
 -- Operator activity log — "who did what". Deliberately NOT dropped and
@@ -970,42 +990,174 @@ create trigger log_organisations_audit
 -- stocktakes: delete only. Creation is already durably attributed via
 -- created_by; the only update that happens today is an automatic
 -- status->'completed' side effect of exporting, not an operator decision.
+--
+-- BEFORE delete, not AFTER, and that is load-bearing. `on delete cascade` is
+-- implemented as an internal AFTER ROW trigger on the PARENT table, named
+-- RI_ConstraintTrigger_a_<oid>, and AFTER row triggers on the same table and
+-- event fire in strcmp(tgname) order — 'R' (0x52) sorts before 'l' (0x6C), so
+-- the cascade that deletes this stocktake's items runs BEFORE
+-- log_stocktakes_audit would. Counting items from an AFTER trigger therefore
+-- returns 0, silently and permanently. In a BEFORE DELETE trigger the parent
+-- row is still present and no AFTER queue has drained, so every item is still
+-- there to count — and that stays true however trigger names or FK OIDs shuffle
+-- later, which a rename-to-sort-first hack would not.
+--
+-- The counts are the point: "deleted stocktake Friday Bar Count" is an
+-- assertion, "deleted Friday Bar Count — 247 items, 1032 units" is evidence.
+--
+-- MUST return old: returning null from a BEFORE DELETE trigger silently
+-- cancels the delete.
+--
+-- One accepted trade-off of BEFORE: under READ COMMITTED, if the delete hits a
+-- concurrent update (plausible here — touch_stocktake() UPDATEs the parent on
+-- every scan) EvalPlanQual re-runs the row and this can fire twice, or fire for
+-- a row the re-check then skips. The failure mode is a duplicate or phantom
+-- audit row, never a missing one, which is the right direction for a trail
+-- whose job is to make destruction undeniable. A delete blocked by RLS never
+-- reaches here at all — `using` quals are scan quals.
 create or replace function public.log_stocktakes_change()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare
   actor uuid := auth.uid();
   actor_label text;
   org_label text;
+  item_count integer;
+  unit_total bigint;
 begin
   if actor is null then
     return old;
   end if;
 
+  select count(*), coalesce(sum(i.qty), 0)
+    into item_count, unit_total
+    from public.stocktake_items i
+   where i.stocktake_id = old.id;
+
   select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
     from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
   select o.name into org_label from public.organisations o where o.id = old.org_id;
 
+  -- to_jsonb(old) || ... keeps the existing `before` shape, so rows written
+  -- before this change simply lack the two new keys and admin.html's sentence
+  -- falls back (see AUDIT_SENTENCES there).
   insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
-  values (old.org_id, org_label, actor, actor_label, 'stocktake.deleted', 'stocktake', old.id, old.name, to_jsonb(old));
+  values (old.org_id, org_label, actor, actor_label, 'stocktake.deleted', 'stocktake', old.id, old.name,
+          to_jsonb(old) || jsonb_build_object('items_deleted', item_count, 'units_deleted', unit_total));
   return old;
 end $$;
 
+drop trigger if exists log_stocktakes_audit on public.stocktakes;
 create trigger log_stocktakes_audit
-  after delete on public.stocktakes
+  before delete on public.stocktakes
   for each row execute function public.log_stocktakes_change();
 
--- "Clear items" goes through this RPC instead of a stocktake_items trigger:
--- every stocktake deletion already cascades to delete all of that
--- stocktake's items, which would fire a blanket per-row trigger once per
--- scanned item on every single stocktake delete — noisy, and redundant with
--- the one clean row log_stocktakes_change() already writes for that same
--- delete. There's no cheap, reliable way for a row-level trigger to tell
--- "this delete is part of a cascade" from "this is the deliberate bulk
--- clear", so the RPC sidesteps it: one function, one summary log row, no
--- per-row trigger. security definer bypasses RLS the same way the trigger
--- functions above do, so it re-implements the org-scoping check itself —
--- without it this would be a cross-org delete callable by any authenticated
--- user who knows or guesses a stocktake UUID.
+-- ---- Deleting scanned items: both paths go through an RPC ----
+--
+-- Client DELETE on stocktake_items is REVOKED (see the revoke beside the
+-- stocktake_items policies above), so these two functions are the only ways an
+-- operator can remove scanned items, and both log. That closes the hole this
+-- product's whole dispute story depends on: previously app.html's per-item ✕
+-- issued a plain `delete from stocktake_items where id = ...`, permitted with no
+-- role check and no log entry, so a count could be emptied one item at a time
+-- and a hand-rolled `DELETE /rest/v1/stocktake_items?stocktake_id=eq.<uuid>`
+-- wiped it in one request — either way leaving nothing to point at afterwards.
+--
+-- An earlier comment here claimed a row-level trigger could not tell a cascade
+-- from a deliberate bulk clear, and that per-row logging would be too noisy.
+-- Both are wrong, and worth correcting because they shaped the old design:
+--   1. It CAN tell. `on delete cascade` is an internal AFTER ROW trigger on the
+--      PARENT, so by the time a cascaded child delete runs the parent row is
+--      already gone: `exists (select 1 from stocktakes where id =
+--      old.stocktake_id)` is false during a cascade and true during a
+--      deliberate item delete.
+--   2. The noise objection is dissolved by `for each statement` +
+--      `referencing old table`, which fires once per DELETE statement whether
+--      it removed 1 row or 5,000 (see log_item_qty_reduced below for that shape).
+-- We still prefer revoke-plus-RPC over detection: no grant means no path,
+-- rather than a heuristic whose reliability rests on OID-ordered internal
+-- trigger names.
+--
+-- Both are security definer, which bypasses RLS, so each re-implements its own
+-- org scoping — without it these would be cross-org deletes callable by any
+-- authenticated user who guesses a UUID.
+
+-- Removes specific scanned items. Array-shaped rather than single-id so one
+-- user action is one audit row: a future multi-select "remove selected" needs no
+-- second function and produces no burst of rows. app.html passes one id today.
+--
+-- Deliberately available to STAFF as well. Rescanning is inherently corrective
+-- — wrong barcode, double scan — and needing a manager for every mis-scan makes
+-- the scanner unusable, which is how you end up with staff working around the
+-- tool instead of with it. It is safe precisely because it is now attributable:
+-- the barcode and quantity are snapshotted into the log before the row goes.
+-- Bulk clear is the asymmetry (see clear_stocktake_items below).
+create or replace function public.delete_stocktake_items(p_item_ids uuid[])
+returns integer language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_ids uuid[];
+  v_take_id uuid;
+  v_take_name text;
+  v_distinct_takes integer;
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+  removed jsonb;
+  removed_count integer;
+  unit_total bigint;
+begin
+  if v_org is null then
+    raise exception 'You do not belong to an organisation.';
+  end if;
+
+  select array_agg(distinct x) into v_ids
+    from unnest(coalesce(p_item_ids, '{}'::uuid[])) as x;
+  if v_ids is null then
+    raise exception 'No items given to remove.';
+  end if;
+  if array_length(v_ids, 1) > 500 then
+    raise exception 'Too many items in one request (max 500). Use Clear items instead.';
+  end if;
+
+  -- Authorise and resolve in one pass: every id must exist, belong to the
+  -- CALLER's org, and sit in ONE stocktake so the single audit row below has an
+  -- unambiguous subject. Any mismatch is reported identically, so this can't be
+  -- used to probe which item UUIDs exist in other organisations.
+  select count(*), count(distinct i.stocktake_id), min(i.stocktake_id), coalesce(sum(i.qty), 0)
+    into removed_count, v_distinct_takes, v_take_id, unit_total
+    from public.stocktake_items i
+   where i.id = any(v_ids) and i.org_id = v_org;
+
+  if removed_count <> array_length(v_ids, 1) or v_distinct_takes <> 1 then
+    raise exception 'Those items could not all be found in one of your stocktakes.';
+  end if;
+
+  -- Snapshot barcode + qty BEFORE deleting. This is what turns the log from
+  -- "someone removed 3 items" into "someone removed 9312345678907 x14" — from
+  -- an accusation into evidence. Affordable at per-action scale; the bulk paths
+  -- keep counts only, since loadAuditLog() does select('*') and would otherwise
+  -- download the whole payload on every page load.
+  select jsonb_agg(jsonb_build_object('barcode', i.barcode, 'qty', i.qty, 'scanned_by', i.scanned_by)
+                   order by i.barcode)
+    into removed
+    from public.stocktake_items i where i.id = any(v_ids);
+
+  select s.name into v_take_name from public.stocktakes s where s.id = v_take_id;
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o where o.id = v_org;
+
+  delete from public.stocktake_items i where i.id = any(v_ids);
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
+  values (v_org, org_label, actor, actor_label, 'stocktake_items.deleted', 'stocktake', v_take_id, v_take_name,
+          jsonb_build_object('items_deleted', removed_count, 'units_deleted', unit_total, 'items', removed));
+  return removed_count;
+end $$;
+
+grant execute on function public.delete_stocktake_items(uuid[]) to authenticated;
+
+-- "Clear items" — one function, one summary log row.
 create or replace function public.clear_stocktake_items(p_stocktake_id uuid)
 returns void language plpgsql security definer set search_path = public as $$
 declare
@@ -1015,6 +1167,7 @@ declare
   take_name text;
   take_org uuid;
   cleared_count integer;
+  cleared_units bigint;
 begin
   select s.org_id, s.name into take_org, take_name
     from public.stocktakes s where s.id = p_stocktake_id;
@@ -1023,18 +1176,85 @@ begin
     raise exception 'Stocktake not found.';
   end if;
 
+  -- Owner/manager only. This reverses the note on the stocktakes delete policy
+  -- above, which said "staff can still clear its items" as though that were the
+  -- safe half of the split — it isn't. Wiping every item is not a correction,
+  -- it destroys exactly as much as deleting the stocktake outright, and it IS
+  -- the "deleted the work mid-count" scenario this trail exists to make
+  -- undeniable. Per-item removal stays open to staff; this does not.
+  -- coalesce, not `!=`: my_role() is NULL for a caller with no membership and
+  -- `NULL not in (...)` is NULL, which plpgsql treats as false, letting exactly
+  -- those callers through (same idiom as list_active_sessions above).
+  if coalesce(public.my_role(), '') not in ('owner', 'manager') then
+    raise exception 'Only owners and managers can clear a whole stocktake. Remove items individually, or ask a manager.';
+  end if;
+
   select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
     from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
   select o.name into org_label from public.organisations o where o.id = take_org;
+
+  -- Units captured before the delete; the count comes from row_count after.
+  select coalesce(sum(i.qty), 0) into cleared_units
+    from public.stocktake_items i where i.stocktake_id = p_stocktake_id;
 
   delete from public.stocktake_items where stocktake_id = p_stocktake_id;
   get diagnostics cleared_count = row_count;
 
   insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
-  values (take_org, org_label, actor, actor_label, 'stocktake_items.cleared', 'stocktake', p_stocktake_id, take_name, jsonb_build_object('items_cleared', cleared_count));
+  values (take_org, org_label, actor, actor_label, 'stocktake_items.cleared', 'stocktake', p_stocktake_id, take_name,
+          jsonb_build_object('items_cleared', cleared_count, 'units_cleared', cleared_units));
 end $$;
 
 grant execute on function public.clear_stocktake_items(uuid) to authenticated;
+
+-- Quantity edits are the other way to destroy a count without deleting
+-- anything: `update stocktake_items set qty = 1` walks a 247-unit line down to
+-- nothing, and until this trigger existed the only trigger on this table was
+-- touch_stocktake_on_items (which just bumps updated_at), so it left no trace
+-- at all. `qty >= 1` is not a defence — 247 units becoming 1 is functionally
+-- "the system lost our count".
+--
+-- Statement-level with a transition table: one audit row per UPDATE statement
+-- regardless of how many rows it touched, which is what makes logging this
+-- affordable. Only DECREASES are logged — increases are ordinary scanning, and
+-- logging them would bury the interesting rows.
+create or replace function public.log_item_qty_reduced()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := auth.uid();
+  actor_label text;
+  r record;
+begin
+  if actor is null then
+    return null;
+  end if;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+
+  for r in
+    select o.stocktake_id,
+           o.org_id,
+           count(*)                        as lines,
+           coalesce(sum(o.qty - n.qty), 0) as units_removed
+      from old_items o join new_items n on n.id = o.id
+     where n.qty < o.qty
+     group by o.stocktake_id, o.org_id
+  loop
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before)
+    select r.org_id, org.name, actor, actor_label, 'stocktake_items.qty_reduced', 'stocktake', r.stocktake_id, s.name,
+           jsonb_build_object('lines_reduced', r.lines, 'units_removed', r.units_removed)
+      from public.stocktakes s join public.organisations org on org.id = r.org_id
+     where s.id = r.stocktake_id;
+  end loop;
+  return null;
+end $$;
+
+drop trigger if exists log_item_qty_reduced_audit on public.stocktake_items;
+create trigger log_item_qty_reduced_audit
+  after update on public.stocktake_items
+  referencing old table as old_items new table as new_items
+  for each statement execute function public.log_item_qty_reduced();
 
 -- ==========================================================================
 -- Multi-venue concurrent-seat billing. Venues/locations carry no billing

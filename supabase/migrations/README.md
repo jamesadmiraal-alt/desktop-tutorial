@@ -1,0 +1,31 @@
+# Migrations
+
+`schema.sql` at the repo root is a **full rebuild** — it drops every app table and
+is guarded to refuse to run against a project that already has an organisation.
+It is the description of a finished database, not a way to change a live one.
+
+These files are how a live project actually changes. Each is additive and safe to
+run once against `vfixdchbkmqryfhirphx` (the project named **BarScan** in the
+Supabase dashboard — that is Gantry; `zythshvfgphkwwfborvb`/BarberBook is a
+different product, don't paste into it).
+
+## Rules
+
+1. **Every statement here must also be mirrored into `schema.sql`** at the
+   matching place, so a deliberate rebuild produces the same database. This is
+   the step that gets forgotten, and it silently reverts things — the
+   `revoke delete on stocktake_items` especially, since Supabase's default
+   privileges re-grant DELETE on every freshly created table.
+2. Run them in filename order. Never re-order or edit a file that has already
+   been run — add a new one.
+3. Run in the Supabase SQL editor (Dashboard → SQL Editor → New query → Run), or
+   `supabase db execute`. Check the project switcher reads **BarScan** first.
+4. Deploy order per change: **SQL → Edge Functions → HTML.** A function or page
+   that calls something not yet in the database fails for real users.
+
+## Log
+
+| File | What | Notes |
+|---|---|---|
+| `20260818_01_stocktake_audit.sql` | Enriched delete logging, `delete_stocktake_items()`, owner/manager guard on `clear_stocktake_items()`, `qty_reduced` trigger | Run before deploying the new `app.html` |
+| `20260818_02_revoke_item_delete.sql` | Revokes client DELETE on `stocktake_items` | **Run only after** the new `app.html` is live — it removes the path the old page uses |
