@@ -5,6 +5,27 @@ planning doesn't re-derive it. Delete an entry when it ships.
 
 ---
 
+## Log exports
+
+**Raised 2026-08-19, while shipping the three-state workflow below.** Exports are
+not recorded anywhere. Now that `completed` means "an export happened", the
+activity log can say the status changed but not who exported or what they took —
+so a dispute about *which* numbers head office received still has no evidence
+behind it, even though the deletion trail is now solid.
+
+Would need a `stocktake.exported` audit action written from the export path,
+capturing the format (Gantry / MYOB / Lightspeed), the item and unit totals at
+that moment, and the actor. The row totals matter more than the file: they're what
+makes a later "these aren't the numbers we sent you" answerable.
+
+---
+
+## ~~Explicit "Complete stocktake" action~~ — SHIPPED 2026-08-19
+
+Shipped as the three-state workflow (`in_progress` → `ready_for_export` →
+`completed`) in commit `e436cd0`. Kept below for the reasoning; delete once
+you're happy it's settled.
+
 ## Explicit "Complete stocktake" action
 
 **Requested 2026-08-18.** A venue should be able to mark a stocktake finished, so
