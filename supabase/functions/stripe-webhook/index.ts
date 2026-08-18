@@ -80,7 +80,23 @@ async function verifyStripeSignature(payload: string, header: string): Promise<b
   return diff === 0;
 }
 
-async function db(path: string, init: RequestInit): Promise<Response> {
+// `init: RequestInit = {}`, and the default is not cosmetic. Two callers in
+// ensureFirstVenue() invoke this with only a path, and without the default `init`
+// is undefined — so `init.headers` below threw
+// "Cannot read properties of undefined (reading 'headers')" on the FIRST line of
+// ensureFirstVenue, on every single checkout.
+//
+// The failure was quiet in the worst way: setOrgPlan() runs before this and
+// succeeded, so checkout appeared to work and plan_tier flipped correctly — but
+// the org's first venue and location were never created, and Stripe saw a 500
+// and retried the webhook indefinitely. The visible symptom was an operator
+// unable to add their first location, because there was no venue to attach it
+// to. (app.html's Team view now self-heals that, but this was the actual cause.)
+//
+// Every other Edge Function in this project already declares its db() helper with
+// `= {}`; this one was the outlier. Found by `deno check` — see
+// .claude/skills/verify/SKILL.md for how to run it.
+async function db(path: string, init: RequestInit = {}): Promise<Response> {
   return await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...init,
     headers: {

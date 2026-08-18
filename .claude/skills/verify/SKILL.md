@@ -33,6 +33,33 @@ outside the repo so the Capacitor `package.json` stays untouched.
 Kill the server when done: `Get-Process node | Stop-Process` (nothing else here
 runs node).
 
+## Typechecking the Edge Functions
+
+Worth doing before every `functions deploy` — the deploy itself does NOT
+typecheck, so a type error ships silently and only surfaces as a 500 in
+production. It found a real one: `stripe-webhook`'s `db()` helper was missing its
+`= {}` default, which broke venue creation on every checkout.
+
+Deno is at `%LOCALAPPDATA%\denobin\deno.exe` (not on PATH). It must run from a
+directory **outside the repo**: the repo root has a Capacitor `package.json` with
+no `@supabase/supabase-js` in it, so `npm:` specifiers fail to resolve there.
+
+```powershell
+$tc = "$env:TEMP\gantry-tc"
+Remove-Item $tc -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force "$tc\functions" | Out-Null
+Copy-Item "<repo>\supabase\functions\*" "$tc\functions" -Recurse -Force
+# deno.json must be written WITHOUT a BOM — Out-File -Encoding utf8 adds one in
+# PS 5.1 and Deno rejects the file with "Unexpected token on line 1 column 1".
+[IO.File]::WriteAllText("$tc\deno.json", '{ "nodeModulesDir": "auto" }')
+Set-Location $tc
+& "$env:LOCALAPPDATA\denobin\deno.exe" check functions/*/index.ts
+```
+
+Exit 0 means clean. Note `deno check` writes its progress lines to stderr, so
+PowerShell surfaces them as NativeCommandError noise even on success — read the
+exit code, not the presence of red text.
+
 ## Linux sandbox
 
 `require('/opt/node22/lib/node_modules/playwright')` with

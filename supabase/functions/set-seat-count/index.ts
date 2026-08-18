@@ -20,14 +20,20 @@
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   STRIPE_SECRET_KEY  - the "sk_..." secret key (already added for the
 //                        other billing functions — shared project-wide)
+//   RESEND_API_KEY     - optional; enables the confirmation email. Without it
+//                        the seat change still works and _shared/email.ts
+//                        no-ops, so a missing key never breaks billing.
 // (SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { mailFooter, sendEmail } from "../_shared/email.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+
+const ADMIN_URL = "https://jamesadmiraal-alt.github.io/desktop-tutorial/admin.html";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -82,6 +88,36 @@ async function stripePatch(path: string, params: Record<string, string>): Promis
   });
 }
 
+async function stripeGet(path: string): Promise<Response> {
+  return await fetch(`https://api.stripe.com/v1/${path}`, {
+    headers: { Authorization: `Bearer ${STRIPE_SECRET_KEY}` },
+  });
+}
+
+// Stripe reports amounts in a currency's minor unit, and how many minor units
+// make one major unit varies — most are 100, but a handful are 1. Getting this
+// wrong would overstate a JPY figure by 100x in an email about money, so the
+// zero-decimal set is spelled out rather than assumed.
+const ZERO_DECIMAL = new Set([
+  "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga",
+  "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf",
+]);
+
+function formatMoney(minorUnits: number, currency: string): string {
+  const code = (currency ?? "aud").toLowerCase();
+  const major = ZERO_DECIMAL.has(code) ? minorUnits : minorUnits / 100;
+  try {
+    return new Intl.NumberFormat("en-AU", {
+      style: "currency",
+      currency: code.toUpperCase(),
+      minimumFractionDigits: ZERO_DECIMAL.has(code) ? 0 : 2,
+    }).format(major);
+  } catch {
+    // Unknown currency code — better a bare number than a thrown email.
+    return `${major.toFixed(ZERO_DECIMAL.has(code) ? 0 : 2)} ${code.toUpperCase()}`;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
   if (req.method !== "POST") return new Response("method not allowed", { status: 405, headers: CORS_HEADERS });
@@ -105,7 +141,7 @@ Deno.serve(async (req) => {
   try {
     const memberRes = await userDb(
       authHeader,
-      `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role,organisations(id,name,plan_tier,stripe_subscription_item_id,concurrent_seats,seats_increased_at)`,
+      `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role,organisations(id,name,plan_tier,stripe_subscription_id,stripe_subscription_item_id,concurrent_seats,seats_increased_at)`,
     );
     const members = await memberRes.json();
     const membership = members?.[0];
@@ -223,6 +259,93 @@ Deno.serve(async (req) => {
       // both already happened, and reporting failure now would invite a retry
       // that double-charges. Loud console error instead.
       console.error("set-seat-count: audit_log insert failed for org", org.id, await auditRes.text());
+    }
+
+    // ---- Confirmation email to the owner ----
+    //
+    // Everything below is best-effort and deliberately after the point of no
+    // return: the seat count and the Stripe quantity have both already changed,
+    // so nothing here may fail the request. An owner who gets no email but whose
+    // seats did change is mildly annoyed; one who gets an error and retries could
+    // be charged twice.
+    //
+    // The figures come from Stripe's upcoming invoice, NOT from config.js.
+    // set-seat-count passes no proration_behavior, so Stripe applies its default
+    // `create_prorations`: the adjustment for the remainder of the current period
+    // is added as line items on the NEXT invoice rather than charged immediately.
+    // That's why the copy below says "your next invoice will be…" and never
+    // "you have been charged" — the latter would be plainly untrue, and a
+    // locally-computed figure would be wrong for any mid-cycle change anyway.
+    try {
+      let invoiceLine = "";
+      if (org.stripe_subscription_id) {
+        const invRes = await stripeGet(
+          `invoices/upcoming?subscription=${encodeURIComponent(org.stripe_subscription_id)}`,
+        );
+        if (invRes.ok) {
+          const inv = await invRes.json();
+          const total = formatMoney(Number(inv.amount_due ?? 0), inv.currency ?? "aud");
+          const when = inv.next_payment_attempt ?? inv.period_end;
+          const dateStr = when
+            ? new Date(Number(when) * 1000).toISOString().slice(0, 10)
+            : null;
+          // Sum only the proration lines, so the part-period adjustment can be
+          // stated separately from the recurring total.
+          const prorations = (inv.lines?.data ?? [])
+            .filter((l: { proration?: boolean }) => l.proration)
+            .reduce((sum: number, l: { amount?: number }) => sum + Number(l.amount ?? 0), 0);
+
+          invoiceLine = dateStr
+            ? `Your next invoice, on ${dateStr}, will be ${total}.`
+            : `Your next invoice will be ${total}.`;
+          if (prorations !== 0) {
+            invoiceLine += `\nThat includes ${formatMoney(Math.abs(prorations), inv.currency ?? "aud")}`
+              + (prorations > 0 ? " added" : " credited")
+              + " for the rest of the current billing period.";
+          }
+        } else {
+          console.error("set-seat-count: upcoming invoice lookup failed:", invRes.status, await invRes.text());
+        }
+      }
+
+      const added = seats > currentSeats;
+      const termEnd = updatedOrg?.seats_increased_at
+        ? new Date(new Date(updatedOrg.seats_increased_at).getTime() + SEAT_MIN_TERM_DAYS * 86400000)
+            .toISOString().slice(0, 10)
+        : null;
+
+      const lines = [
+        `${added ? "Added" : "Removed"} ${Math.abs(seats - currentSeats)} concurrent `
+          + `seat${Math.abs(seats - currentSeats) === 1 ? "" : "s"} for ${org.name ?? "your organisation"}.`,
+        "",
+        `Extra seats: ${currentSeats} → ${seats}`,
+        "Your own login stays free — seats cover everyone else logged in at the same time.",
+        "",
+      ];
+      if (invoiceLine) lines.push(invoiceLine, "");
+      // Only state the minimum term when it actually binds, i.e. on an increase.
+      // Repeating it after a decrease would be noise at best and misleading at
+      // worst, since a decrease doesn't start a new term.
+      if (added && termEnd) {
+        lines.push(
+          `Added seats are billed for a minimum of one month, so this level is held until ${termEnd}.`,
+          "You can add more at any time; adding restarts the month.",
+          "",
+        );
+      }
+      lines.push("Manage seats in the admin console: " + ADMIN_URL);
+
+      const result = await sendEmail({
+        to: user.email ?? "",
+        subject: `${org.name ?? "Your organisation"}: concurrent seats updated (${currentSeats} → ${seats})`,
+        text: lines.join("\n") + mailFooter(),
+      });
+      if (!result.sent) {
+        console.error("set-seat-count: confirmation email not sent:", result.provider, result.error);
+      }
+    } catch (mailErr) {
+      // Swallowed on purpose — see the note above. The seat change stands.
+      console.error("set-seat-count: confirmation email threw:", mailErr);
     }
 
     return jsonResponse({
