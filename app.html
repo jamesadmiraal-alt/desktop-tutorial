@@ -633,7 +633,12 @@
 <!-- ===== Home: stocktake list ===== -->
 <div id="home-view" class="view">
   <button id="new-stocktake" class="primary">＋ New stocktake</button>
-  <h2>In Progress</h2>
+  <!-- Ready for export comes FIRST deliberately: it's the only section anyone is
+       waiting on. In Progress is ongoing work and Completed is history, but a
+       count sitting in Ready for export is blocking someone at head office. -->
+  <h2 id="ready-heading" style="display:none">Ready for export</h2>
+  <div id="stocktake-list-ready"></div>
+  <h2 id="inprogress-heading">In Progress</h2>
   <div id="stocktake-list-inprogress"></div>
   <h2 id="completed-heading" style="display:none">Completed</h2>
   <div id="stocktake-list-completed"></div>
@@ -675,6 +680,10 @@
   <div class="dialog">
     <div class="title" id="take-actions-title">Stocktake</div>
     <div class="action-sheet">
+      <!-- One button, three meanings — label and target status are set by
+           openTakeActions() from the stocktake's current status. See
+           set_stocktake_status() in schema.sql for the transitions. -->
+      <button id="take-status"></button>
       <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export ▾</button>
       <button id="take-share">Share</button>
       <button id="take-clear" class="danger">Clear items</button>
@@ -1919,6 +1928,8 @@
   function loadTakes() {
     showView('home');
     $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
+    $('stocktake-list-ready').innerHTML = '';
+    $('ready-heading').style.display = 'none';
     $('stocktake-list-completed').innerHTML = '';
     $('completed-heading').style.display = 'none';
     sb.from('stocktakes')
@@ -1999,16 +2010,30 @@
   }
 
   function renderHome() {
+    var readyEl = $('stocktake-list-ready');
     var inProgressEl = $('stocktake-list-inprogress');
     var completedEl = $('stocktake-list-completed');
     if (!takes.length) {
+      readyEl.innerHTML = '';
+      $('ready-heading').style.display = 'none';
       inProgressEl.innerHTML = '<div class="empty">No stocktakes yet.<br>Create one to start scanning.</div>';
       completedEl.innerHTML = '';
       $('completed-heading').style.display = 'none';
       return;
     }
-    var inProgress = takes.filter(function (t) { return t.status !== 'completed'; });
+    // Three-way split. Note in_progress is the DEFAULT bucket rather than a
+    // match on 'in_progress': an unrecognised status (a value written before the
+    // check constraint existed, say) surfaces as ongoing work rather than
+    // vanishing from Home entirely.
+    var ready = takes.filter(function (t) { return t.status === 'ready_for_export'; });
     var completed = takes.filter(function (t) { return t.status === 'completed'; });
+    var inProgress = takes.filter(function (t) {
+      return t.status !== 'ready_for_export' && t.status !== 'completed';
+    });
+
+    readyEl.innerHTML = '';
+    $('ready-heading').style.display = ready.length ? '' : 'none';
+    ready.forEach(function (t) { readyEl.appendChild(renderTakeRow(t)); });
 
     inProgressEl.innerHTML = '';
     if (!inProgress.length) {
@@ -2484,19 +2509,65 @@
   }
 
   var actionsTake = null; // which stocktake the actions dialog currently targets
+  // What the single status button does, given where the stocktake currently is.
+  // Returns null when there's nothing to offer (only happens for staff on an
+  // already-exported stocktake — reopening is owner/manager, enforced by
+  // set_stocktake_status()).
+  function statusAction(t, canManage) {
+    if (t.status === 'ready_for_export') {
+      return { status: 'in_progress', label: 'Back to in progress', cls: '' };
+    }
+    if (t.status === 'completed') {
+      // Reopening returns it to Ready for export, not In Progress: it has already
+      // been counted and exported once, so "needs exporting again" is the far
+      // likelier intent than "start counting from scratch". Getting to
+      // In Progress from there is one more tap.
+      return canManage ? { status: 'ready_for_export', label: 'Reopen for export', cls: '' } : null;
+    }
+    return { status: 'ready_for_export', label: 'Mark ready for export', cls: 'success' };
+  }
+
   function openTakeActions(t) {
     actionsTake = t;
     $('take-actions-title').textContent = t.name;
+    var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
     // Clearing every item is owner/manager only — enforced by
     // clear_stocktake_items() (schema.sql), mirrored here so staff don't get
     // offered a button that only produces a server error. Same
     // check-before-asking shape as countryChangeEligible(). Staff can still
     // remove items individually from inside the stocktake.
-    $('take-clear').style.display =
-      (currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager')) ? '' : 'none';
+    $('take-clear').style.display = canManage ? '' : 'none';
+
+    var act = statusAction(t, canManage);
+    var btn = $('take-status');
+    btn.style.display = act ? '' : 'none';
+    if (act) {
+      btn.textContent = act.label;
+      btn.className = act.cls;
+      btn.onclick = function () { setTakeStatus(t, act.status, 'manual'); };
+    }
     $('take-actions-overlay').classList.add('open');
   }
   $('take-actions-cancel').onclick = function () { $('take-actions-overlay').classList.remove('open'); };
+
+  // Every status change goes through the RPC — client UPDATE on stocktakes is
+  // revoked (schema.sql), which is what makes the transition impossible to make
+  // without a log entry. `reason` only shapes the log wording ('manual' here vs
+  // 'export' from exportWithFormat), never permissions.
+  function setTakeStatus(t, status, reason, cb) {
+    sb.rpc('set_stocktake_status', {
+      p_stocktake_id: t.id, p_status: status, p_reason: reason
+    }).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not update stocktake'); return; }
+      t.status = status;
+      $('take-actions-overlay').classList.remove('open');
+      renderHome();
+      if (reason === 'manual') {
+        toast(status === 'ready_for_export' ? 'Marked ready for export' : 'Back to in progress');
+      }
+      if (cb) cb();
+    });
+  }
 
   // "Export ▾" opens the format picker instead of exporting directly —
   // Full CSV (Gantry)/MYOB/Lightspeed all funnel through exportWithFormat().
@@ -2512,15 +2583,16 @@
       downloadCsv(builder(actionsTake, takeItems), fileName(actionsTake, suffix));
       toast('CSV downloaded');
       $('export-format-overlay').classList.remove('open');
-      // Any successful export marks the stocktake Completed, moving it out
-      // of In Progress on Home — it can still be reopened/scanned into
-      // afterward, that just won't move it back automatically.
+      // A successful export still marks the stocktake Completed — but that is now
+      // the END of the workflow rather than the only way into it: a venue marks a
+      // count 'ready_for_export' first, which is what tells head office there's
+      // something to export at all. Reopening afterwards is owner/manager.
+      //
+      // Via the RPC, not a direct update: client UPDATE on stocktakes is revoked,
+      // and this transition needs to be in the activity log like any other.
+      // reason:'export' only distinguishes the log wording from a manual move.
       if (actionsTake.status !== 'completed') {
-        sb.from('stocktakes').update({ status: 'completed' }).eq('id', actionsTake.id).then(function (res) {
-          if (res.error) { fail(res.error, 'Could not update stocktake status'); return; }
-          actionsTake.status = 'completed';
-          renderHome();
-        });
+        setTakeStatus(actionsTake, 'completed', 'export');
       }
     });
   }

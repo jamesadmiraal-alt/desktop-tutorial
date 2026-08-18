@@ -293,11 +293,22 @@ create table public.stocktakes (
   -- member's account deletion doesn't take the org's stocktake with it.
   created_by uuid references auth.users(id) on delete set null default auth.uid(),
   name text not null,
-  -- 'in_progress' | 'completed' — deliberately unconstrained (unlike
-  -- plan_tier/role above) matching the original schema's lighter-weight
-  -- approach here: the app is the only writer, flips it to 'completed' on
-  -- first successful export.
-  status text not null default 'in_progress',
+  -- The workflow head office watches. 'ready_for_export' is the load-bearing
+  -- one: before it existed, a finished-but-unexported count was indistinguishable
+  -- from one still being counted, so the only way to know a venue had finished
+  -- was to ask them.
+  --
+  --   in_progress      being counted (default for a new stocktake)
+  --   ready_for_export the venue says counting is done — head office's cue
+  --   completed        an export has happened
+  --
+  -- Now constrained, unlike the original schema which left this free text on the
+  -- reasoning that the app was the only writer. Once a workflow depends on the
+  -- value, an unconstrained column is a real bug rather than a latent one.
+  -- Written only by set_stocktake_status() — client UPDATE on this table is
+  -- revoked (see below the policies).
+  status text not null default 'in_progress'
+    check (status in ('in_progress', 'ready_for_export', 'completed')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -770,12 +781,12 @@ create policy "owner update memberships" on public.memberships
 create policy "owner delete memberships" on public.memberships
   for delete using (org_id = public.my_org_id() and public.my_role() = 'owner');
 
--- stocktakes: any org member reads/creates/updates; only owner/manager can
--- delete one outright (staff can still clear its items — see
--- stocktake_items delete below). This is a deliberate tightening from the
+-- stocktakes: any org member reads/creates; only owner/manager can
+-- delete one outright. This is a deliberate tightening from the
 -- old single-user model, where the sole owner could always delete their
 -- own stocktake — once other people's work can be sitting inside it,
 -- letting any staff member delete the whole thing is a real footgun.
+-- UPDATE is not granted to clients at all — see the revoke below.
 create policy "read org stocktakes" on public.stocktakes
   for select using (org_id = public.my_org_id());
 
@@ -788,9 +799,29 @@ create policy "org members insert stocktakes" on public.stocktakes
     )
   );
 
-create policy "org members update stocktakes" on public.stocktakes
-  for update using (org_id = public.my_org_id())
-  with check (org_id = public.my_org_id());
+-- No update policy, and UPDATE revoked outright. `status` is the only column a
+-- client ever changed here, and it now goes through set_stocktake_status()
+-- (further down), which logs the transition and enforces who may make it.
+--
+-- Revoking the whole table's UPDATE rather than just gating status is
+-- deliberate, and RLS is the reason: a policy can restrict WHICH ROWS you may
+-- update but not WHICH COLUMNS, and it cannot express "this transition is
+-- allowed but that one isn't". The old policy therefore let any org member —
+-- staff included — rename anyone's stocktake or set status to arbitrary text,
+-- with nothing written down. A column-scoped GRANT could have narrowed the
+-- columns (as on profiles/organisations) but still couldn't express the
+-- per-transition role rule, so the function is the only place that can hold all
+-- of it in one readable piece.
+--
+-- touch_stocktake() is unaffected: it's security definer
+-- (see above), so it runs as the function owner and updates updated_at
+-- regardless of what the caller may do. Same reasoning as the
+-- stocktake_items cascade surviving its own DELETE revoke.
+--
+-- Must live in this file: Supabase's default privileges re-grant UPDATE on every
+-- newly created table, so a rebuild without this silently reopens it.
+drop policy if exists "org members update stocktakes" on public.stocktakes;
+revoke update on public.stocktakes from authenticated, anon;
 
 create policy "owner manager delete stocktakes" on public.stocktakes
   for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
@@ -1075,9 +1106,12 @@ create trigger log_organisations_audit
   after update on public.organisations
   for each row execute function public.log_organisations_change();
 
--- stocktakes: delete only. Creation is already durably attributed via
--- created_by; the only update that happens today is an automatic
--- status->'completed' side effect of exporting, not an operator decision.
+-- stocktakes: delete only, as a TRIGGER. Creation is already durably attributed
+-- via created_by, and status changes are logged explicitly by
+-- set_stocktake_status() instead — that used to be an automatic export side
+-- effect rather than an operator decision, but it isn't any more: marking a count
+-- ready for export is a deliberate act head office relies on, so it needs its own
+-- entry with who and which direction.
 --
 -- BEFORE delete, not AFTER, and that is load-bearing. `on delete cascade` is
 -- implemented as an internal AFTER ROW trigger on the PARENT table, named
@@ -1294,6 +1328,89 @@ begin
 end $$;
 
 grant execute on function public.clear_stocktake_items(uuid) to authenticated;
+
+-- The only way a stocktake's status changes. Client UPDATE on stocktakes is
+-- revoked (see the policies above), so this is the whole write path — which is
+-- what makes the log entry unskippable and lets the per-transition role rule
+-- exist at all. RLS could not express either: it gates rows, not columns, and has
+-- no notion of "this transition, from this state, by this role".
+--
+-- The workflow this drives:
+--   in_progress       being counted
+--   ready_for_export  the venue says counting is done — head office's cue
+--   completed         an export has happened
+--
+-- p_reason distinguishes a deliberate move from the automatic one that
+-- exportWithFormat() makes, purely so the activity log can read "marked ready"
+-- versus "exported". It does NOT affect permissions — an export by a staff
+-- member is still a staff action, and pretending otherwise would let the client
+-- pick its own privileges by lying about the reason.
+--
+-- Leaving 'completed' is owner/manager only. By then head office has already
+-- exported, so reopening invites a second export with different numbers — the
+-- same reasoning that already restricts deleting a stocktake, and unlike
+-- marking a count ready, which is the counter's own call.
+create or replace function public.set_stocktake_status(
+  p_stocktake_id uuid,
+  p_status text,
+  p_reason text default 'manual'
+)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_take_org uuid;
+  v_take_name text;
+  v_old_status text;
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+begin
+  if p_status not in ('in_progress', 'ready_for_export', 'completed') then
+    raise exception 'Unknown stocktake status.';
+  end if;
+  if coalesce(p_reason, '') not in ('manual', 'export') then
+    raise exception 'Unknown reason for the status change.';
+  end if;
+
+  select s.org_id, s.name, s.status into v_take_org, v_take_name, v_old_status
+    from public.stocktakes s where s.id = p_stocktake_id;
+
+  -- security definer bypasses RLS, so re-implement the org scoping the dropped
+  -- update policy used to provide. Same message whether the stocktake is missing
+  -- or belongs to another org, so this can't be used to probe for UUIDs.
+  if v_take_org is null or v_take_org is distinct from v_org then
+    raise exception 'Stocktake not found.';
+  end if;
+
+  -- No-op rather than an error: the export path calls this without checking, and
+  -- two devices can race the same button. Writing nothing means no misleading
+  -- "changed from completed to completed" row in the log.
+  if v_old_status = p_status then
+    return;
+  end if;
+
+  -- coalesce, not `!=`: my_role() is NULL for a caller with no membership and
+  -- `NULL not in (...)` is NULL, which plpgsql treats as false — the bypass this
+  -- codebase has already been bitten by once.
+  if v_old_status = 'completed'
+     and coalesce(public.my_role(), '') not in ('owner', 'manager') then
+    raise exception 'This stocktake has already been exported — ask a manager to reopen it.';
+  end if;
+
+  update public.stocktakes set status = p_status where id = p_stocktake_id;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o where o.id = v_org;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+  values (v_org, org_label, actor, actor_label, 'stocktake.status_changed', 'stocktake',
+          p_stocktake_id, v_take_name,
+          jsonb_build_object('status', v_old_status),
+          jsonb_build_object('status', p_status, 'reason', coalesce(p_reason, 'manual')));
+end $$;
+
+grant execute on function public.set_stocktake_status(uuid, text, text) to authenticated;
 
 -- Quantity edits are the other way to destroy a count without deleting
 -- anything: `update stocktake_items set qty = 1` walks a 247-unit line down to

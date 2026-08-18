@@ -1,0 +1,38 @@
+-- Remove the client's direct UPDATE on stocktakes, leaving
+-- set_stocktake_status() (migration 01) as the only way status changes.
+--
+-- *** RUN THIS ONLY AFTER THE NEW app.html IS DEPLOYED AND LIVE. ***
+-- The previous app.html flips status with a direct
+-- `update stocktakes set status = 'completed'` on export. Running this first
+-- breaks exporting for anyone still served the old page, which after a Pages
+-- deploy includes anyone with it already open. That is the only reason this is
+-- separate from migration 01.
+--
+-- Why revoke the whole table's UPDATE rather than gate the one column: RLS can
+-- restrict which ROWS you may update but not which COLUMNS, and it has no way to
+-- express "this transition is allowed but that one isn't". The old policy
+-- therefore let any org member — staff included — rename anyone's stocktake or
+-- set status to arbitrary text, with nothing written down. A column-scoped GRANT
+-- (as used on profiles/organisations) could have narrowed the columns but still
+-- couldn't express the per-transition role rule, so the function holds all of it.
+--
+-- Safe for touch_stocktake(): it is security definer, so it runs as the function
+-- owner and keeps bumping updated_at on every scan regardless of what the caller
+-- may do. Same mechanism that kept the stocktake_items cascade working after its
+-- own DELETE revoke.
+--
+-- Note this must ALSO live in schema.sql (it does) — Supabase's
+-- `alter default privileges ... grant all on tables to anon, authenticated`
+-- re-grants UPDATE on every newly created table, so a rebuild without it
+-- reopens this invisibly.
+--
+-- Verify after running:
+--   1. A raw PATCH with a member JWT now fails with 42501:
+--      PATCH /rest/v1/stocktakes?id=eq.<uuid>   body {"name":"hijacked"}
+--   2. Scanning an item still updates the parent's updated_at (proves
+--      touch_stocktake is unaffected).
+--   3. Marking a stocktake ready, and exporting one, both still work from the
+--      app — those go through the RPC now.
+
+drop policy if exists "org members update stocktakes" on public.stocktakes;
+revoke update on public.stocktakes from authenticated, anon;

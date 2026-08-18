@@ -61,6 +61,27 @@ window.GANTRY_AUDIT = (function () {
       return r.actor_label + ' deleted stocktake "' + r.target_label + '" — ' + plural(n, 'item')
         + ', ' + r.before.units_deleted + ' units';
     },
+    // Written by set_stocktake_status(). `reason` separates a deliberate move
+    // from the automatic one an export makes, which is the difference between
+    // "the venue says this is done" and "head office took the data" — head
+    // office relies on the first, so the log has to distinguish them.
+    'stocktake.status_changed': function (r) {
+      var to = r.after && r.after.status;
+      var reason = r.after && r.after.reason;
+      if (reason === 'export') {
+        return r.actor_label + ' exported "' + r.target_label + '"';
+      }
+      if (to === 'ready_for_export') {
+        return r.actor_label + ' marked "' + r.target_label + '" ready for export';
+      }
+      if (to === 'in_progress') {
+        return r.actor_label + ' put "' + r.target_label + '" back to in progress';
+      }
+      if (to === 'completed') {
+        return r.actor_label + ' marked "' + r.target_label + '" completed';
+      }
+      return r.actor_label + ' changed the status of "' + r.target_label + '"';
+    },
     'stocktake_items.cleared': function (r) {
       var n = r.before && r.before.items_cleared;
       if (typeof n !== 'number') return r.actor_label + ' cleared all items from "' + r.target_label + '"';
