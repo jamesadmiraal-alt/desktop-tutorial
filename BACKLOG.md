@@ -5,6 +5,27 @@ planning doesn't re-derive it. Delete an entry when it ships.
 
 ---
 
+## ~~Shared logins bypass the seat paywall~~ — SHIPPED 2026-08-19
+
+Shipped as **one device per login** (option 1 below) in commit `ac85121`, verified
+across two real devices. `active_sessions` gained `device_id`; `claim_seat` now
+enforces the device rule for every role and both tiers, while the seat pool stays
+multi-venue non-owner; `heartbeat` carries the device id so a displaced device
+signs itself out; takeovers are logged as `session.taken_over`.
+
+**Outstanding cleanup:** the zero-arg `claim_seat()` / `heartbeat()` compatibility
+shims are still in place. They pass a null device id, which the WHERE clause
+treats as "match anything" — so any client calling them is immune to displacement,
+which is the bypass this whole change closed. Drop them once every client has
+reloaded:
+
+```sql
+drop function if exists public.claim_seat();
+drop function if exists public.heartbeat();
+```
+
+Original analysis kept below for the reasoning.
+
 ## Shared logins bypass the seat paywall — and undermine the audit trail
 
 **Raised 2026-08-18.** One login used on ten devices consumes **one** seat. A venue
