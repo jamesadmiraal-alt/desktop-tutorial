@@ -237,6 +237,20 @@
     background: var(--bg); padding: 10px; border-radius: 8px; margin: 10px 0; }
   .dialog .hint { font-size: 0.8rem; color: var(--warning); margin-bottom: 8px; }
   #qty-input { font-size: 1.6rem; text-align: center; margin-bottom: 14px; }
+  /* Keypad: three columns, generous targets. 52px min height clears the ~44px
+     touch-target floor with room to spare, because this gets hit hundreds of
+     times a shift with a phone in one hand. */
+  #qty-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+  #qty-pad button {
+    min-height: 52px; font-size: 1.25rem; font-weight: 600;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    /* Stops a fast double-tap being read as a page zoom, and stops the digit
+       being text-selected on long press — both of which make repeated entry
+       feel broken on a phone. */
+    touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  }
+  #qty-pad button:active { background: var(--surface-2, var(--border)); }
+  #qty-pad button.qty-pad-alt { color: var(--text-dim); font-weight: 500; }
   .upgrade-text { color: var(--text-body); font-size: 0.9rem; line-height: 1.5; margin: 10px 0 14px; }
   #name-input { margin: 12px 0 14px; }
   .dialog-actions { display: flex; gap: 8px; }
@@ -711,7 +725,33 @@
     <div class="title">Enter quantity</div>
     <div class="code" id="qty-code"></div>
     <div class="hint" id="qty-hint" style="display:none"></div>
-    <input id="qty-input" type="number" inputmode="numeric" min="1" step="1" placeholder="Qty">
+    <!-- type="text" rather than "number": with the in-app keypad below driving the
+         value, a number input buys nothing and costs the spinner arrows plus
+         Safari's habit of discarding partial input. inputmode stays numeric so a
+         hardware keyboard still gets the right hint, and the keypad only ever
+         inserts digits itself. -->
+    <input id="qty-input" type="text" inputmode="numeric" autocomplete="off" placeholder="Qty">
+    <!-- In-app keypad. It exists because iOS/WebKit will not raise its own
+         keyboard from a programmatic .focus() outside a user gesture, and a camera
+         decode callback is not a gesture — so after a scan the operator had to tap
+         the field before they could type anything. Rather than fight that, the app
+         brings its own: deterministic on every platform and in the native shells,
+         no keyboard animating in and out on every scan, and it doesn't cover the
+         dialog it's meant to serve. -->
+    <div id="qty-pad">
+      <button type="button" data-key="1">1</button>
+      <button type="button" data-key="2">2</button>
+      <button type="button" data-key="3">3</button>
+      <button type="button" data-key="4">4</button>
+      <button type="button" data-key="5">5</button>
+      <button type="button" data-key="6">6</button>
+      <button type="button" data-key="7">7</button>
+      <button type="button" data-key="8">8</button>
+      <button type="button" data-key="9">9</button>
+      <button type="button" data-key="clear" class="qty-pad-alt">C</button>
+      <button type="button" data-key="0">0</button>
+      <button type="button" data-key="back" class="qty-pad-alt" aria-label="Backspace">⌫</button>
+    </div>
     <div class="dialog-actions">
       <button id="qty-cancel" class="flex">Cancel</button>
       <button id="qty-ok" class="primary flex">Save & continue</button>
@@ -2233,10 +2273,51 @@
     $('qty-overlay').dataset.mode = isEdit ? 'edit' : 'scan';
     $('qty-input').value = isEdit && existing ? existing.qty : '';
     $('qty-overlay').classList.add('open');
-    // Focus synchronously so the phone's number pad opens as soon as a scan lands
-    $('qty-input').focus();
-    $('qty-input').select();
+    // On a touch device the in-app keypad IS the input method, so don't focus the
+    // field: focusing it would either do nothing (iOS refuses to raise its
+    // keyboard outside a user gesture — the whole reason the keypad exists) or,
+    // on Android, raise a second keyboard on top of our own. On a desktop with a
+    // real keyboard, focus is exactly what's wanted so the operator can just type.
+    if (!hasTouchKeypad()) {
+      $('qty-input').focus();
+      $('qty-input').select();
+    }
   }
+
+  // Treat "has a touch screen and no fine pointer" as the keypad case rather than
+  // sniffing the platform: a touch laptop still has a keyboard and should get
+  // focus, a phone shouldn't. Native shells report as coarse/touch too.
+  function hasTouchKeypad() {
+    try {
+      return window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Keypad → input. Digits only, and a cap so a stuck finger can't produce a
+  // number that overflows the integer column on save.
+  var QTY_MAX_DIGITS = 6;
+  $('qty-pad').addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('button[data-key]') : null;
+    if (!btn) return;
+    var key = btn.getAttribute('data-key');
+    var el = $('qty-input');
+    if (key === 'clear') el.value = '';
+    else if (key === 'back') el.value = el.value.slice(0, -1);
+    else if (el.value.length < QTY_MAX_DIGITS) el.value = el.value + key;
+    // Leading zeros would make "0" look like a valid entry when commitQty's
+    // `!qty || qty < 1` check will reject it — strip them so what's shown is what
+    // will actually be saved.
+    el.value = el.value.replace(/^0+(?=\d)/, '');
+  });
+
+  // readonly on touch only. Without it, tapping the field to reposition the caret
+  // raises the OS keyboard over our keypad — two input methods fighting for the
+  // same field, and on a small phone the dialog ends up behind the keyboard.
+  // readonly still allows focus and selection, and the keypad writes the value
+  // directly, so nothing is lost. Desktop keeps a fully editable field.
+  if (hasTouchKeypad()) $('qty-input').readOnly = true;
 
   function closeQtyDialog() {
     dialogOpen = false;
