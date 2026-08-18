@@ -1480,8 +1480,26 @@ create trigger log_item_qty_reduced_audit
 create table if not exists public.active_sessions (
   user_id uuid primary key references auth.users(id) on delete cascade,
   org_id uuid not null,
+  -- Which device currently holds this login. Still ONE row per person — seats are
+  -- billed per person and that hasn't changed — but the row now records WHICH
+  -- device, so a second device can be told the login is in use rather than
+  -- silently sharing the seat.
+  --
+  -- That sharing was the bypass: ten staff on one login used to consume one seat,
+  -- because this function just refreshed whatever row it found. Worse, it made the
+  -- audit trail unreliable — "Sam Lee deleted stocktake X" means nothing if ten
+  -- people are Sam. See claim_seat() below for the takeover rules.
+  --
+  -- Client-generated (localStorage, see app.html) and never trusted for anything
+  -- but equality: it's an opaque tag for "same browser as last time", not a
+  -- credential. Nullable so rows predating this column are simply treated as
+  -- takeable rather than locking anyone out on deploy.
+  device_id text,
   last_seen_at timestamptz not null default now()
 );
+
+-- For orgs upgraded in place rather than rebuilt from this file.
+alter table public.active_sessions add column if not exists device_id text;
 
 -- Orphan sweep before re-adding the FK — same hazard as audit_log above, and
 -- this is the one that actually bit: re-running this file with anyone logged in
@@ -1506,13 +1524,29 @@ drop policy if exists "owner manager read active sessions" on public.active_sess
 create policy "owner manager read active sessions" on public.active_sessions
   for select using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
 
--- Called once at login (refreshOrgStatus() in app.html) — NOT the
--- repeating call, see heartbeat() below. Owner is always exempt from the
--- pool (the $59 base always covers them, regardless of purchased seats),
--- and single-venue orgs never enforce a limit at all (unlimited staff,
--- unchanged from before this feature).
-create or replace function public.claim_seat()
-returns boolean language plpgsql security definer set search_path = public as $$
+-- Called once at login (refreshOrgStatus() in app.html) — NOT the repeating call,
+-- see heartbeat() below.
+--
+-- Enforces TWO separate rules, and keeping them separate matters:
+--
+--  1. ONE DEVICE PER LOGIN — applies to everyone, every role, both tiers.
+--     A login already live on another device is refused (or taken over on
+--     request). This is what makes account-sharing unworkable rather than merely
+--     uneconomic: ten staff on one login can't be logged in at once, so they need
+--     ten logins, which is the paywall doing its job. It also restores the audit
+--     trail's meaning — "Sam Lee deleted stocktake X" is only evidence if exactly
+--     one person can be Sam at a time. That second reason is why this rule covers
+--     owners and single-venue orgs too, even though neither leaks revenue.
+--
+--  2. THE SEAT POOL — multi-venue, non-owner only, unchanged. The owner is
+--     always free (the base price covers them) and single-venue has no pool.
+--
+-- Returns jsonb rather than boolean so one round trip can distinguish "you're in"
+-- from the two quite different refusals: a full pool is the org's problem (buy a
+-- seat), another device is the operator's (take over or go away). The old boolean
+-- form is kept below as a wrapper so clients mid-deploy don't break.
+create or replace function public.claim_seat(p_device_id text, p_takeover boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_org_id uuid := public.my_org_id();
   v_role text := public.my_role();
@@ -1520,36 +1554,92 @@ declare
   v_seats integer;
   v_interval_secs integer;
   v_occupied integer;
+  v_org_name text;
+  v_existing_device text;
+  v_existing_seen timestamptz;
+  v_has_row boolean;
+  v_stale_before timestamptz;
+  actor_label text;
 begin
-  select plan_tier, concurrent_seats, heartbeat_interval_seconds
-    into v_plan, v_seats, v_interval_secs
+  if v_org_id is null then
+    return jsonb_build_object('granted', false, 'reason', 'no_organisation');
+  end if;
+
+  select plan_tier, concurrent_seats, heartbeat_interval_seconds, name
+    into v_plan, v_seats, v_interval_secs, v_org_name
     from public.organisations where id = v_org_id;
 
-  if v_plan != 'multi' or v_role = 'owner' then
-    insert into public.active_sessions (user_id, org_id, last_seen_at)
-      values (auth.uid(), v_org_id, now())
-      on conflict (user_id) do update set last_seen_at = now();
-    return true;
+  v_stale_before := now() - make_interval(secs => v_interval_secs * 2.5);
+
+  select device_id, last_seen_at, true
+    into v_existing_device, v_existing_seen, v_has_row
+    from public.active_sessions where user_id = auth.uid();
+
+  -- ---- Rule 1: one device per login ----
+  if coalesce(v_has_row, false) then
+    -- Same device, or a row old enough that whatever held it is gone. The stale
+    -- case is deliberately silent: prompting "another device is using this login"
+    -- about a phone that crashed an hour ago would be both wrong and impossible
+    -- for the operator to act on, and it's what stops a crash locking someone out
+    -- until the timeout expires.
+    if v_existing_device is null
+       or v_existing_device = p_device_id
+       or v_existing_seen <= v_stale_before then
+      update public.active_sessions
+         set last_seen_at = now(), device_id = p_device_id
+       where user_id = auth.uid();
+      return jsonb_build_object('granted', true);
+    end if;
+
+    -- Live on a different device.
+    if not p_takeover then
+      return jsonb_build_object('granted', false, 'reason', 'other_device');
+    end if;
+
+    update public.active_sessions
+       set last_seen_at = now(), device_id = p_device_id
+     where user_id = auth.uid();
+
+    -- Logged because a run of these on one account is the signature of a shared
+    -- login being passed around — the only signal an owner (or support) would
+    -- otherwise have. One legitimate takeover when someone swaps phone for tablet
+    -- looks nothing like fifteen a shift.
+    select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+      from auth.users u left join public.profiles p on p.id = u.id where u.id = auth.uid();
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, after)
+    values (v_org_id, v_org_name, auth.uid(), actor_label, 'session.taken_over', 'membership',
+            auth.uid(), actor_label, jsonb_build_object('signed_out_previous_device', true));
+
+    return jsonb_build_object('granted', true, 'took_over', true);
   end if;
 
-  -- Already holding a seat (e.g. a second device, or re-entering after
-  -- being on the seats-full screen) — refresh it, don't count it twice.
-  if exists (select 1 from public.active_sessions where user_id = auth.uid()) then
-    update public.active_sessions set last_seen_at = now() where user_id = auth.uid();
-    return true;
+  -- ---- Rule 2: the seat pool (multi-venue, non-owner) ----
+  if v_plan = 'multi' and v_role is distinct from 'owner' then
+    select count(*) into v_occupied from public.active_sessions
+     where org_id = v_org_id and last_seen_at > v_stale_before;
+
+    if v_occupied >= v_seats then
+      return jsonb_build_object('granted', false, 'reason', 'seats_full');
+    end if;
   end if;
 
-  select count(*) into v_occupied from public.active_sessions
-   where org_id = v_org_id
-     and last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5);
+  insert into public.active_sessions (user_id, org_id, device_id, last_seen_at)
+    values (auth.uid(), v_org_id, p_device_id, now());
+  return jsonb_build_object('granted', true);
+end $$;
 
-  if v_occupied >= v_seats then
-    return false;
-  end if;
+grant execute on function public.claim_seat(text, boolean) to authenticated;
 
-  insert into public.active_sessions (user_id, org_id, last_seen_at)
-    values (auth.uid(), v_org_id, now());
-  return true;
+-- Compatibility shim for clients served the previous app.html — they call
+-- claim_seat() with no arguments and expect a boolean. Passing a null device id
+-- lands in the "device_id is null → adopt the row" branch above, so an old client
+-- keeps working exactly as before until it next reloads. DROP THIS once the
+-- deploy has settled; leaving it forever would leave a hole big enough to drive
+-- the shared-login bypass back through.
+create or replace function public.claim_seat()
+returns boolean language plpgsql security definer set search_path = public as $$
+begin
+  return coalesce((public.claim_seat(null::text, false) ->> 'granted')::boolean, false);
 end $$;
 
 grant execute on function public.claim_seat() to authenticated;
@@ -1657,11 +1747,36 @@ grant execute on function public.record_seat_denial() to authenticated;
 -- of being silently undone by the next heartbeat: a kicked client's next
 -- heartbeat finds nothing to update, gets `false` back, and logs itself
 -- out client-side.
+-- The device id in the WHERE clause is how a displaced device finds out. When
+-- another device takes the login over, claim_seat() overwrites device_id — so this
+-- update matches nothing, returns false, and the client logs itself out. Exactly
+-- the mechanism that already makes kick_user() stick, reused: no new plumbing, and
+-- no way for a displaced client to quietly keep working.
+--
+-- The bound on that is one heartbeat_interval_seconds (default 60). Pushing to the
+-- old device instantly would need Realtime; this is the same deliberate soft-kick
+-- trade already documented above, and it costs the operator nothing because every
+-- scan is written to the server as it happens — there is no local buffer to lose.
+create or replace function public.heartbeat(p_device_id text)
+returns boolean language plpgsql security definer set search_path = public as $$
+begin
+  update public.active_sessions set last_seen_at = now()
+   where user_id = auth.uid()
+     -- `is not distinct from` so a null device_id (a row from before this column,
+     -- or an old client) still matches its own null rather than failing forever.
+     and (p_device_id is null or device_id is not distinct from p_device_id
+          or device_id is null);
+  return found;
+end $$;
+
+grant execute on function public.heartbeat(text) to authenticated;
+
+-- Compatibility shim, same reasoning and same lifetime as claim_seat()'s — drop
+-- both together once the deploy has settled.
 create or replace function public.heartbeat()
 returns boolean language plpgsql security definer set search_path = public as $$
 begin
-  update public.active_sessions set last_seen_at = now() where user_id = auth.uid();
-  return found;
+  return public.heartbeat(null::text);
 end $$;
 
 grant execute on function public.heartbeat() to authenticated;

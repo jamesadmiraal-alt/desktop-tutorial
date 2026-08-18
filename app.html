@@ -421,6 +421,18 @@
       <p class="upgrade-text">All of <b id="seats-full-org-name"></b>'s concurrent user seats are in use right now — ask a teammate to log out, or add another seat from the admin console.</p>
       <button id="seats-full-retry" class="primary" style="width:100%">Try again</button>
     </div>
+    <!-- One device per login (see claim_seat() in schema.sql). Shown when this
+         login is already live somewhere else. A decision rather than an automatic
+         takeover: the other device belongs to someone, possibly mid-count, and
+         signing them out shouldn't happen without being told. Their scans are
+         already saved either way — every scan writes to the server as it
+         happens — which is what makes this safe to offer at all. -->
+    <div id="takeover-row" style="display:none">
+      <p class="upgrade-text">This login is already being used on another device. Gantry allows one device
+        per login, so continuing here will sign the other one out.<br><br>
+        Anything already scanned there is saved and will still be here.</p>
+      <button id="takeover-continue" class="primary" style="width:100%">Continue on this device</button>
+    </div>
     <button id="auth-submit" class="primary">Log in</button>
     <div class="auth-note">Your stocktakes are stored in the cloud and sync across devices —
       log in with the same account anywhere to continue.<br>
@@ -901,6 +913,34 @@
     return !next || Date.now() >= next.getTime();
   }
 
+  // A stable, opaque tag for "this browser/app install", used to enforce one
+  // device per login (see claim_seat() in schema.sql). Not a credential and never
+  // treated as one — the server only ever compares it for equality.
+  //
+  // Deliberately localStorage directly, NOT the dynamicStorage adapter the auth
+  // token uses: that switches to sessionStorage when "Remember me" is unchecked,
+  // which would mint a fresh id every launch and make the same phone look like an
+  // endless parade of new devices — every login a takeover prompt.
+  function deviceId() {
+    try {
+      var id = localStorage.getItem('gantry-device-id');
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+          : 'd-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+        localStorage.setItem('gantry-device-id', id);
+      }
+      return id;
+    } catch (e) {
+      // Private mode with storage blocked: fall back to a per-tab id. The device
+      // rule still works within the session; it just can't recognise this browser
+      // again later, which is the best available behaviour.
+      if (!window.__gantryDeviceIdFallback) {
+        window.__gantryDeviceIdFallback = 'tmp-' + Math.random().toString(36).slice(2, 12);
+      }
+      return window.__gantryDeviceIdFallback;
+    }
+  }
+
   function toast(msg, bg) {
     var t = $('toast');
     t.textContent = msg;
@@ -909,6 +949,19 @@
     clearTimeout(t._h);
     t._h = setTimeout(function () { t.classList.remove('show'); }, 2000);
   }
+  // Turns a Postgres/PostgREST error into something an operator can act on.
+  // 42501 (insufficient_privilege) reaching a scan write almost always means this
+  // login is now held by another device, since that's the only thing that revokes
+  // access mid-count — worth naming rather than showing the raw code.
+  function failHint(error) {
+    var code = error && error.code;
+    var msg = (error && error.message) || 'request failed';
+    if (code === '42501' || /permission denied/i.test(msg)) {
+      return 'This login may now be in use on another device — log in again and re-scan.';
+    }
+    return msg;
+  }
+
   function fail(error, what) {
     toast((what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed'), '#b91c1c');
   }
@@ -1278,53 +1331,103 @@
       // which only ever fires in the (possibly abandoned) tab Stripe
       // redirected to. previousTier is null on first-ever load, so this
       // never fires on plain login.
-      function announceTierChangeIfAny() {
+      var announceTierChangeIfAny = function () {
         if (previousTier && currentOrg && currentOrg.planTier !== previousTier &&
             (currentOrg.planTier === 'single' || currentOrg.planTier === 'multi')) {
           var label = currentOrg.planTier === 'multi' ? 'Multi-venue' : 'Single-venue';
           toast('🎉 You’re now on the ' + label + ' plan!', '#059669');
         }
-      }
-      // Multi-venue only: venues/locations are free/unlimited, concurrent
-      // login seats are the billable unit instead (see claim_seat() in
-      // schema.sql). Single-venue never enforces this — skip the round
-      // trip entirely rather than relying on the RPC's own no-op path.
-      if (currentOrg && currentOrg.planTier === 'multi') {
-        sb.rpc('claim_seat').then(function (res) {
-          if (res.error || res.data === false) {
-            showSeatsFullPrompt();
-            // Only on a genuine `false`, never on an RPC error: an error means we
-            // don't actually know whether the pool is full, and emailing the
-            // owner "someone was blocked" on the strength of a network blip
-            // would train them to ignore the alert. The function verifies the
-            // denial server-side anyway and would refuse — this just avoids the
-            // pointless round trip.
-            if (res.data === false) notifySeatDenied();
-            return;
-          }
-          startSeatHeartbeat();
-          announceTierChangeIfAny();
-          renderPlan();
-          if (cb) cb();
-        });
-        return;
-      }
-      announceTierChangeIfAny();
-      renderPlan();
-      if (cb) cb();
+      };
+      // claim_seat now runs for EVERY tier and role, not just multi-venue. It
+      // enforces two rules and only one of them is about seats: one device per
+      // login applies to everyone (it's what makes account-sharing unworkable and
+      // keeps the audit trail meaningful), while the seat POOL is still
+      // multi-and-non-owner. This branch used to be skipped entirely for
+      // single-venue — exactly where a shared login is most likely.
+      claimSeat(false, announceTierChangeIfAny, cb);
     });
   }
 
-  // ---- Concurrent-seat heartbeat (multi-venue only) ----
+  // Wraps claim_seat and handles its three outcomes. takeover=true is the second
+  // call, made after the operator confirms they want the login moved here.
+  function claimSeat(takeover, onGranted, cb) {
+    sb.rpc('claim_seat', { p_device_id: deviceId(), p_takeover: !!takeover })
+      .then(function (res) {
+        var d = res.data || {};
+        if (res.error) {
+          // We don't know why it failed, so show the safe actionable dead end but
+          // don't email anyone — see notifySeatDenied for why a guess is worse
+          // than silence here.
+          showSeatsFullPrompt();
+          return;
+        }
+        if (!d.granted) {
+          if (d.reason === 'other_device') { showTakeoverPrompt(onGranted, cb); return; }
+          showSeatsFullPrompt();
+          // Only for a genuinely full pool. An 'other_device' refusal isn't a seat
+          // problem at all, and mailing the owner about it would train them to
+          // ignore the alert that matters.
+          if (d.reason === 'seats_full') notifySeatDenied();
+          return;
+        }
+        seatsFull = false;
+        if (d.took_over) toast('Signed in here — your other device has been signed out');
+        startSeatHeartbeat();
+        if (onGranted) onGranted();
+        renderPlan();
+        if (cb) cb();
+      });
+  }
+
+  // Shown when the same login is already live on another device. Deliberately a
+  // decision rather than an automatic takeover: silently signing out a colleague
+  // mid-count — even though their scans are already saved — is the kind of thing
+  // an operator should be told they're doing.
+  function showTakeoverPrompt(onGranted, cb) {
+    seatsFull = true; // reuse the gate flag so Account/back-nav stay locked down
+    $('auth-credentials').style.display = 'none';
+    $('auth-heading').textContent = 'Already signed in elsewhere';
+    $('auth-sub').textContent = 'One more step before you can start scanning';
+    $('org-setup-note').style.display = 'none';
+    $('org-setup-logout').style.display = '';
+    $('org-mode-row').style.display = 'none';
+    $('org-create-row').style.display = 'none';
+    $('org-join-row').style.display = 'none';
+    $('payment-pending-row').style.display = 'none';
+    $('seats-full-row').style.display = 'none';
+    $('auth-submit').style.display = 'none';
+    $('takeover-row').style.display = '';
+    showView('auth');
+    $('takeover-continue').onclick = function () {
+      $('takeover-continue').disabled = true;
+      claimSeat(true, onGranted, function () {
+        $('takeover-continue').disabled = false;
+        $('takeover-row').style.display = 'none';
+        if (cb) cb();
+      });
+    };
+  }
+
+  // ---- Concurrent-seat heartbeat ----
   var heartbeatIntervalId = null;
   function startSeatHeartbeat() {
     stopSeatHeartbeat();
-    if (!currentOrg || currentOrg.planTier !== 'multi') return;
+    // Runs on EVERY tier now, not just multi-venue. It's no longer only a
+    // seat-pool keepalive: it's also how a device discovers its login was taken
+    // over elsewhere (heartbeat returns false when device_id no longer matches).
+    // Leaving single-venue out would mean a displaced single-venue device kept
+    // working indefinitely, which is exactly the sharing this is meant to stop.
+    if (!currentOrg) return;
     heartbeatIntervalId = setInterval(function () {
-      sb.rpc('heartbeat').then(function (res) {
+      sb.rpc('heartbeat', { p_device_id: deviceId() }).then(function (res) {
         if (!res.error && res.data === false) {
           stopSeatHeartbeat();
-          toast('You were logged out by an admin', '#b91c1c');
+          // false now means either "an owner kicked you" or "this login was taken
+          // over on another device", and the client can't tell which apart. The
+          // wording covers both honestly rather than asserting the wrong one —
+          // saying "an admin logged you out" to someone whose colleague just
+          // signed in on the shared iPad would send them to the wrong person.
+          toast('Signed out — this login is now in use elsewhere', '#b91c1c');
           doLogout();
         }
       });
@@ -1876,6 +1979,7 @@
     $('org-mode-row').style.display = 'none';
     $('payment-pending-row').style.display = 'none';
     $('seats-full-row').style.display = 'none';
+    $('takeover-row').style.display = 'none';
     $('auth-submit').style.display = '';
     setOrgSignupMode('create');
     setOrgRowsVisible(false);
@@ -1900,8 +2004,11 @@
   // comment) — and on org-setup specifically it can silently discard a
   // typed org name, so it gets a confirmation the plain logout doesn't need.
   $('org-setup-logout').onclick = function () {
+    var onTakeover = $('takeover-row').style.display !== 'none';
     var msg = needsOrgSetup
       ? "Log out? You'll need to set up your organisation again."
+      : onTakeover
+      ? 'Log out? The other device keeps the login.'
       : seatsFull
       ? 'Log out? You can try again for a seat next time you log in.'
       : 'Log out? You can pick a plan again next time you log in.';
@@ -2350,7 +2457,11 @@
         .select().single()
         .then(function (res) {
           done();
-          if (res.error) { fail(res.error, 'Save failed'); return; }
+          // This is the one moment a scan can genuinely be lost: if the login was
+          // taken over on another device a heartbeat ago, this write fails and the
+          // number the operator just typed is gone. A bare "Save failed" would
+          // leave them re-scanning blind, so name the barcode and the likely cause.
+          if (res.error) { fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
           items.unshift(res.data);
           renderItems();
           toast(code + '  ×' + qty + ' saved');

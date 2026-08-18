@@ -38,6 +38,13 @@ window.GANTRY_AUDIT = (function () {
     // triggered an email — the owner reviewing this later should be able to see
     // how often people were actually locked out, which the throttled email
     // can't tell them.
+    // Written by claim_seat() when a login is moved to a different device. One of
+    // these is ordinary (someone swapped phone for tablet); a run of them on the
+    // same account is the signature of a shared login being passed around, which
+    // is otherwise invisible.
+    'session.taken_over': function (r) {
+      return r.target_label + ' signed in on a different device, signing out the previous one';
+    },
     'seat.denied': function (r) {
       var a = r.after || {};
       if (typeof a.seats_purchased !== 'number') {
