@@ -5,6 +5,54 @@ planning doesn't re-derive it. Delete an entry when it ships.
 
 ---
 
+## Shared logins bypass the seat paywall — and undermine the audit trail
+
+**Raised 2026-08-18.** One login used on ten devices consumes **one** seat. A venue
+can put a single account on every phone and never pay for a second seat.
+
+**Mechanism, and it's by design rather than a bug:** `active_sessions.user_id` is
+the PRIMARY KEY ([schema.sql](schema.sql)) — one row per *person*, not per device.
+`claim_seat()` says so explicitly: if a row already exists for `auth.uid()` it
+refreshes `last_seen_at` and returns true, with the comment *"Already holding a
+seat (e.g. a second device…) — refresh it, don't count it twice."* That was written
+for the legitimate one-person-two-devices case, and it hands over the bypass as a
+side effect. Nothing is broken; the model is just wrong for the business.
+
+**The second consequence is worse than the billing one.** The whole
+dispute-protection trail shipped on 2026-08-18 attributes actions to a *user*:
+"Sam Lee deleted stocktake X — 247 items". If ten people share Sam's login, that
+sentence is worthless as evidence, which is the one thing it exists to be. So this
+isn't only revenue leakage — it quietly devalues the audit work.
+
+**Options:**
+
+1. **One device per login** (recommended starting point). Keep one seat per
+   person, but a login from a new device ends the previous session — the
+   streaming-service model. Sharing an account stops being *useful*: ten staff on
+   one login can't work at the same time, which is exactly the paywall. Costs
+   nothing extra for a legitimate user and strengthens attribution. The downside
+   is a real one: someone genuinely moving between a phone and a tablet gets
+   logged out. The `kick-user` function and the heartbeat machinery needed for
+   this already exist.
+2. **Per-device seats.** Add a client-generated persistent device id and key
+   `active_sessions` on it, so ten devices consume ten seats. The most literal
+   reading of "concurrent users", and it bills the actual usage — but it also
+   charges a single operator with two devices for two seats, which needs to be a
+   deliberate pricing decision, not an accident.
+3. **Detect and report only.** Log when one account is seen from several devices
+   and surface it to the owner (and to you). Softest, and doesn't stop anything.
+
+Worth noting enforcement would be *fair* here: `create-team-member` already lets
+an owner create individual logins directly, with no join code and no email
+round-trip, so "we share one login because setting up accounts is a hassle" isn't
+true of this product.
+
+**Not started. Needs a pricing decision before implementation** — options 1 and 2
+imply different things about what a "seat" is, and the answer should be the same
+one used in the plan copy and STRIPE-SETUP.md.
+
+---
+
 ## Log exports
 
 **Raised 2026-08-19, while shipping the three-state workflow below.** Exports are

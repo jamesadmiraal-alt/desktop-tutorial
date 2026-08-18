@@ -2554,18 +2554,28 @@
   // revoked (schema.sql), which is what makes the transition impossible to make
   // without a log entry. `reason` only shapes the log wording ('manual' here vs
   // 'export' from exportWithFormat), never permissions.
-  function setTakeStatus(t, status, reason, cb) {
+  // onDone runs whether the call succeeded or failed. The export path relies on
+  // that: the operator asked for a CSV, and withholding it because a status
+  // update failed would be the wrong trade.
+  function setTakeStatus(t, status, reason, onDone) {
     sb.rpc('set_stocktake_status', {
       p_stocktake_id: t.id, p_status: status, p_reason: reason
     }).then(function (res) {
-      if (res.error) { fail(res.error, 'Could not update stocktake'); return; }
-      t.status = status;
-      $('take-actions-overlay').classList.remove('open');
-      renderHome();
-      if (reason === 'manual') {
-        toast(status === 'ready_for_export' ? 'Marked ready for export' : 'Back to in progress');
+      if (res.error) {
+        fail(res.error, 'Could not update stocktake');
+      } else {
+        t.status = status;
+        $('take-actions-overlay').classList.remove('open');
+        renderHome();
+        if (reason === 'manual') {
+          toast(status === 'ready_for_export' ? 'Marked ready for export' : 'Back to in progress');
+        }
       }
-      if (cb) cb();
+      if (onDone) onDone();
+    }, function (err) {
+      // Network-level rejection, not a Postgres error.
+      fail({ message: (err && err.message) || 'request failed' }, 'Could not update stocktake');
+      if (onDone) onDone();
     });
   }
 
@@ -2580,20 +2590,36 @@
   function exportWithFormat(builder, suffix) {
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
-      downloadCsv(builder(actionsTake, takeItems), fileName(actionsTake, suffix));
-      toast('CSV downloaded');
+      // Snapshot everything up front: the overlay closes below and actionsTake can
+      // be repointed by the next ⋯ tap before the async work finishes.
+      var take = actionsTake;
+      var csv = builder(take, takeItems);
+      var name = fileName(take, suffix);
       $('export-format-overlay').classList.remove('open');
-      // A successful export still marks the stocktake Completed — but that is now
-      // the END of the workflow rather than the only way into it: a venue marks a
-      // count 'ready_for_export' first, which is what tells head office there's
-      // something to export at all. Reopening afterwards is owner/manager.
-      //
-      // Via the RPC, not a direct update: client UPDATE on stocktakes is revoked,
-      // and this transition needs to be in the activity log like any other.
-      // reason:'export' only distinguishes the log wording from a manual move.
-      if (actionsTake.status !== 'completed') {
-        setTakeStatus(actionsTake, 'completed', 'export');
+
+      function deliver() {
+        downloadCsv(csv, name);
+        toast('CSV downloaded');
       }
+
+      // Status FIRST, download second — the order is load-bearing, not tidiness.
+      // downloadCsv() clicks an <a download> on a blob URL, and iOS Safari (plus
+      // native WebViews) treat that as a navigation, which CANCELS in-flight
+      // fetches and can unload the page. Doing the download first meant the
+      // status RPC was killed before it reached Postgres: on iPhone the CSV
+      // arrived, the stocktake stayed in Ready for export, no audit row was
+      // written, and no error was visible because the page had already gone.
+      // Desktop Chrome happened to survive it, which is what made this look like
+      // it worked. Firing the RPC first and delivering the file from its
+      // completion handler removes the race on every platform.
+      //
+      // A successful export marks the count Completed — the END of the workflow
+      // now rather than the only way into it: a venue marks it 'ready_for_export'
+      // first, which is what tells head office there's anything to export.
+      // Via the RPC because client UPDATE on stocktakes is revoked, and because
+      // this transition belongs in the activity log like every other.
+      if (take.status === 'completed') { deliver(); return; }
+      setTakeStatus(take, 'completed', 'export', deliver);
     });
   }
   $('export-full').onclick = function () { exportWithFormat(buildCsv, ''); };
