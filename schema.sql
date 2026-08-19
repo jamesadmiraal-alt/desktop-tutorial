@@ -326,7 +326,21 @@ create table public.stocktake_items (
   scanned_by uuid references auth.users(id) on delete set null default auth.uid(),
   last_scanned_by uuid references auth.users(id) on delete set null default auth.uid(),
   barcode text not null,
-  qty integer not null check (qty >= 1),
+  -- numeric, not integer: bars count PART bottles. Spirits and wine sold by the
+  -- glass are routinely half or a quarter full, and an operator eyeballing 0.4 of
+  -- a bottle previously had to round to 1 (wrong) or 0 (which the old
+  -- `check (qty >= 1)` rejected outright). 2 decimal places covers quarters,
+  -- tenths and twentieths without implying precision an eyeball estimate doesn't
+  -- have.
+  --
+  -- `>= 0`, not `>= 1`: zero is a real and useful count — "I checked this line and
+  -- there are none" is different information from "never scanned it", and the old
+  -- constraint made it unrecordable. Still not negative, which is never a count.
+  --
+  -- Anything reading this in JS must coerce with Number(): a numeric column can
+  -- arrive as a string depending on serialisation, and `0 + "0.40"` is `"00.40"`,
+  -- which would corrupt every total silently rather than throwing.
+  qty numeric(12,2) not null check (qty >= 0),
   first_scanned timestamptz not null default now(),
   last_scanned timestamptz not null default now(),
   unique (stocktake_id, barcode)
@@ -1144,7 +1158,10 @@ declare
   actor_label text;
   org_label text;
   item_count integer;
-  unit_total bigint;
+  -- numeric, not bigint: qty is numeric(12,2) now, and a bigint accumulator would
+  -- silently truncate a part-bottle total — "247 items, 1032 units" turning into
+  -- 1032 when the real figure is 1032.75 makes the log's own evidence wrong.
+  unit_total numeric;
 begin
   if actor is null then
     return old;
@@ -1226,7 +1243,7 @@ declare
   org_label text;
   removed jsonb;
   removed_count integer;
-  unit_total bigint;
+  unit_total numeric; -- numeric, not bigint — see log_stocktakes_change above
 begin
   if v_org is null then
     raise exception 'You do not belong to an organisation.';
@@ -1289,7 +1306,7 @@ declare
   take_name text;
   take_org uuid;
   cleared_count integer;
-  cleared_units bigint;
+  cleared_units numeric; -- numeric, not bigint — see log_stocktakes_change above
 begin
   select s.org_id, s.name into take_org, take_name
     from public.stocktakes s where s.id = p_stocktake_id;
@@ -1416,8 +1433,10 @@ grant execute on function public.set_stocktake_status(uuid, text, text) to authe
 -- anything: `update stocktake_items set qty = 1` walks a 247-unit line down to
 -- nothing, and until this trigger existed the only trigger on this table was
 -- touch_stocktake_on_items (which just bumps updated_at), so it left no trace
--- at all. `qty >= 1` is not a defence — 247 units becoming 1 is functionally
--- "the system lost our count".
+-- at all. The check constraint is no defence — 247 units becoming 1, or now 0,
+-- is functionally "the system lost our count". Zero being a legal quantity makes
+-- this trigger more important than it was, not less: walking a line to 0 is now a
+-- single edit rather than something the constraint blocked.
 --
 -- Statement-level with a transition table: one audit row per UPDATE statement
 -- regardless of how many rows it touched, which is what makes logging this

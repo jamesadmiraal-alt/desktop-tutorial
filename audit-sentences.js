@@ -18,6 +18,21 @@ window.GANTRY_AUDIT = (function () {
     return n + ' ' + word + (n === 1 ? '' : 's');
   }
 
+  // qty is numeric(12,2) in Postgres (bars count part bottles), so unit totals in
+  // audit payloads can arrive as "1032.00" or as a string. Both would read badly
+  // in a sentence meant to be quoted in a dispute — and a string would make any
+  // arithmetic here concatenate rather than add. Same helper as app.html's
+  // qtyText(), kept local because this file has no dependency on it.
+  function units(v) {
+    var n = Number(v);
+    return String(isFinite(n) ? Number(n.toFixed(2)) : 0);
+  }
+  // "Is this a usable number?", tolerating the string form. Used instead of
+  // `typeof x === 'number'` so a numeric-as-string doesn't read as absent.
+  function hasNum(v) {
+    return v !== null && v !== undefined && v !== '' && isFinite(Number(v));
+  }
+
   // One sentence per row, built from `action` — not a generic diff viewer.
   var SENTENCES = {
     'venue.created': function (r) { return r.actor_label + ' added venue "' + r.target_label + '"'; },
@@ -66,7 +81,7 @@ window.GANTRY_AUDIT = (function () {
       var n = r.before && r.before.items_deleted;
       if (typeof n !== 'number') return r.actor_label + ' deleted stocktake "' + r.target_label + '"';
       return r.actor_label + ' deleted stocktake "' + r.target_label + '" — ' + plural(n, 'item')
-        + ', ' + r.before.units_deleted + ' units';
+        + ', ' + units(r.before.units_deleted) + ' units';
     },
     // Written by set_stocktake_status(). `reason` separates a deliberate move
     // from the automatic one an export makes, which is the difference between
@@ -90,32 +105,36 @@ window.GANTRY_AUDIT = (function () {
       return r.actor_label + ' changed the status of "' + r.target_label + '"';
     },
     'stocktake_items.cleared': function (r) {
-      var n = r.before && r.before.items_cleared;
-      if (typeof n !== 'number') return r.actor_label + ' cleared all items from "' + r.target_label + '"';
-      return r.actor_label + ' cleared ' + plural(n, 'item')
-        + (typeof r.before.units_cleared === 'number' ? ' (' + r.before.units_cleared + ' units)' : '')
+      var b = r.before || {};
+      // hasNum, not `typeof === 'number'`: unit totals come from a numeric column
+      // and may serialise as strings, which the old typeof check would have
+      // treated as "absent" and silently dropped the figure from the sentence.
+      if (!hasNum(b.items_cleared)) return r.actor_label + ' cleared all items from "' + r.target_label + '"';
+      return r.actor_label + ' cleared ' + plural(Number(b.items_cleared), 'item')
+        + (hasNum(b.units_cleared) ? ' (' + units(b.units_cleared) + ' units)' : '')
         + ' from "' + r.target_label + '"';
     },
     'stocktake_items.deleted': function (r) {
       var b = r.before || {};
-      if (typeof b.items_deleted !== 'number') {
+      if (!hasNum(b.items_deleted)) {
         return r.actor_label + ' removed items from "' + r.target_label + '"';
       }
       // A single removal names the actual barcode — that specificity is the
       // whole value. A batch stays summarised so one action can't flood the list.
-      var one = (b.items_deleted === 1 && b.items && b.items[0]) ? b.items[0] : null;
-      var what = one ? '“' + one.barcode + '” ×' + one.qty
-                     : plural(b.items_deleted, 'item')
-                       + (typeof b.units_deleted === 'number' ? ' (' + b.units_deleted + ' units)' : '');
+      var count = Number(b.items_deleted);
+      var one = (count === 1 && b.items && b.items[0]) ? b.items[0] : null;
+      var what = one ? '“' + one.barcode + '” ×' + units(one.qty)
+                     : plural(count, 'item')
+                       + (hasNum(b.units_deleted) ? ' (' + units(b.units_deleted) + ' units)' : '');
       return r.actor_label + ' removed ' + what + ' from "' + r.target_label + '"';
     },
     'stocktake_items.qty_reduced': function (r) {
       var b = r.before || {};
-      if (typeof b.lines_reduced !== 'number') {
+      if (!hasNum(b.lines_reduced)) {
         return r.actor_label + ' reduced quantities in "' + r.target_label + '"';
       }
-      return r.actor_label + ' reduced ' + plural(b.lines_reduced, 'line') + ' in "' + r.target_label
-        + '" by ' + b.units_removed + ' units';
+      return r.actor_label + ' reduced ' + plural(Number(b.lines_reduced), 'line') + ' in "' + r.target_label
+        + '" by ' + units(b.units_removed) + ' units';
     },
 
     'organisation.name_changed': function (r) { return r.actor_label + ' renamed the organisation from "' + r.before.name + '" to "' + r.after.name + '"'; },
