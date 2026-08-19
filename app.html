@@ -89,6 +89,10 @@
   }
   #acct-note { font-size: 0.75rem; color: var(--text-faint); line-height: 1.5; margin-top: 10px; }
   #logout-btn, .manage-sub-btn { width: 100%; margin-top: 4px; }
+  /* Full-width like Manage subscription — it's the card's primary action, so it
+     gets the same weight rather than the .link-btn treatment used for the
+     secondary "Change region" / "Edit" affordances beside it. */
+  .acct-nav-btn { width: 100%; margin-top: 12px; }
 
   .acct-country-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .acct-country-row span { font-size: 0.95rem; }
@@ -506,12 +510,18 @@
       <span id="acct-country-display"></span>
       <button id="change-region-btn" class="link-btn">Change region</button>
     </div>
-    <button id="open-admin-btn" class="link-btn" style="display:none;margin-top:10px">Manage staff, locations & plan →</button>
+    <!-- A real button, not an underlined sentence. This is the main way into the
+         admin surface, and "Manage staff, locations & plan →" read as body copy
+         that happened to be clickable rather than as the primary action of the
+         card. Only ever one of these two is visible (see renderOrgAccountInfo),
+         and they lead to the same conceptual place, so both are labelled "Admin"
+         — the label shouldn't change depending on the plan. -->
+    <button id="open-admin-btn" class="acct-nav-btn" style="display:none">Admin</button>
     <!-- Single-venue equivalent of open-admin-btn — admin.html is
          multi-venue-only (see checkAccessAndEnter() there), so single-venue
          owners/managers get an in-app Team view instead of a dead-end
          external link. See showView('team')/#team-view. -->
-    <button id="open-team-btn" class="link-btn" style="display:none;margin-top:10px">Manage team & location →</button>
+    <button id="open-team-btn" class="acct-nav-btn" style="display:none">Admin</button>
   </div>
   <div class="acct-card" id="acct-subscription-card">
     <h3>Subscription</h3>
