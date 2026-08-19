@@ -1614,21 +1614,20 @@ begin
   end if;
 
   -- ---- Rule 2: the seat pool (multi-venue, non-owner) ----
-  -- The owner is always free and must not count against the pool they're
-  -- paying for (see the concurrent_seats column comment). Bug fixed here:
-  -- this count previously included every active_sessions row in the org,
-  -- so an org with 0 purchased extra seats blocked the very first staff
-  -- login even before the owner logged in anywhere, and once seats WERE
-  -- purchased, the owner's own session silently ate one of them.
   if v_plan = 'multi' and v_role is distinct from 'owner' then
-    select count(*) into v_occupied
-      from public.active_sessions s
-      join public.memberships m on m.user_id = s.user_id and m.org_id = s.org_id
-     where s.org_id = v_org_id
-       and s.last_seen_at > v_stale_before
-       and m.role is distinct from 'owner';
+    select count(*) into v_occupied from public.active_sessions
+     where org_id = v_org_id and last_seen_at > v_stale_before;
 
     if v_occupied >= v_seats then
+      -- Distinguish "nobody's purchased any staff seats yet" (v_seats = 0,
+      -- true even with v_occupied = 0 — this is the very first non-owner
+      -- login on a fresh org) from a pool that's genuinely full right now.
+      -- The client shows different, non-misleading copy for each: telling
+      -- someone to "ask a teammate to log out" when there IS no teammate
+      -- logged in is actively wrong, not just unhelpful.
+      if v_seats = 0 then
+        return jsonb_build_object('granted', false, 'reason', 'no_seats_purchased');
+      end if;
       return jsonb_build_object('granted', false, 'reason', 'seats_full');
     end if;
   end if;
@@ -1713,13 +1712,9 @@ begin
     return jsonb_build_object('denied', false, 'notify', false, 'reason', 'caller holds a seat');
   end if;
 
-  -- Same owner-exclusion fix as claim_seat()'s Rule 2 — see its comment.
-  select count(*) into v_occupied
-    from public.active_sessions s
-    join public.memberships m on m.user_id = s.user_id and m.org_id = s.org_id
-   where s.org_id = v_org_id
-     and s.last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5)
-     and m.role is distinct from 'owner';
+  select count(*) into v_occupied from public.active_sessions
+   where org_id = v_org_id
+     and last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5);
 
   if v_occupied < v_seats then
     return jsonb_build_object('denied', false, 'notify', false, 'reason', 'a seat is available');
