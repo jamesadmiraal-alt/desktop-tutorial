@@ -1354,6 +1354,18 @@
       // keeps the audit trail meaningful), while the seat POOL is still
       // multi-and-non-owner. This branch used to be skipped entirely for
       // single-venue — exactly where a shared login is most likely.
+      //
+      // Bug fixed here: a user with NO organisation at all (fresh signup,
+      // before create/join) has no active_sessions row to claim in the first
+      // place — claim_seat() correctly returns reason:'no_organisation' for
+      // this case, but nothing in this file ever handled that reason, so it
+      // fell through to the generic seats-full screen ("All seats are in
+      // use") instead of routing to showOrgSetupPrompt(). A brand-new signup
+      // was landing on a paid-plan lockout screen before ever being offered
+      // the chance to create or join an organisation. Skipping claim_seat
+      // entirely when there's no org yet is both the fix and the correct
+      // behavior — there is nothing to claim a seat in.
+      if (!currentOrg) { cb(); return; }
       claimSeat(false, announceTierChangeIfAny, cb);
     });
   }
@@ -1373,6 +1385,12 @@
         }
         if (!d.granted) {
           if (d.reason === 'other_device') { showTakeoverPrompt(onGranted, cb); return; }
+          // Defensive: refreshOrgStatus() no longer calls claimSeat() at all
+          // without an org (see its comment), so this shouldn't be reachable
+          // in practice — but if it ever is, routing to the correct screen
+          // beats silently showing "All seats are in use" for a problem
+          // that has nothing to do with seats.
+          if (d.reason === 'no_organisation') { showOrgSetupPrompt(); return; }
           showSeatsFullPrompt(d.reason);
           // Both are real seat-capacity signals worth telling the owner about
           // (record_seat_denial() on the server already reports seats_purchased,
