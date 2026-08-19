@@ -95,6 +95,8 @@
   .new-badge { background: var(--accent); color: var(--on-accent); font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
   #roster-list:empty::after { content: 'No members yet.'; color: var(--text-dim); font-size: 0.85rem; }
 
+  /* .audit-row styles are still used by app.html's Team view via the shared
+     renderer; admin.html now shows the log as a table instead (see .audit-table). */
   .audit-row { padding: 9px 0; border-bottom: 1px solid var(--border); }
   .audit-row:last-child { border-bottom: none; }
   .audit-row .msg { font-size: 0.88rem; color: var(--text); }
@@ -103,6 +105,45 @@
      on :empty::after, so the same empty state works in app.html's Team view
      where the surrounding CSS differs. */
   .audit-empty { color: var(--text-dim); font-size: 0.85rem; }
+
+  /* ---- Tabs ---- */
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 16px; overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+  }
+  .tabs button {
+    flex: none; background: transparent; color: var(--text-dim);
+    font-size: 0.9rem; font-weight: 600; padding: 10px 14px; border-radius: 0;
+    border-bottom: 2px solid transparent; white-space: nowrap;
+  }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .tab-pane[hidden] { display: none; }
+
+  /* ---- Activity log table ---- */
+  .audit-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
+  .audit-filters label { display: block; font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; }
+  .audit-filters .f { flex: 1 1 150px; min-width: 130px; }
+  .audit-filters input, .audit-filters select { width: 100%; }
+  .audit-filters .f-actions { flex: none; display: flex; gap: 8px; }
+  /* CLAUDE.md: wide content scrolls inside its own container rather than making
+     the page scroll sideways. admin.html is capped at 820px but still gets opened
+     on a phone, where five columns will not fit. */
+  .audit-scroll { overflow-x: auto; }
+  .audit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .audit-table th, .audit-table td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .audit-table th { color: var(--text-dim); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+  .audit-table th.sortable { cursor: pointer; user-select: none; }
+  .audit-table th.sortable:hover { color: var(--text); }
+  .audit-table td.when, .audit-table td.who { white-space: nowrap; }
+  .audit-table td.what { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: var(--text-body); white-space: nowrap; }
+  .audit-table td.details { color: var(--text-body); min-width: 240px; }
+  .audit-pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
+  .audit-pager .count { font-size: 0.8rem; color: var(--text-dim); }
+  .audit-pager .btns { display: flex; gap: 8px; }
+  .audit-pager button { padding: 8px 14px; font-size: 0.85rem; }
 
   .session-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .session-row:last-child { border-bottom: none; }
@@ -213,6 +254,17 @@
     <span class="plan-badge" id="org-plan-badge"></span>
   </div>
 
+  <!-- Organisation above, everything else in tabs. The org card is identity
+       rather than a section, so it stays visible whichever tab is open.
+       Each pane's data loads on first activation — see showTab(). -->
+  <div class="tabs" role="tablist">
+    <button role="tab" data-tab="venues" aria-selected="true">Venues</button>
+    <button role="tab" data-tab="team" aria-selected="false">Team</button>
+    <button role="tab" data-tab="seats" aria-selected="false" id="tab-btn-seats" style="display:none">Seats</button>
+    <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
+  </div>
+
+  <div class="tab-pane" data-pane="venues">
   <div class="card">
     <h2>Venues</h2>
     <p class="hint">Staff can only start stocktakes at a location listed here. Locations are grouped under a venue.</p>
@@ -225,7 +277,9 @@
       Single-venue includes one venue, with unlimited locations inside it. Upgrade to Multi-venue from the app's Account page for unlimited venues.
     </p>
   </div>
+  </div><!-- /pane venues -->
 
+  <div class="tab-pane" data-pane="team" hidden>
   <div class="card">
     <h2>Team</h2>
     <!-- The one place the three roles are actually explained. Everything here is
@@ -275,7 +329,24 @@
     </div>
   </div>
 
-  <div class="card" id="seats-card" style="display:none">
+  <div class="card">
+    <h2>Join code</h2>
+    <p class="hint">Durable — share it with a new hire along with today's code below. Rotating it invalidates the old one immediately.</p>
+    <div class="code-box" id="join-code-display">&nbsp;</div>
+    <button id="rotate-join-code-btn" class="link-btn" style="display:block;margin-top:10px">Rotate code</button>
+  </div>
+
+  <div class="card">
+    <h2>Today's code</h2>
+    <p class="hint">Changes automatically once a day. Only share it with someone joining today — both this and the join code above are required together.</p>
+    <div class="code-box" id="daily-code-display">…</div>
+  </div>
+  </div><!-- /pane team -->
+
+  <!-- Seats: multi-venue only. The TAB is hidden for single-venue rather than
+       showing an empty pane (see checkAccessAndEnter). -->
+  <div class="tab-pane" data-pane="seats" hidden>
+  <div class="card" id="seats-card">
     <h2>Concurrent seats</h2>
     <!-- Owner-only controls are wrapped so a manager still gets the useful
          read-only half of this card ("who's logged in right now", which
@@ -302,25 +373,62 @@
     <label style="margin-top:16px">Currently active</label>
     <div id="active-sessions-list"></div>
   </div>
+  </div><!-- /pane seats -->
 
-  <div class="card">
-    <h2>Join code</h2>
-    <p class="hint">Durable — share it with a new hire along with today's code below. Rotating it invalidates the old one immediately.</p>
-    <div class="code-box" id="join-code-display">&nbsp;</div>
-    <button id="rotate-join-code-btn" class="link-btn" style="display:block;margin-top:10px">Rotate code</button>
-  </div>
-
-  <div class="card">
-    <h2>Today's code</h2>
-    <p class="hint">Changes automatically once a day. Only share it with someone joining today — both this and the join code above are required together.</p>
-    <div class="code-box" id="daily-code-display">…</div>
-  </div>
-
+  <div class="tab-pane" data-pane="activity" hidden>
   <div class="card">
     <h2>Activity log</h2>
-    <p class="hint">Recent location, team and organisation changes — most recent first.</p>
-    <div id="audit-log-list"></div>
+    <p class="hint">Every deletion, quantity change, status change and team change, with who did it.
+      Nobody can edit or remove an entry — not even you. Filters and sorting apply to the
+      <b>whole</b> log, not just the page you're looking at.</p>
+
+    <div class="audit-filters">
+      <div class="f">
+        <label for="audit-from">From</label>
+        <input id="audit-from" type="date">
+      </div>
+      <div class="f">
+        <label for="audit-to">To</label>
+        <input id="audit-to" type="date">
+      </div>
+      <div class="f">
+        <label for="audit-who">Who</label>
+        <input id="audit-who" type="text" placeholder="Name or email">
+      </div>
+      <div class="f">
+        <label for="audit-what">What</label>
+        <select id="audit-what"><option value="">Anything</option></select>
+      </div>
+      <div class="f-actions">
+        <button id="audit-apply" class="primary">Apply</button>
+        <button id="audit-reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="audit-scroll">
+      <table class="audit-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="created_at">When</th>
+            <th class="sortable" data-sort="actor_label">Who</th>
+            <th class="sortable" data-sort="action">What</th>
+            <th>Item</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody id="audit-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="audit-pager">
+      <div class="count" id="audit-count"></div>
+      <div class="btns">
+        <button id="audit-prev">‹ Newer</button>
+        <button id="audit-next">Older ›</button>
+      </div>
+    </div>
   </div>
+  </div><!-- /pane activity -->
 </div>
 
 <div id="edit-member-overlay" class="overlay">
@@ -415,6 +523,48 @@
     });
     $('logout-btn').style.display = name === 'login' ? 'none' : '';
   }
+
+  // ---- Tabs ----
+  // Each pane's data loads on FIRST activation only. Before tabs, entering the
+  // console fired five loaders at once; four of those were for content nobody was
+  // looking at yet.
+  //
+  // The tab is mirrored into location.hash so it survives a refresh and can be
+  // linked — "look at the activity log" is a thing you want to be able to send
+  // someone, and a bare admin.html URL would always land them on Venues.
+  var TAB_LOADERS = {
+    venues: function () { loadVenues(); },
+    team: function () { loadRoster(); loadDailyCode(); },
+    seats: function () { loadActiveSessions(); },
+    activity: function () { loadAuditLog(); }
+  };
+  var tabsLoaded = {};
+
+  function showTab(name) {
+    if (!TAB_LOADERS[name]) name = 'venues';
+    // Never leave someone on a tab that doesn't apply to their plan.
+    if (name === 'seats' && !(currentOrg && currentOrg.planTier === 'multi')) name = 'venues';
+
+    document.querySelectorAll('.tab-pane').forEach(function (p) {
+      p.hidden = p.getAttribute('data-pane') !== name;
+    });
+    document.querySelectorAll('.tabs button[data-tab]').forEach(function (b) {
+      b.setAttribute('aria-selected', b.getAttribute('data-tab') === name ? 'true' : 'false');
+    });
+
+    if (!tabsLoaded[name]) {
+      tabsLoaded[name] = true;
+      TAB_LOADERS[name]();
+    }
+    // replaceState, not a hash assignment: writing location.hash would push a
+    // history entry per tab click, so Back would walk the tabs instead of
+    // leaving the console.
+    try { history.replaceState(null, '', '#' + name); } catch (e) {}
+  }
+
+  document.querySelectorAll('.tabs button[data-tab]').forEach(function (b) {
+    b.onclick = function () { showTab(b.getAttribute('data-tab')); };
+  });
 
   function isOwner() {
     return !!(currentOrg && currentOrg.role === 'owner');
@@ -901,22 +1051,173 @@
   }
 
   // ---- Activity log ----
-  // Sentence map and row rendering live in audit-sentences.js, shared with
-  // app.html's Team view so the two surfaces can't drift apart.
-  function renderAuditLog(rows) {
-    GANTRY_AUDIT.render($('audit-log-list'), rows);
+  // A table here, not the sentence list app.html's Team view uses: this is the
+  // surface where an owner needs to ask "every deletion Sam made in July", which
+  // needs columns to sort and filter by. The Details column still comes from
+  // GANTRY_AUDIT.describe(), so the shared sentence map serves both and app.html
+  // is untouched — a phone has no business rendering a sortable table.
+  //
+  // Everything below filters and sorts SERVER-SIDE, across the whole log. Doing it
+  // client-side over a fetched window would have been far less code and quietly
+  // wrong: "oldest first" would show the oldest of the newest page, and filtering
+  // by a person would silently omit anything older. Plausible answers that are
+  // wrong are worse than no filter in something meant to settle a dispute.
+  var AUDIT_PAGE_SIZE = 50;
+  var auditState = { page: 0, sort: 'created_at', asc: false, total: 0 };
+
+  // Options come from the shared sentence map's own keys, so an action added
+  // server-side can't exist without appearing in this filter.
+  var actionFilterBuilt = false;
+  function buildActionFilter() {
+    // Guarded: checkAccessAndEnter runs again on every login, and without this a
+    // logout/login cycle would append a second copy of every option.
+    if (actionFilterBuilt) return;
+    actionFilterBuilt = true;
+    var sel = $('audit-what');
+    var actions = Object.keys(GANTRY_AUDIT.SENTENCES).sort();
+    var groups = {};
+    actions.forEach(function (a) {
+      var prefix = a.split('.')[0];
+      (groups[prefix] = groups[prefix] || []).push(a);
+    });
+    Object.keys(groups).sort().forEach(function (prefix) {
+      var og = document.createElement('optgroup');
+      og.label = prefix.replace(/_/g, ' ');
+      groups[prefix].forEach(function (a) {
+        var o = document.createElement('option');
+        o.value = a;
+        o.textContent = a.split('.')[1].replace(/_/g, ' ');
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+  }
+
+  function renderAuditTable(rows) {
+    var tb = $('audit-tbody');
+    tb.innerHTML = '';
+    if (!rows.length) {
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 5;
+      td.className = 'audit-empty';
+      // Two different meanings for one empty table. Without this distinction an
+      // owner whose filter matched nothing would reasonably conclude the log
+      // itself was broken.
+      td.textContent = auditFiltersActive()
+        ? 'No activity matches these filters.'
+        : 'No activity yet.';
+      tr.appendChild(td); tb.appendChild(tr);
+      return;
+    }
+    rows.forEach(function (r) {
+      var tr = document.createElement('tr');
+      function cell(cls, text) {
+        var td = document.createElement('td');
+        td.className = cls;
+        td.textContent = text;
+        tr.appendChild(td);
+      }
+      cell('when', new Date(r.created_at).toLocaleString());
+      cell('who', r.actor_label || '—');
+      cell('what', r.action || '—');
+      cell('item', r.target_label || '—');
+      cell('details', GANTRY_AUDIT.describe(r));
+      tb.appendChild(tr);
+    });
+  }
+
+  function auditFiltersActive() {
+    return !!($('audit-from').value || $('audit-to').value ||
+              $('audit-who').value.trim() || $('audit-what').value);
+  }
+
+  function renderSortIndicators() {
+    document.querySelectorAll('.audit-table th.sortable').forEach(function (th) {
+      var col = th.getAttribute('data-sort');
+      var base = th.textContent.replace(/[ ▲▼]+$/, '');
+      th.textContent = base + (col === auditState.sort ? (auditState.asc ? ' ▲' : ' ▼') : '');
+    });
   }
 
   function loadAuditLog() {
-    // 100, not 30: per-item removals now write a row each, so a single busy
-    // stocktake could previously have pushed a whole day's team and venue
-    // changes off the end of the list.
-    sb.from('audit_log').select('*').eq('org_id', currentOrg.id)
-      .order('created_at', { ascending: false }).limit(100).then(function (res) {
-        if (res.error) { fail(res.error, 'Could not load activity log'); return; }
-        renderAuditLog(res.data || []);
-      });
+    var from = $('audit-from').value;
+    var to = $('audit-to').value;
+    var who = $('audit-who').value.trim();
+    var what = $('audit-what').value;
+
+    var q = sb.from('audit_log').select('*', { count: 'exact' }).eq('org_id', currentOrg.id);
+
+    // Both ends are built from LOCAL midnight and sent as UTC instants, and they
+    // have to be built the same way. created_at is timestamptz while the date
+    // inputs are calendar dates, so "15 July" means the operator's 15 July, not
+    // UTC's. Passing the bare 'YYYY-MM-DD' through would let Postgres read it as
+    // UTC midnight — which in UTC+9:30 silently drops the first nine and a half
+    // hours of the from-date while the to-date used local time. Same range,
+    // two timezones.
+    if (from) {
+      q = q.gte('created_at', new Date(from + 'T00:00:00').toISOString());
+    }
+    if (to) {
+      // EXCLUSIVE next-day bound: `lte('created_at', '2026-08-20')` compares
+      // against midnight and so drops everything that happened during the 20th —
+      // a same-day filter would come back empty and be believed.
+      var next = new Date(to + 'T00:00:00');
+      next.setDate(next.getDate() + 1);
+      q = q.lt('created_at', next.toISOString());
+    }
+    if (who) q = q.ilike('actor_label', '%' + who + '%');
+    if (what) q = q.eq('action', what);
+
+    q = q.order(auditState.sort, { ascending: auditState.asc });
+    // Stable tiebreak. actor_label and action repeat constantly, so ordering by
+    // one alone is non-deterministic across pages — rows would appear twice or be
+    // skipped entirely while paging, which in an evidence log is indefensible.
+    if (auditState.sort !== 'created_at') q = q.order('created_at', { ascending: false });
+    q = q.order('id', { ascending: true });
+
+    var start = auditState.page * AUDIT_PAGE_SIZE;
+    q = q.range(start, start + AUDIT_PAGE_SIZE - 1);
+
+    q.then(function (res) {
+      if (res.error) { fail(res.error, 'Could not load activity log'); return; }
+      var rows = res.data || [];
+      auditState.total = (typeof res.count === 'number') ? res.count : rows.length;
+      renderAuditTable(rows);
+      renderSortIndicators();
+
+      var first = auditState.total === 0 ? 0 : start + 1;
+      var last = start + rows.length;
+      $('audit-count').textContent = auditState.total
+        ? 'Showing ' + first + '–' + last + ' of ' + auditState.total
+        : '';
+      $('audit-prev').disabled = auditState.page === 0;
+      $('audit-next').disabled = last >= auditState.total;
+    });
   }
+
+  document.querySelectorAll('.audit-table th.sortable').forEach(function (th) {
+    th.onclick = function () {
+      var col = th.getAttribute('data-sort');
+      if (auditState.sort === col) auditState.asc = !auditState.asc;
+      else { auditState.sort = col; auditState.asc = false; }
+      auditState.page = 0; // a re-sort makes the old page number meaningless
+      loadAuditLog();
+    };
+  });
+  $('audit-apply').onclick = function () { auditState.page = 0; loadAuditLog(); };
+  $('audit-reset').onclick = function () {
+    $('audit-from').value = ''; $('audit-to').value = '';
+    $('audit-who').value = ''; $('audit-what').value = '';
+    auditState.page = 0; loadAuditLog();
+  };
+  $('audit-prev').onclick = function () {
+    if (auditState.page > 0) { auditState.page--; loadAuditLog(); }
+  };
+  $('audit-next').onclick = function () { auditState.page++; loadAuditLog(); };
+  $('audit-who').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $('audit-apply').onclick();
+  });
 
   // ---- Auth ----
   function checkAccessAndEnter(user) {
@@ -962,19 +1263,23 @@
         showView('admin');
         applyRoleVisibility();
         renderOrg();
-        loadVenues();
-        loadRoster();
-        loadDailyCode();
-        loadAuditLog();
-        // Concurrent seats are a multi-venue-only concept — single-venue
-        // has no seat pool at all (unlimited staff, unchanged).
+        buildActionFilter();
+
+        // Concurrent seats are a multi-venue-only concept — single-venue has no
+        // seat pool at all (unlimited staff, unchanged). The TAB is hidden rather
+        // than the card, so single-venue never sees a tab that leads nowhere.
         if (currentOrg.planTier === 'multi') {
-          $('seats-card').style.display = '';
+          $('tab-btn-seats').style.display = '';
           $('seat-count-input').value = currentOrg.concurrentSeats;
           $('heartbeat-interval-input').value = currentOrg.heartbeatIntervalSeconds;
           renderSeatTermHint();
-          loadActiveSessions();
         }
+
+        // No eager loaders any more — showTab() loads whichever pane opens, and
+        // only on its first activation. The hash lets a link land straight on the
+        // activity log; anything unrecognised falls back to Venues.
+        tabsLoaded = {};
+        showTab((location.hash || '').replace('#', ''));
       });
   }
 
