@@ -1614,9 +1614,19 @@ begin
   end if;
 
   -- ---- Rule 2: the seat pool (multi-venue, non-owner) ----
+  -- The owner is always free and must not count against the pool they're
+  -- paying for (see the concurrent_seats column comment). Bug fixed here:
+  -- this count previously included every active_sessions row in the org,
+  -- so an org with 0 purchased extra seats blocked the very first staff
+  -- login even before the owner logged in anywhere, and once seats WERE
+  -- purchased, the owner's own session silently ate one of them.
   if v_plan = 'multi' and v_role is distinct from 'owner' then
-    select count(*) into v_occupied from public.active_sessions
-     where org_id = v_org_id and last_seen_at > v_stale_before;
+    select count(*) into v_occupied
+      from public.active_sessions s
+      join public.memberships m on m.user_id = s.user_id and m.org_id = s.org_id
+     where s.org_id = v_org_id
+       and s.last_seen_at > v_stale_before
+       and m.role is distinct from 'owner';
 
     if v_occupied >= v_seats then
       return jsonb_build_object('granted', false, 'reason', 'seats_full');
@@ -1703,9 +1713,13 @@ begin
     return jsonb_build_object('denied', false, 'notify', false, 'reason', 'caller holds a seat');
   end if;
 
-  select count(*) into v_occupied from public.active_sessions
-   where org_id = v_org_id
-     and last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5);
+  -- Same owner-exclusion fix as claim_seat()'s Rule 2 — see its comment.
+  select count(*) into v_occupied
+    from public.active_sessions s
+    join public.memberships m on m.user_id = s.user_id and m.org_id = s.org_id
+   where s.org_id = v_org_id
+     and s.last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5)
+     and m.role is distinct from 'owner';
 
   if v_occupied < v_seats then
     return jsonb_build_object('denied', false, 'notify', false, 'reason', 'a seat is available');
