@@ -714,20 +714,14 @@
 <!-- ===== Home: stocktake list ===== -->
 <div id="home-view" class="view">
   <button id="new-stocktake" class="primary">＋ New stocktake</button>
-  <!-- Ready for export comes FIRST deliberately: it's the only section anyone is
-       waiting on. In Progress is ongoing work and Completed is history, but a
-       count sitting in Ready for export is blocking someone at head office.
+  <!-- Order: In Progress, then Ready for export, then Completed — the workflow's
+       own order, and the order of relevance to whoever is holding the phone. This
+       app is used by the person counting, so their unfinished work belongs at the
+       top; Ready for export is a signal aimed at head office, who read it in the
+       admin console rather than here. Completed is history and sits last.
        Each group collapses, and the count stays visible in the header when it
        does — a collapsed group that showed nothing would just be hiding
        information rather than tidying it. -->
-  <div class="take-group" data-group="ready" style="display:none">
-    <button class="group-head" type="button" aria-expanded="true">
-      <span class="chev" aria-hidden="true"></span>
-      <span class="group-name">Ready for export</span>
-      <span class="group-count"></span>
-    </button>
-    <div id="stocktake-list-ready"></div>
-  </div>
   <div class="take-group" data-group="inprogress">
     <button class="group-head" type="button" aria-expanded="true">
       <span class="chev" aria-hidden="true"></span>
@@ -735,6 +729,14 @@
       <span class="group-count"></span>
     </button>
     <div id="stocktake-list-inprogress"></div>
+  </div>
+  <div class="take-group" data-group="ready" style="display:none">
+    <button class="group-head" type="button" aria-expanded="true">
+      <span class="chev" aria-hidden="true"></span>
+      <span class="group-name">Ready for export</span>
+      <span class="group-count"></span>
+    </button>
+    <div id="stocktake-list-ready"></div>
   </div>
   <div class="take-group" data-group="completed" style="display:none">
     <button class="group-head" type="button" aria-expanded="true">
