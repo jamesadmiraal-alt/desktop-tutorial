@@ -162,7 +162,29 @@
 
   /* ---- Home (stocktakes) view ---- */
   #home-view { padding: 16px 12px; overflow-y: auto; }
-  #home-view h2 { font-size: 1rem; color: var(--text-dim); margin: 4px 4px 10px; }
+  /* Collapsible group headers. A full-width button rather than an <h2> with a
+     click handler: the whole row is the target, which matters on a phone, and it
+     gets keyboard and screen-reader behaviour for free. */
+  .group-head {
+    width: 100%; display: flex; align-items: center; gap: 8px;
+    background: transparent; color: var(--text-dim);
+    font-size: 1rem; font-weight: 600; text-align: left;
+    padding: 6px 4px; margin: 4px 0 6px; border-radius: 8px;
+    touch-action: manipulation;
+  }
+  .group-head:active { background: var(--surface); }
+  .group-head .group-name { flex: 1; }
+  .group-head .group-count { font-size: 0.85rem; font-weight: 500; color: var(--text-faint); }
+  /* CSS triangle rather than a glyph: no font-dependent width, and it rotates
+     cleanly. Points down when open, right when collapsed. */
+  .chev {
+    flex: none; width: 0; height: 0; margin-left: 2px;
+    border-left: 5px solid transparent; border-right: 5px solid transparent;
+    border-top: 6px solid currentColor;
+    transition: transform 120ms ease;
+  }
+  .group-head[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+  .group-head[aria-expanded="false"] + div { display: none; }
   #new-stocktake { width: 100%; margin-bottom: 14px; }
   .stocktake {
     display: flex; align-items: center; gap: 10px;
@@ -681,13 +703,34 @@
   <button id="new-stocktake" class="primary">＋ New stocktake</button>
   <!-- Ready for export comes FIRST deliberately: it's the only section anyone is
        waiting on. In Progress is ongoing work and Completed is history, but a
-       count sitting in Ready for export is blocking someone at head office. -->
-  <h2 id="ready-heading" style="display:none">Ready for export</h2>
-  <div id="stocktake-list-ready"></div>
-  <h2 id="inprogress-heading">In Progress</h2>
-  <div id="stocktake-list-inprogress"></div>
-  <h2 id="completed-heading" style="display:none">Completed</h2>
-  <div id="stocktake-list-completed"></div>
+       count sitting in Ready for export is blocking someone at head office.
+       Each group collapses, and the count stays visible in the header when it
+       does — a collapsed group that showed nothing would just be hiding
+       information rather than tidying it. -->
+  <div class="take-group" data-group="ready" style="display:none">
+    <button class="group-head" type="button" aria-expanded="true">
+      <span class="chev" aria-hidden="true"></span>
+      <span class="group-name">Ready for export</span>
+      <span class="group-count"></span>
+    </button>
+    <div id="stocktake-list-ready"></div>
+  </div>
+  <div class="take-group" data-group="inprogress">
+    <button class="group-head" type="button" aria-expanded="true">
+      <span class="chev" aria-hidden="true"></span>
+      <span class="group-name">In Progress</span>
+      <span class="group-count"></span>
+    </button>
+    <div id="stocktake-list-inprogress"></div>
+  </div>
+  <div class="take-group" data-group="completed" style="display:none">
+    <button class="group-head" type="button" aria-expanded="true">
+      <span class="chev" aria-hidden="true"></span>
+      <span class="group-name">Completed</span>
+      <span class="group-count"></span>
+    </button>
+    <div id="stocktake-list-completed"></div>
+  </div>
 </div>
 
 <!-- ===== Scan view ===== -->
@@ -2140,9 +2183,9 @@
     showView('home');
     $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
     $('stocktake-list-ready').innerHTML = '';
-    $('ready-heading').style.display = 'none';
+    document.querySelector('.take-group[data-group="ready"]').style.display = 'none';
     $('stocktake-list-completed').innerHTML = '';
-    $('completed-heading').style.display = 'none';
+    document.querySelector('.take-group[data-group="completed"]').style.display = 'none';
     sb.from('stocktakes')
       .select('id,name,status,created_at,updated_at,created_by,locations(name,venues(name)),stocktake_items(qty)')
       .order('updated_at', { ascending: false })
@@ -2220,16 +2263,55 @@
     return row;
   }
 
+  // Which Home groups are collapsed, remembered across sessions — a collapse that
+  // reset on every reload would be more annoying than the mess it tidied.
+  //
+  // Completed starts COLLAPSED by default: it's history, it's the only group that
+  // grows without bound, and it's the main source of the clutter this solves.
+  // Ready for export and In Progress start open because they're work someone is
+  // actually waiting on.
+  var GROUP_COLLAPSE_KEY = 'gantry-collapsed-groups';
+  var collapsedGroups = (function () {
+    try {
+      var raw = localStorage.getItem(GROUP_COLLAPSE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return { completed: true };
+  })();
+  function saveCollapsedGroups() {
+    try { localStorage.setItem(GROUP_COLLAPSE_KEY, JSON.stringify(collapsedGroups)); } catch (e) {}
+  }
+  document.querySelectorAll('.take-group').forEach(function (g) {
+    var name = g.getAttribute('data-group');
+    var head = g.querySelector('.group-head');
+    head.onclick = function () {
+      collapsedGroups[name] = !collapsedGroups[name];
+      saveCollapsedGroups();
+      head.setAttribute('aria-expanded', collapsedGroups[name] ? 'false' : 'true');
+    };
+  });
+  // Applied on every render so a group that appears for the first time picks up
+  // the remembered state rather than defaulting to open.
+  function applyGroupState(name, count) {
+    var g = document.querySelector('.take-group[data-group="' + name + '"]');
+    if (!g) return;
+    g.querySelector('.group-head').setAttribute('aria-expanded', collapsedGroups[name] ? 'false' : 'true');
+    // The count is what keeps a collapsed group informative.
+    g.querySelector('.group-count').textContent = count ? '(' + count + ')' : '';
+  }
+
   function renderHome() {
     var readyEl = $('stocktake-list-ready');
     var inProgressEl = $('stocktake-list-inprogress');
     var completedEl = $('stocktake-list-completed');
+    function group(name) { return document.querySelector('.take-group[data-group="' + name + '"]'); }
     if (!takes.length) {
       readyEl.innerHTML = '';
-      $('ready-heading').style.display = 'none';
+      group('ready').style.display = 'none';
       inProgressEl.innerHTML = '<div class="empty">No stocktakes yet.<br>Create one to start scanning.</div>';
       completedEl.innerHTML = '';
-      $('completed-heading').style.display = 'none';
+      group('completed').style.display = 'none';
+      applyGroupState('inprogress', 0);
       return;
     }
     // Three-way split. Note in_progress is the DEFAULT bucket rather than a
@@ -2243,8 +2325,9 @@
     });
 
     readyEl.innerHTML = '';
-    $('ready-heading').style.display = ready.length ? '' : 'none';
+    group('ready').style.display = ready.length ? '' : 'none';
     ready.forEach(function (t) { readyEl.appendChild(renderTakeRow(t)); });
+    applyGroupState('ready', ready.length);
 
     inProgressEl.innerHTML = '';
     if (!inProgress.length) {
@@ -2252,10 +2335,12 @@
     } else {
       inProgress.forEach(function (t) { inProgressEl.appendChild(renderTakeRow(t)); });
     }
+    applyGroupState('inprogress', inProgress.length);
 
     completedEl.innerHTML = '';
-    $('completed-heading').style.display = completed.length ? '' : 'none';
+    group('completed').style.display = completed.length ? '' : 'none';
     completed.forEach(function (t) { completedEl.appendChild(renderTakeRow(t)); });
+    applyGroupState('completed', completed.length);
   }
 
   // Suggests "<location> – <today's date>" as a starting point for the name
