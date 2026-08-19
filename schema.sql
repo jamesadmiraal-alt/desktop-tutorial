@@ -1639,19 +1639,13 @@ end $$;
 
 grant execute on function public.claim_seat(text, boolean) to authenticated;
 
--- Compatibility shim for clients served the previous app.html — they call
--- claim_seat() with no arguments and expect a boolean. Passing a null device id
--- lands in the "device_id is null → adopt the row" branch above, so an old client
--- keeps working exactly as before until it next reloads. DROP THIS once the
--- deploy has settled; leaving it forever would leave a hole big enough to drive
--- the shared-login bypass back through.
-create or replace function public.claim_seat()
-returns boolean language plpgsql security definer set search_path = public as $$
-begin
-  return coalesce((public.claim_seat(null::text, false) ->> 'granted')::boolean, false);
-end $$;
-
-grant execute on function public.claim_seat() to authenticated;
+-- There is deliberately NO zero-argument claim_seat(). One existed briefly as a
+-- compatibility shim while the one-device-per-login deploy rolled out, so pages
+-- loaded before the change kept working until they reloaded. It was dropped on
+-- 2026-08-19 and must not come back: it passed a null device id, which the device
+-- check treats as "adopt whatever row you find", so anything calling it was immune
+-- to being displaced — precisely the shared-login bypass this feature closed.
+-- If a client ever needs to call claim_seat, it passes a device id.
 
 -- Records that someone was turned away by the seat limit, and decides whether
 -- the owner should be emailed about it. Called by the notify-seat-denied Edge
@@ -1780,15 +1774,9 @@ end $$;
 
 grant execute on function public.heartbeat(text) to authenticated;
 
--- Compatibility shim, same reasoning and same lifetime as claim_seat()'s — drop
--- both together once the deploy has settled.
-create or replace function public.heartbeat()
-returns boolean language plpgsql security definer set search_path = public as $$
-begin
-  return public.heartbeat(null::text);
-end $$;
-
-grant execute on function public.heartbeat() to authenticated;
+-- No zero-argument heartbeat() either — dropped 2026-08-19 alongside
+-- claim_seat()'s shim, and for the same reason: a null device id matches any row,
+-- so a client calling it could never be displaced.
 
 -- Best-effort, called on explicit logout so the common case frees the
 -- seat immediately instead of waiting out the staleness timeout.

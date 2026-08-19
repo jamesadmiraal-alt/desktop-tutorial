@@ -142,6 +142,11 @@ end $$;
 
 grant execute on function public.heartbeat() to authenticated;
 
--- To drop the shims later (after every client has reloaded):
+-- DONE 2026-08-19: both shims were dropped once every client had reloaded, and
+-- removed from schema.sql so a rebuild can't recreate them. Kept here only as the
+-- record of what this migration originally created:
 --   drop function if exists public.claim_seat();
 --   drop function if exists public.heartbeat();
+-- Do not re-run the two `create or replace ... ()` blocks above against a live
+-- project — a null device id matches any row, so anything calling them is immune
+-- to displacement, which is the bypass this migration exists to close.

@@ -13,16 +13,8 @@ enforces the device rule for every role and both tiers, while the seat pool stay
 multi-venue non-owner; `heartbeat` carries the device id so a displaced device
 signs itself out; takeovers are logged as `session.taken_over`.
 
-**Outstanding cleanup:** the zero-arg `claim_seat()` / `heartbeat()` compatibility
-shims are still in place. They pass a null device id, which the WHERE clause
-treats as "match anything" — so any client calling them is immune to displacement,
-which is the bypass this whole change closed. Drop them once every client has
-reloaded:
-
-```sql
-drop function if exists public.claim_seat();
-drop function if exists public.heartbeat();
-```
+The zero-arg compatibility shims were dropped on 2026-08-19 and removed from
+`schema.sql`, so there is no null-device path left around the rule. Fully enforced.
 
 Original analysis kept below for the reasoning.
 
