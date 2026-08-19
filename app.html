@@ -418,7 +418,7 @@
          screen, org-setup-note/org-setup-logout reused as the only escape"
          pattern as payment-pending-row above — see showSeatsFullPrompt(). -->
     <div id="seats-full-row" style="display:none">
-      <p class="upgrade-text">All of <b id="seats-full-org-name"></b>'s concurrent user seats are in use right now — ask a teammate to log out, or add another seat from the admin console.</p>
+      <p class="upgrade-text" id="seats-full-message"></p>
       <button id="seats-full-retry" class="primary" style="width:100%">Try again</button>
     </div>
     <!-- One device per login (see claim_seat() in schema.sql). Shown when this
@@ -1142,15 +1142,16 @@
     showView('auth');
   }
 
-  // Multi-venue only: every purchased concurrent seat is already occupied
-  // (see claim_seat() in schema.sql / refreshOrgStatus() above). Same
-  // "distinct screen, org-setup-logout reused as the only escape" shape as
+  // Multi-venue only: either every purchased concurrent seat is already
+  // occupied, or none have been purchased yet — two different situations
+  // that need different copy (see claim_seat()'s 'no_seats_purchased' vs
+  // 'seats_full' reasons in schema.sql). Same "distinct screen,
+  // org-setup-logout reused as the only escape" shape as
   // showPaymentPendingPrompt() — seatsFull just picks a third message for
   // that shared button's confirm() text.
-  function showSeatsFullPrompt() {
+  function showSeatsFullPrompt(reason) {
     seatsFull = true;
     $('auth-credentials').style.display = 'none';
-    $('auth-heading').textContent = 'All seats are in use';
     $('auth-sub').textContent = 'One more step before you can start scanning';
     $('org-setup-note').style.display = 'none';
     $('org-setup-logout').style.display = '';
@@ -1159,7 +1160,16 @@
     $('org-join-row').style.display = 'none';
     $('payment-pending-row').style.display = 'none';
     $('auth-submit').style.display = 'none';
-    $('seats-full-org-name').textContent = currentOrg ? currentOrg.name : 'Your organisation';
+    var orgName = currentOrg ? currentOrg.name : 'Your organisation';
+    if (reason === 'no_seats_purchased') {
+      $('auth-heading').textContent = 'No staff seats yet';
+      $('seats-full-message').textContent = orgName + ' hasn’t purchased any concurrent staff '
+        + 'seats yet — ask the owner to add one from the admin console before you can log in here.';
+    } else {
+      $('auth-heading').textContent = 'All seats are in use';
+      $('seats-full-message').textContent = 'All of ' + orgName + '’s concurrent user seats are '
+        + 'in use right now — ask a teammate to log out, or add another seat from the admin console.';
+    }
     $('seats-full-row').style.display = '';
     showView('auth');
   }
@@ -1363,11 +1373,13 @@
         }
         if (!d.granted) {
           if (d.reason === 'other_device') { showTakeoverPrompt(onGranted, cb); return; }
-          showSeatsFullPrompt();
-          // Only for a genuinely full pool. An 'other_device' refusal isn't a seat
-          // problem at all, and mailing the owner about it would train them to
-          // ignore the alert that matters.
-          if (d.reason === 'seats_full') notifySeatDenied();
+          showSeatsFullPrompt(d.reason);
+          // Both are real seat-capacity signals worth telling the owner about
+          // (record_seat_denial() on the server already reports seats_purchased,
+          // so a 0-purchased denial reads clearly there too). 'other_device'
+          // isn't a seat problem at all, and mailing the owner about it would
+          // train them to ignore the alert that matters.
+          if (d.reason === 'seats_full' || d.reason === 'no_seats_purchased') notifySeatDenied();
           return;
         }
         seatsFull = false;
