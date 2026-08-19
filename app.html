@@ -185,6 +185,19 @@
   }
   .group-head[aria-expanded="false"] .chev { transform: rotate(-90deg); }
   .group-head[aria-expanded="false"] + div { display: none; }
+  /* Venue sub-heading inside a status group. Deliberately lighter and smaller
+     than .group-head — it's a second level, and competing with the collapsible
+     status headers would undo the tidying those were for. Only rendered when the
+     org actually spans more than one venue. */
+  .venue-sub {
+    font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--text-faint);
+    margin: 10px 4px 6px; display: flex; align-items: center; gap: 8px;
+  }
+  .venue-sub::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+  .venue-sub:first-child { margin-top: 2px; }
   #new-stocktake { width: 100%; margin-bottom: 14px; }
   .stocktake {
     display: flex; align-items: center; gap: 10px;
@@ -2219,14 +2232,13 @@
     info.className = 'info';
     var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = t.name;
     var meta = document.createElement('div'); meta.className = 'meta';
-    // Only show a "Venue · Location" prefix once there's more than one
-    // venue — keeps the solo/single-venue case identical to before this
-    // layer existed, regardless of how many locations sit inside that one
-    // venue.
+    // Location only, no venue: the venue is now the sub-heading this row sits
+    // under (see fillTakeList), so repeating it here would print it twice on
+    // every row. Still gated on >1 venue, which keeps the single-venue case
+    // identical to before this layer existed — with one venue the location alone
+    // is already unambiguous and the meta line stays short.
     var loc = t.locations;
-    var locPrefix = (distinctVenueCount() > 1 && loc && loc.name)
-      ? ((loc.venues && loc.venues.name) ? loc.venues.name + ' · ' : '') + loc.name + ' · '
-      : '';
+    var locPrefix = (distinctVenueCount() > 1 && loc && loc.name) ? loc.name + ' · ' : '';
     var startedBy = (t.created_by && creatorNames[t.created_by]) ? ' · Started by ' + creatorNames[t.created_by] : '';
     meta.textContent = locPrefix + takeTotals(t) + ' · updated ' + new Date(t.updated_at).toLocaleString() + startedBy;
     info.appendChild(nm); info.appendChild(meta);
@@ -2300,6 +2312,38 @@
     g.querySelector('.group-count').textContent = count ? '(' + count + ')' : '';
   }
 
+  // Fills a status list, inserting a venue sub-heading per venue when the org
+  // spans more than one. A single-venue org gets a flat list exactly as before —
+  // no sub-headings, nothing to notice.
+  //
+  // Venue comes from the locations->venues join loadTakes already selects, so this
+  // needs no extra query. Venues sort by name for a stable order; rows keep the
+  // updated_at desc order they arrived in.
+  function fillTakeList(el, list) {
+    el.innerHTML = '';
+    if (distinctVenueCount() <= 1) {
+      list.forEach(function (t) { el.appendChild(renderTakeRow(t)); });
+      return;
+    }
+    var byVenue = {};
+    list.forEach(function (t) {
+      // '(no venue)' rather than dropping the row: a join that came back empty is
+      // a data oddity, and silently hiding someone's stocktake because of it would
+      // be far worse than showing it under an odd heading.
+      var v = (t.locations && t.locations.venues && t.locations.venues.name) || '(no venue)';
+      (byVenue[v] = byVenue[v] || []).push(t);
+    });
+    Object.keys(byVenue).sort().forEach(function (v) {
+      var h = document.createElement('div');
+      h.className = 'venue-sub';
+      var label = document.createElement('span');
+      label.textContent = v;
+      h.appendChild(label);
+      el.appendChild(h);
+      byVenue[v].forEach(function (t) { el.appendChild(renderTakeRow(t)); });
+    });
+  }
+
   function renderHome() {
     var readyEl = $('stocktake-list-ready');
     var inProgressEl = $('stocktake-list-inprogress');
@@ -2324,31 +2368,41 @@
       return t.status !== 'ready_for_export' && t.status !== 'completed';
     });
 
-    readyEl.innerHTML = '';
     group('ready').style.display = ready.length ? '' : 'none';
-    ready.forEach(function (t) { readyEl.appendChild(renderTakeRow(t)); });
+    fillTakeList(readyEl, ready);
+    // Counts stay whole-status, not per-venue: the header answers "how much is
+    // waiting", which shouldn't change shape because the org grew a second venue.
     applyGroupState('ready', ready.length);
 
-    inProgressEl.innerHTML = '';
     if (!inProgress.length) {
       inProgressEl.innerHTML = '<div class="empty">No stocktakes in progress.<br>Create one to start scanning.</div>';
     } else {
-      inProgress.forEach(function (t) { inProgressEl.appendChild(renderTakeRow(t)); });
+      fillTakeList(inProgressEl, inProgress);
     }
     applyGroupState('inprogress', inProgress.length);
 
-    completedEl.innerHTML = '';
     group('completed').style.display = completed.length ? '' : 'none';
-    completed.forEach(function (t) { completedEl.appendChild(renderTakeRow(t)); });
+    fillTakeList(completedEl, completed);
     applyGroupState('completed', completed.length);
   }
 
   // Suggests "<location> – <today's date>" as a starting point for the name
   // — editable, not enforced, so repeat counts at the same venue stay
   // distinguishable (e.g. "Main Bar – Weekly count").
+  //
+  // The venue is prepended once the org has more than one, and that matters well
+  // beyond this screen: the name becomes the `stocktake` column in every CSV
+  // export and the `target_label` in every audit_log row. Two venues each with a
+  // "Cellars" location would otherwise produce two stocktakes called
+  // "Cellars – 19/08/2026", making "deleted stocktake Cellars – 19/08/2026 —
+  // 247 items" unable to say whose count was destroyed. Grouping Home fixes the
+  // screen; only the name fixes the exports and the evidence trail.
   function suggestTakeName(locId) {
     var loc = locations.find(function (l) { return l.id === locId; });
-    return loc ? (loc.name + ' – ' + new Date().toLocaleDateString()) : '';
+    if (!loc) return '';
+    var venue = (distinctVenueCount() > 1 && loc.venues && loc.venues.name)
+      ? loc.venues.name + ' · ' : '';
+    return venue + loc.name + ' – ' + new Date().toLocaleDateString();
   }
   $('name-location').onchange = function () {
     $('name-input').value = suggestTakeName($('name-location').value);
