@@ -75,7 +75,7 @@ so a dispute about *which* numbers head office received still has no evidence
 behind it, even though the deletion trail is now solid.
 
 Would need a `stocktake.exported` audit action written from the export path,
-capturing the format (Gantry / MYOB / Lightspeed), the item and unit totals at
+capturing the item and unit totals at
 that moment, and the actor. The row totals matter more than the file: they're what
 makes a later "these aren't the numbers we sent you" answerable.
 

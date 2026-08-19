@@ -720,23 +720,12 @@
            openTakeActions() from the stocktake's current status. See
            set_stocktake_status() in schema.sql for the transitions. -->
       <button id="take-status"></button>
-      <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export ▾</button>
+      <!-- No ▾ any more: it used to open a format picker (Gantry CSV / MYOB /
+           Lightspeed). One format now, so this exports directly. -->
+      <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export CSV</button>
       <button id="take-share">Share</button>
       <button id="take-clear" class="danger">Clear items</button>
       <button id="take-actions-cancel">Cancel</button>
-    </div>
-  </div>
-</div>
-
-<!-- ===== Export format picker — opened from "Export ▾" above ===== -->
-<div id="export-format-overlay" class="overlay">
-  <div class="dialog">
-    <div class="title">Export format</div>
-    <div class="action-sheet">
-      <button id="export-full">Full CSV (Gantry)</button>
-      <button id="export-myob">MYOB</button>
-      <button id="export-lightspeed">Lightspeed</button>
-      <button id="export-format-cancel">Cancel</button>
     </div>
   </div>
 </div>
@@ -2763,25 +2752,12 @@
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
 
-  // Rigid two-column presets some hospitality POS/inventory systems expect
-  // on import, instead of Gantry's own 5-column export. Same (take,
-  // takeItems) signature as buildCsv() so all three can share one export
-  // path below; `take` is unused by these two but kept for that symmetry.
-  function buildMyobCsv(take, takeItems) {
-    // No header row. MYOB Exo Business treats the imported quantity as an
-    // ADDITIVE stock adjustment on their end, not an absolute replace — so
-    // this just exports the raw counted qty per item, no special handling.
-    var rows = takeItems.map(function (it) { return [it.barcode, qtyText(it.qty)]; });
-    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
-  }
-  function buildLightspeedCsv(take, takeItems) {
-    var rows = [['ID', 'Count']];
-    // A 0 here is meaningful and deliberately not filtered: Lightspeed's Count is
-    // absolute, so "0" correctly says none on hand. Dropping the line would lose
-    // the fact that someone checked.
-    takeItems.forEach(function (it) { rows.push([it.barcode, qtyText(it.qty)]); });
-    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
-  }
+  // There were also MYOB and Lightspeed presets here — rigid two-column formats
+  // those systems accept on import. Removed 2026-08-20: neither was ever verified
+  // against the vendor's actual importer, and shipping an export a customer's
+  // accounting system might silently mis-read is worse than not offering one.
+  // buildCsv above is the only format now. A 0 quantity is included deliberately:
+  // "counted, none on hand" is real information.
 
   function fileName(take, suffix) {
     var d = new Date();
@@ -2853,7 +2829,7 @@
   // Every status change goes through the RPC — client UPDATE on stocktakes is
   // revoked (schema.sql), which is what makes the transition impossible to make
   // without a log entry. `reason` only shapes the log wording ('manual' here vs
-  // 'export' from exportWithFormat), never permissions.
+  // 'export' from exportStocktake), never permissions.
   // onDone runs whether the call succeeded or failed. The export path relies on
   // that: the operator asked for a CSV, and withholding it because a status
   // update failed would be the wrong trade.
@@ -2879,23 +2855,20 @@
     });
   }
 
-  // "Export ▾" opens the format picker instead of exporting directly —
-  // Full CSV (Gantry)/MYOB/Lightspeed all funnel through exportWithFormat().
-  $('take-export').onclick = function () {
-    $('take-actions-overlay').classList.remove('open');
-    $('export-format-overlay').classList.add('open');
-  };
-  $('export-format-cancel').onclick = function () { $('export-format-overlay').classList.remove('open'); };
+  // One format, so Export goes straight to the file. There used to be a picker
+  // offering MYOB and Lightspeed presets alongside Gantry's own CSV; with those
+  // gone a one-option chooser would be pure friction, so the dialog went too.
+  $('take-export').onclick = function () { exportStocktake(); };
 
-  function exportWithFormat(builder, suffix) {
+  function exportStocktake() {
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
       // Snapshot everything up front: the overlay closes below and actionsTake can
       // be repointed by the next ⋯ tap before the async work finishes.
       var take = actionsTake;
-      var csv = builder(take, takeItems);
-      var name = fileName(take, suffix);
-      $('export-format-overlay').classList.remove('open');
+      var csv = buildCsv(take, takeItems);
+      var name = fileName(take, '');
+      $('take-actions-overlay').classList.remove('open');
 
       function deliver() {
         downloadCsv(csv, name);
@@ -2922,9 +2895,6 @@
       setTakeStatus(take, 'completed', 'export', deliver);
     });
   }
-  $('export-full').onclick = function () { exportWithFormat(buildCsv, ''); };
-  $('export-myob').onclick = function () { exportWithFormat(buildMyobCsv, 'myob'); };
-  $('export-lightspeed').onclick = function () { exportWithFormat(buildLightspeedCsv, 'lightspeed'); };
 
   $('take-share').onclick = function () {
     fetchTakeItems(actionsTake.id, function (takeItems) {

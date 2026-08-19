@@ -104,6 +104,14 @@ create table public.organisations (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   logo_url text,
+  -- UNUSED as of 2026-08-20, kept only to avoid a pointless destructive migration.
+  -- It was always vestigial: app.html reads it into currentOrg.exportFormat and
+  -- never consults it — the format was chosen per export from a picker, not from
+  -- this preference. That picker offered MYOB and Lightspeed presets, both since
+  -- removed (never verified against either vendor's real importer), so there is
+  -- now one export format and nothing to prefer. The 'myob'/'lightspeed' values
+  -- stay legal purely so existing rows remain valid. This column and its branch in
+  -- log_organisations_change are both safe to drop in a future tidy-up.
   export_format text not null default 'full'
     check (export_format in ('full', 'myob', 'lightspeed')),
   -- No free tier — a brand-new org starts 'pending' (created, but blocked
@@ -1358,7 +1366,7 @@ grant execute on function public.clear_stocktake_items(uuid) to authenticated;
 --   completed         an export has happened
 --
 -- p_reason distinguishes a deliberate move from the automatic one that
--- exportWithFormat() makes, purely so the activity log can read "marked ready"
+-- the export path makes, purely so the activity log can read "marked ready"
 -- versus "exported". It does NOT affect permissions — an export by a staff
 -- member is still a staff action, and pretending otherwise would let the client
 -- pick its own privileges by lying about the reason.
