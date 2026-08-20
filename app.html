@@ -2916,9 +2916,15 @@
   //   * No store/location column: Bepoz takes the store from its own import
   //     profile. Sending our venue name would just be another unmatched column.
   //
-  // Quantities go out exactly as counted, decimals included. If Bepoz rejects a
-  // part bottle it should say so — rounding 0.4 up to 1 silently would corrupt
-  // the count that yesterday's decimal work exists to make possible.
+  // Quantities go out exactly as counted, decimals included — CONFIRMED against
+  // the real Bepoz importer on 2026-08-20, which accepted 0.15. So no rounding
+  // here, which was always the right call anyway: silently turning a 0.4 part
+  // bottle into 1 would corrupt the very counts the decimal numpad exists for.
+  //
+  // Two decimal places is the ceiling, and it's the same ceiling in three places:
+  // the numpad's input guard, QTY_DP, and `qty numeric(12,2)` in schema.sql.
+  // Anything finer (0.125 for a nip, say) needs all three changed together — the
+  // column would round it before it ever reached an export.
   //
   // NOTE: this is the same two-column shape as the old buildMyobCsv, which was
   // deleted for being an unverified guess. It's back because it stopped being a
