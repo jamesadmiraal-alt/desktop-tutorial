@@ -135,11 +135,19 @@ create table public.organisations (
   --                guesses. If either POS is ever properly verified, add a real
   --                builder rather than reviving the value.
   --
-  -- The default stays 'full' even though the console lists Standard first. Worth
-  -- a thought before changing it: 'full' is the safe default because it never
-  -- silently drops information, and an org that needs Standard sets it once
-  -- during setup. Changing the default only affects newly created orgs.
-  export_format text not null default 'full'
+  -- Default is 'standard' (changed from 'full' on 2026-08-20). A new venue is
+  -- signing up to get counts into its POS, and the format that does that should
+  -- not be something they have to know to go and switch on — the first trial
+  -- failed precisely because the shape was wrong and nothing said so. An org that
+  -- wants the 5-column file for Excel can pick it.
+  --
+  -- This affects only NEWLY created orgs. create_organisation() doesn't name the
+  -- column (see below), so the default is what it gets. Note this is NOT the same
+  -- as the unknown-value fallback in app.html's exportFormat(), which stays 'full'
+  -- on purpose: that path exists for legacy 'myob'/'lightspeed' rows, and pointing
+  -- it at 'standard' would silently change the export shape for an org that never
+  -- asked for it.
+  export_format text not null default 'standard'
     check (export_format in ('full', 'standard', 'bepoz', 'myob', 'lightspeed')),
   -- No free tier — a brand-new org starts 'pending' (created, but blocked
   -- from doing anything real: no locations exist yet, so no stocktakes can

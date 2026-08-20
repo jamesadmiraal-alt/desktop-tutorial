@@ -1,0 +1,45 @@
+-- Make 'standard' the default export format for newly created organisations.
+--
+-- Why: a venue signs up to get its counts into its POS. The format that actually
+-- imports shouldn't be something they have to know to go and switch on — the
+-- first on-site trial failed precisely because the shape was wrong and nothing
+-- on screen said so. An org that wants the 5-column file for Excel can pick it
+-- in the admin console.
+--
+-- create_organisation() inserts (name, country, join_code) and does not name
+-- export_format, so this default is what a new org actually receives. If that
+-- function ever starts naming the column, this migration silently stops mattering.
+--
+-- Separate from 20260820_03 because that one has already been run — per
+-- supabase/migrations/README.md, an applied file is never edited. Mirrored into
+-- schema.sql.
+--
+-- Safe to run twice. Metadata-only: `set default` does not rewrite the table and
+-- does not touch a single existing row.
+
+alter table public.organisations
+  alter column export_format set default 'standard';
+
+-- ---------------------------------------------------------------------------
+-- DELIBERATELY NOT DONE HERE: moving existing orgs onto 'standard'.
+--
+-- Changing the default is a statement about new signups. Rewriting existing rows
+-- would silently change the file shape an established org already relies on —
+-- the same class of surprise as the original no-product-match bug, just pointed
+-- the other way. Existing orgs change format by choosing it in the console, which
+-- also produces an audit_log entry saying who did it and when.
+--
+-- If a deliberate backfill is ever wanted, it is one statement, and it should be
+-- run knowingly rather than buried in a migration:
+--   update public.organisations set export_format = 'standard'
+--    where export_format = 'full';
+--
+-- ---------------------------------------------------------------------------
+-- Verify:
+--   select column_default from information_schema.columns
+--    where table_schema = 'public' and table_name = 'organisations'
+--      and column_name = 'export_format';
+--   -- expect: 'standard'::text
+--
+--   -- and confirm no existing row moved:
+--   select export_format, count(*) from public.organisations group by 1;

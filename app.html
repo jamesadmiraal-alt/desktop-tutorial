@@ -2920,8 +2920,9 @@
   //     "## No Product Match ##" — not a data problem, a column-alignment one.
   //   * A header row is imported as DATA. Ours arrived as barcode "stocktake"
   //     with a count of 0 (the non-numeric "barcode" coerced to zero).
-  //   * No store/location column: Bepoz takes the store from its own import
-  //     profile. Sending our venue name would just be another unmatched column.
+  //   * No store/location column — CONFIRMED with the operator on 2026-08-20.
+  //     Bepoz takes the store from its own import profile, so sending our venue
+  //     name would just be another unmatched column. Don't "helpfully" add one.
   //
   // Quantities go out exactly as counted, decimals included — CONFIRMED against
   // the real Bepoz importer on 2026-08-20, which accepted 0.15. So no rounding
