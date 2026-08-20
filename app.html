@@ -2903,12 +2903,51 @@
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
 
-  // There were also MYOB and Lightspeed presets here — rigid two-column formats
-  // those systems accept on import. Removed 2026-08-20: neither was ever verified
-  // against the vendor's actual importer, and shipping an export a customer's
-  // accounting system might silently mis-read is worse than not offering one.
-  // buildCsv above is the only format now. A 0 quantity is included deliberately:
-  // "counted, none on hand" is real information.
+  // Bepoz. Two columns, NO header row — and every part of that is load-bearing,
+  // established by an on-site trial rather than guessed at:
+  //
+  //   * Bepoz maps CSV column 1 -> Barcode and column 2 -> Count. Gantry's own
+  //     export leads with the stocktake NAME, so Bepoz was comparing
+  //     "Colac Port Adl · Cellar – 20/8/2026" against its product barcodes and
+  //     reading the real barcode as a quantity. Every line came back
+  //     "## No Product Match ##" — not a data problem, a column-alignment one.
+  //   * A header row is imported as DATA. Ours arrived as barcode "stocktake"
+  //     with a count of 0 (the non-numeric "barcode" coerced to zero).
+  //   * No store/location column: Bepoz takes the store from its own import
+  //     profile. Sending our venue name would just be another unmatched column.
+  //
+  // Quantities go out exactly as counted, decimals included. If Bepoz rejects a
+  // part bottle it should say so — rounding 0.4 up to 1 silently would corrupt
+  // the count that yesterday's decimal work exists to make possible.
+  //
+  // NOTE: this is the same two-column shape as the old buildMyobCsv, which was
+  // deleted for being an unverified guess. It's back because it stopped being a
+  // guess, not because the deletion was wrong.
+  function buildBepozCsv(take, takeItems) {
+    var rows = takeItems.map(function (it) { return [it.barcode, qtyText(it.qty)]; });
+    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
+  }
+
+  // Keyed by organisations.export_format. Unknown values fall back to Gantry's own
+  // full export rather than throwing — an org row holding a legacy 'myob' or
+  // 'lightspeed' still gets a usable file.
+  // `bom` matters more than it looks. downloadCsv prepends a UTF-8 byte-order mark
+  // so Excel opens the Gantry export with its accented venue names intact. A
+  // barcode-and-number file has no non-ASCII content to disambiguate, and the mark
+  // would make the FIRST barcode arrive as "﻿9351142000085" — which a strict
+  // importer silently fails to match, i.e. exactly the bug this format exists to
+  // fix. Bepoz therefore gets no BOM.
+  //
+  // Worth knowing if you hand-test by editing an export in Excel: Excel rewrites
+  // the encoding on save, so a manual fix hides this while the app's own file
+  // would still have failed.
+  var EXPORT_FORMATS = {
+    full: { build: buildCsv, suffix: '', label: 'Gantry CSV', bom: true },
+    bepoz: { build: buildBepozCsv, suffix: 'bepoz', label: 'Bepoz', bom: false }
+  };
+  function exportFormat() {
+    return EXPORT_FORMATS[currentOrg && currentOrg.exportFormat] || EXPORT_FORMATS.full;
+  }
 
   function fileName(take, suffix) {
     var d = new Date();
@@ -2918,8 +2957,12 @@
            '-' + pad(d.getHours()) + pad(d.getMinutes()) + (suffix ? '-' + suffix : '') + '.csv';
   }
 
-  function downloadCsv(csvText, filename) {
-    var blob = new Blob(['﻿' + csvText], { type: 'text/csv;charset=utf-8' });
+  // `bom` defaults to true: Excel needs the byte-order mark to read the Gantry
+  // export's accented venue names as UTF-8. Machine-read formats pass false —
+  // see EXPORT_FORMATS for why that matters to Bepoz.
+  function downloadCsv(csvText, filename, bom) {
+    var body = (bom === false ? '' : '﻿') + csvText;
+    var blob = new Blob([body], { type: 'text/csv;charset=utf-8' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -3006,9 +3049,9 @@
     });
   }
 
-  // One format, so Export goes straight to the file. There used to be a picker
-  // offering MYOB and Lightspeed presets alongside Gantry's own CSV; with those
-  // gone a one-option chooser would be pure friction, so the dialog went too.
+  // Export goes straight to the file — the format comes from the organisation's
+  // setting (Admin → Export format), not from a dialog. A venue uses the same POS
+  // every time, so asking on every export would be friction with one right answer.
   $('take-export').onclick = function () { exportStocktake(); };
 
   function exportStocktake() {
@@ -3017,13 +3060,17 @@
       // Snapshot everything up front: the overlay closes below and actionsTake can
       // be repointed by the next ⋯ tap before the async work finishes.
       var take = actionsTake;
-      var csv = buildCsv(take, takeItems);
-      var name = fileName(take, '');
+      var fmt = exportFormat();
+      var csv = fmt.build(take, takeItems);
+      var name = fileName(take, fmt.suffix);
       $('take-actions-overlay').classList.remove('open');
 
       function deliver() {
-        downloadCsv(csv, name);
-        toast('CSV downloaded');
+        downloadCsv(csv, name, fmt.bom);
+        // Name the format in the toast. Two exports that look identical but import
+        // very differently is exactly the confusion that cost an on-site trial, so
+        // the operator should be able to see which shape they just got.
+        toast(fmt.label + ' export downloaded');
       }
 
       // Status FIRST, download second — the order is load-bearing, not tidiness.
@@ -3050,8 +3097,14 @@
   $('take-share').onclick = function () {
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
-      var csv = buildCsv(actionsTake, takeItems);
-      var file = new File(['﻿' + csv], fileName(actionsTake), { type: 'text/csv' });
+      // Same format as Export: whoever receives a shared file is going to import
+      // it into the same POS, so handing them a different shape would be a trap.
+      var fmt = exportFormat();
+      var csv = fmt.build(actionsTake, takeItems);
+      // Same BOM rule as downloadCsv — a shared Bepoz file gets imported, so it
+      // must not carry a mark that corrupts its first barcode.
+      var file = new File([(fmt.bom === false ? '' : '﻿') + csv],
+                          fileName(actionsTake, fmt.suffix), { type: 'text/csv' });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         navigator.share({ files: [file], title: 'Gantry export: ' + actionsTake.name }).catch(function () {});
       } else if (navigator.clipboard) {

@@ -107,6 +107,19 @@ directly.
   verifies the signature client-side). That gets you past `#auth-view` without
   real credentials.
 
+- **Asserting export bytes: never use `Blob.text()` / `File.text()`.** Both run
+  the spec's "UTF-8 decode", which *strips a leading BOM* — so a `text()`-based
+  assertion reports "no BOM" whether or not one is there, in both directions.
+  Read raw bytes instead: `fs.readFileSync(await download.path())` for a
+  download, `new Uint8Array(await file.arrayBuffer())` for a shared `File`.
+  This matters because the BOM is load-bearing in opposite directions per
+  format — Excel needs it for the Gantry CSV's accented venue names, and it
+  corrupts the first barcode of a Bepoz import (see `EXPORT_FORMATS` in
+  `app.html`).
+- Exporting **changes the stocktake's status to Completed**, which re-renders
+  Home and moves the row out of `#stocktake-list-ready`. A second action on the
+  same stocktake in one test has to re-find it (`#home-view .more`), or it waits
+  forever on a selector that was correct a moment earlier.
 - unpkg/CDNs are blocked by the sandbox proxy; registry.npmjs.org is
   direct-allowed, so vendor libraries via `npm pack`.
 - Don't restrict the scanner's `qrbox` to a wide strip — it silently

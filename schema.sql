@@ -104,16 +104,27 @@ create table public.organisations (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   logo_url text,
-  -- UNUSED as of 2026-08-20, kept only to avoid a pointless destructive migration.
-  -- It was always vestigial: app.html reads it into currentOrg.exportFormat and
-  -- never consults it — the format was chosen per export from a picker, not from
-  -- this preference. That picker offered MYOB and Lightspeed presets, both since
-  -- removed (never verified against either vendor's real importer), so there is
-  -- now one export format and nothing to prefer. The 'myob'/'lightspeed' values
-  -- stay legal purely so existing rows remain valid. This column and its branch in
-  -- log_organisations_change are both safe to drop in a future tidy-up.
+  -- Which CSV shape this org's exports produce. In use again as of 2026-08-20,
+  -- and this column's history is worth knowing before changing it: it sat unread
+  -- for weeks (the format was picked per-export from a dialog instead), the
+  -- dialog's MYOB/Lightspeed presets were deleted as unverified guesses, and then
+  -- an on-site trial at a real venue produced the actual requirement.
+  --
+  -- Bepoz reads CSV column 1 as Barcode and column 2 as Count, takes the store
+  -- from its own import profile, and treats a header row as data. Gantry's own
+  -- 5-column export therefore matched nothing at all — it was feeding the
+  -- stocktake NAME in as a barcode. See buildBepozCsv() in app.html.
+  --
+  -- An org preference rather than a per-export choice because a venue uses the
+  -- same POS every time; making them pick on every export would be friction with
+  -- one right answer. Owner-settable (this column IS in the client-writable GRANT
+  -- below) and changes are logged by log_organisations_change().
+  --
+  -- 'myob' and 'lightspeed' stay legal ONLY so any existing row remains valid;
+  -- nothing produces them and no UI offers them. If either POS is ever verified
+  -- properly, add a real builder rather than reviving those values.
   export_format text not null default 'full'
-    check (export_format in ('full', 'myob', 'lightspeed')),
+    check (export_format in ('full', 'bepoz', 'myob', 'lightspeed')),
   -- No free tier — a brand-new org starts 'pending' (created, but blocked
   -- from doing anything real: no locations exist yet, so no stocktakes can
   -- exist either — see the locations insert policy below) until the owner

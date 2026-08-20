@@ -252,6 +252,21 @@
     <h2>Organisation</h2>
     <div id="org-name-display" style="font-size:1.2rem;font-weight:700;margin-bottom:8px"></div>
     <span class="plan-badge" id="org-plan-badge"></span>
+    <!-- Sits on the Organisation card rather than in a tab: it's a
+         set-once-and-forget property of the business, and it belongs next to the
+         org's identity rather than buried under Venues or Team. Owner-only —
+         organisations UPDATE is owner-only RLS, so a manager choosing here would
+         only get an error. -->
+    <div id="export-format-row" style="margin-top:16px;display:none">
+      <label for="org-export-format">Stocktake export format</label>
+      <p class="hint" style="margin-top:2px">Which CSV shape <span style="white-space:nowrap">Export CSV</span> produces in the app.
+        Set this to match the system you import into — the wrong shape imports as
+        “no product match” rather than failing outright.</p>
+      <select id="org-export-format">
+        <option value="full">Gantry CSV — stocktake, barcode, qty, timestamps</option>
+        <option value="bepoz">Bepoz — barcode and count only, no header row</option>
+      </select>
+    </div>
   </div>
 
   <!-- Organisation above, everything else in tabs. The org card is identity
@@ -584,6 +599,7 @@
   // capability exists and is merely unavailable right now. It doesn't.
   function applyRoleVisibility() {
     var owner = isOwner();
+    $('export-format-row').style.display = owner ? '' : 'none';
     $('add-member-card').style.display = owner ? '' : 'none';
     $('rotate-join-code-btn').style.display = owner ? '' : 'none';
     $('seats-owner-controls').style.display = owner ? '' : 'none';
@@ -597,7 +613,35 @@
       : currentOrg.planTier === 'single' ? 'Single-venue plan' : 'Multi-venue plan';
     badge.className = 'plan-badge ' + (currentOrg.planTier === 'free' ? 'free' : 'pro');
     $('join-code-display').textContent = currentOrg.joinCode;
+    // A legacy 'myob'/'lightspeed' row has no matching option, which would leave
+    // the select showing the first entry and misrepresenting what exports produce.
+    // Both fall back to 'full', which is what exportFormat() in app.html does too.
+    var f = currentOrg.exportFormat;
+    $('org-export-format').value = (f === 'bepoz') ? 'bepoz' : 'full';
   }
+
+  $('org-export-format').onchange = function () {
+    var sel = $('org-export-format');
+    var value = sel.value;
+    var previous = currentOrg.exportFormat;
+    sel.disabled = true;
+    sb.from('organisations').update({ export_format: value }).eq('id', currentOrg.id)
+      .then(function (res) {
+        sel.disabled = false;
+        if (res.error) {
+          fail(res.error, 'Could not change the export format');
+          sel.value = (previous === 'bepoz') ? 'bepoz' : 'full';
+          return;
+        }
+        currentOrg.exportFormat = value;
+        // Say what it means, not just that it saved — the whole reason this
+        // setting exists is that a wrong format imports as "no product match"
+        // rather than failing loudly.
+        toast(value === 'bepoz'
+          ? 'Exports will now be Bepoz format (barcode and count only)'
+          : 'Exports will now be the full Gantry CSV');
+      });
+  };
 
   // Locations within a venue are always removable (never capped) — only
   // venues themselves are ever capped by tier (see renderVenues' atCap
@@ -1223,7 +1267,7 @@
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
     sb.from('memberships')
-      .select('role, organisations(id, name, plan_tier, join_code, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds)')
+      .select('role, organisations(id, name, plan_tier, join_code, export_format, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds)')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(function (res) {
@@ -1255,7 +1299,7 @@
         }
         currentOrg = {
           id: org.id, name: org.name, planTier: org.plan_tier, joinCode: org.join_code,
-          role: role,
+          role: role, exportFormat: org.export_format,
           rosterLastViewedAt: org.roster_last_viewed_at,
           concurrentSeats: org.concurrent_seats, seatsIncreasedAt: org.seats_increased_at || null,
           heartbeatIntervalSeconds: org.heartbeat_interval_seconds
