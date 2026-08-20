@@ -36,3 +36,5 @@ different product, don't paste into it).
 | `20260819_02_revoke_stocktake_update.sql` | Revokes client UPDATE on `stocktakes` | Run **only after** the new `app.html` is live — the old page flips status directly on export |
 | `20260819_03_one_device_per_login.sql` | `active_sessions.device_id`, device-aware `claim_seat`/`heartbeat` | Shims it created were dropped 2026-08-19; don't re-run those blocks |
 | `20260820_01_decimal_qty.sql` | `qty` → `numeric(12,2)`, `check (qty >= 0)`, numeric accumulators | Run **before** pushing the new `app.html`. Rewrites the table, so run it when nobody is mid-count |
+| `20260820_02_bepoz_export_format.sql` | Allowed `export_format = 'bepoz'` | **Superseded by 03** — skip it and run 03 instead, which covers both. Harmless if it was already run |
+| `20260820_03_standard_export_format.sql` | Renames that format to `'standard'` and migrates any `'bepoz'` row | Run **before** pushing the new `app.html`/`admin.html`. Safe whether or not 02 ran, and safe to run twice |

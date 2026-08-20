@@ -263,8 +263,8 @@
         Set this to match the system you import into — the wrong shape imports as
         “no product match” rather than failing outright.</p>
       <select id="org-export-format">
+        <option value="standard">Standard export — barcode and count only, no header row</option>
         <option value="full">Gantry CSV — stocktake, barcode, qty, timestamps</option>
-        <option value="bepoz">Bepoz — barcode and count only, no header row</option>
       </select>
     </div>
   </div>
@@ -613,11 +613,20 @@
       : currentOrg.planTier === 'single' ? 'Single-venue plan' : 'Multi-venue plan';
     badge.className = 'plan-badge ' + (currentOrg.planTier === 'free' ? 'free' : 'pro');
     $('join-code-display').textContent = currentOrg.joinCode;
-    // A legacy 'myob'/'lightspeed' row has no matching option, which would leave
-    // the select showing the first entry and misrepresenting what exports produce.
-    // Both fall back to 'full', which is what exportFormat() in app.html does too.
-    var f = currentOrg.exportFormat;
-    $('org-export-format').value = (f === 'bepoz') ? 'bepoz' : 'full';
+    // Never trust the raw column value here. A row can legitimately hold something
+    // with no matching <option> — 'bepoz' from before the rename, or a legacy
+    // 'myob'/'lightspeed' — and an unmatched value makes the browser display
+    // whichever option happens to be FIRST. That now says "Standard export",
+    // so a Gantry-CSV org would be told it was on the standard format. Mapping
+    // explicitly, and matching exportFormat() in app.html exactly: the standard
+    // format for 'standard'/'bepoz', 'full' for everything else.
+    $('org-export-format').value = exportFormatValue(currentOrg.exportFormat);
+  }
+
+  // Single source of truth for "which option represents this stored value",
+  // used on load and when reverting a failed change.
+  function exportFormatValue(stored) {
+    return (stored === 'standard' || stored === 'bepoz') ? 'standard' : 'full';
   }
 
   $('org-export-format').onchange = function () {
@@ -630,15 +639,15 @@
         sel.disabled = false;
         if (res.error) {
           fail(res.error, 'Could not change the export format');
-          sel.value = (previous === 'bepoz') ? 'bepoz' : 'full';
+          sel.value = exportFormatValue(previous);
           return;
         }
         currentOrg.exportFormat = value;
         // Say what it means, not just that it saved — the whole reason this
         // setting exists is that a wrong format imports as "no product match"
         // rather than failing loudly.
-        toast(value === 'bepoz'
-          ? 'Exports will now be Bepoz format (barcode and count only)'
+        toast(value === 'standard'
+          ? 'Exports will now be the standard format (barcode and count only)'
           : 'Exports will now be the full Gantry CSV');
       });
   };

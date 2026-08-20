@@ -97,3 +97,12 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   the webhook depends on this to match the paying user.
 - Free-plan gate: `FREE_LIMIT` in app.html AND the `< 3` in schema.sql's insert policy.
   Change both together.
+- Export shape comes from `organisations.export_format`, set once per org by the owner in
+  admin.html. `'standard'` is `barcode,count` with no header row and **no BOM** — verified
+  against a real Bepoz importer after a trial where Gantry's own 5-column CSV matched no
+  products at all. `'bepoz'` is an alias for the same builder (pre-rename value); deleting
+  it from `EXPORT_FORMATS` makes such a row fall back silently to the 5-column file, which
+  is that original bug returning invisibly. The BOM is per-format on purpose: Excel needs it
+  for `'full'`, and it corrupts the first barcode for `'standard'`.
+- Quantity precision is 2 dp in THREE places — the numpad's input guard, `QTY_DP` in
+  app.html, and `qty numeric(12,2)` in schema.sql. Anything finer needs all three.

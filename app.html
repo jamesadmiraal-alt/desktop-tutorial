@@ -2903,8 +2903,15 @@
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
 
-  // Bepoz. Two columns, NO header row — and every part of that is load-bearing,
-  // established by an on-site trial rather than guessed at:
+  // The standard export: two columns, NO header row. Every part of that is
+  // load-bearing, established by an on-site trial rather than guessed at.
+  //
+  // Named "standard" rather than "bepoz" deliberately. It was built for Bepoz and
+  // verified against Bepoz, but `barcode,count` is the shape stock importers
+  // generally want — so naming it after one vendor would make the next customer
+  // on a different POS assume it doesn't apply to them, and rebuild it. The Bepoz
+  // specifics below are kept because they're the EVIDENCE for the shape, not
+  // because the shape is Bepoz-only.
   //
   //   * Bepoz maps CSV column 1 -> Barcode and column 2 -> Count. Gantry's own
   //     export leads with the stocktake NAME, so Bepoz was comparing
@@ -2929,7 +2936,7 @@
   // NOTE: this is the same two-column shape as the old buildMyobCsv, which was
   // deleted for being an unverified guess. It's back because it stopped being a
   // guess, not because the deletion was wrong.
-  function buildBepozCsv(take, takeItems) {
+  function buildStandardCsv(take, takeItems) {
     var rows = takeItems.map(function (it) { return [it.barcode, qtyText(it.qty)]; });
     return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
@@ -2937,19 +2944,32 @@
   // Keyed by organisations.export_format. Unknown values fall back to Gantry's own
   // full export rather than throwing — an org row holding a legacy 'myob' or
   // 'lightspeed' still gets a usable file.
+  //
+  // 'bepoz' is an ALIAS, not a leftover, and it must not be deleted casually. The
+  // format shipped under that name before being renamed to 'standard', so a row
+  // can still hold it — either because the rename migration hasn't run yet, or
+  // because an old backup gets restored. Without this alias such a row falls
+  // through to `full`, and the customer silently gets the 5-column file that
+  // matches nothing on import. That is the ORIGINAL bug, reappearing quietly, in
+  // the one place nobody would think to look.
+  //
   // `bom` matters more than it looks. downloadCsv prepends a UTF-8 byte-order mark
   // so Excel opens the Gantry export with its accented venue names intact. A
   // barcode-and-number file has no non-ASCII content to disambiguate, and the mark
   // would make the FIRST barcode arrive as "﻿9351142000085" — which a strict
   // importer silently fails to match, i.e. exactly the bug this format exists to
-  // fix. Bepoz therefore gets no BOM.
+  // fix. The standard export therefore gets no BOM.
   //
   // Worth knowing if you hand-test by editing an export in Excel: Excel rewrites
   // the encoding on save, so a manual fix hides this while the app's own file
   // would still have failed.
+  var STANDARD_FORMAT = {
+    build: buildStandardCsv, suffix: 'standard', label: 'Standard', bom: false
+  };
   var EXPORT_FORMATS = {
-    full: { build: buildCsv, suffix: '', label: 'Gantry CSV', bom: true },
-    bepoz: { build: buildBepozCsv, suffix: 'bepoz', label: 'Bepoz', bom: false }
+    standard: STANDARD_FORMAT,
+    bepoz: STANDARD_FORMAT, // pre-rename value; see above
+    full: { build: buildCsv, suffix: '', label: 'Gantry CSV', bom: true }
   };
   function exportFormat() {
     return EXPORT_FORMATS[currentOrg && currentOrg.exportFormat] || EXPORT_FORMATS.full;
@@ -2965,7 +2985,7 @@
 
   // `bom` defaults to true: Excel needs the byte-order mark to read the Gantry
   // export's accented venue names as UTF-8. Machine-read formats pass false —
-  // see EXPORT_FORMATS for why that matters to Bepoz.
+  // see EXPORT_FORMATS for why that matters to the standard export.
   function downloadCsv(csvText, filename, bom) {
     var body = (bom === false ? '' : '﻿') + csvText;
     var blob = new Blob([body], { type: 'text/csv;charset=utf-8' });
@@ -3107,8 +3127,8 @@
       // it into the same POS, so handing them a different shape would be a trap.
       var fmt = exportFormat();
       var csv = fmt.build(actionsTake, takeItems);
-      // Same BOM rule as downloadCsv — a shared Bepoz file gets imported, so it
-      // must not carry a mark that corrupts its first barcode.
+      // Same BOM rule as downloadCsv — a shared standard-format file gets
+      // imported too, so it must not carry a mark that corrupts its first barcode.
       var file = new File([(fmt.bom === false ? '' : '﻿') + csv],
                           fileName(actionsTake, fmt.suffix), { type: 'text/csv' });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {

@@ -113,18 +113,34 @@ create table public.organisations (
   -- Bepoz reads CSV column 1 as Barcode and column 2 as Count, takes the store
   -- from its own import profile, and treats a header row as data. Gantry's own
   -- 5-column export therefore matched nothing at all — it was feeding the
-  -- stocktake NAME in as a barcode. See buildBepozCsv() in app.html.
+  -- stocktake NAME in as a barcode. See buildStandardCsv() in app.html.
   --
   -- An org preference rather than a per-export choice because a venue uses the
   -- same POS every time; making them pick on every export would be friction with
   -- one right answer. Owner-settable (this column IS in the client-writable GRANT
   -- below) and changes are logged by log_organisations_change().
   --
-  -- 'myob' and 'lightspeed' stay legal ONLY so any existing row remains valid;
-  -- nothing produces them and no UI offers them. If either POS is ever verified
-  -- properly, add a real builder rather than reviving those values.
+  -- Values, and why there are five for two formats:
+  --   'standard'   barcode,count with no header — the two-column shape above.
+  --   'bepoz'      the SAME format under its original name. Kept legal, and
+  --                aliased in app.html's EXPORT_FORMATS, so a row written before
+  --                the 2026-08-20 rename (or restored from a backup taken then)
+  --                still produces the right file. Drop this only after confirming
+  --                no row holds it — otherwise such an org silently falls back to
+  --                'full' and its imports start matching nothing again.
+  --   'full'       Gantry's own 5-column CSV, for Excel and for humans.
+  --   'myob',
+  --   'lightspeed' legal ONLY so any pre-existing row stays valid. Nothing
+  --                produces them, no UI offers them, and both were unverified
+  --                guesses. If either POS is ever properly verified, add a real
+  --                builder rather than reviving the value.
+  --
+  -- The default stays 'full' even though the console lists Standard first. Worth
+  -- a thought before changing it: 'full' is the safe default because it never
+  -- silently drops information, and an org that needs Standard sets it once
+  -- during setup. Changing the default only affects newly created orgs.
   export_format text not null default 'full'
-    check (export_format in ('full', 'bepoz', 'myob', 'lightspeed')),
+    check (export_format in ('full', 'standard', 'bepoz', 'myob', 'lightspeed')),
   -- No free tier — a brand-new org starts 'pending' (created, but blocked
   -- from doing anything real: no locations exist yet, so no stocktakes can
   -- exist either — see the locations insert policy below) until the owner
