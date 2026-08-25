@@ -245,6 +245,21 @@ create table public.venues (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.organisations(id) on delete cascade,
   name text not null,
+  -- Retire a venue without destroying its count history — the "we sold the
+  -- pub" case. Null means active.
+  --
+  -- Deleting such a venue is impossible by design, and that is not an
+  -- oversight to route around: stocktakes.location_id is `on delete restrict`
+  -- (see below) and locations.venue_id cascades from here, so a venue with any
+  -- counted location cannot be deleted without shredding the count records.
+  -- Archiving is the answer to "remove it" for anything that has been used;
+  -- plain DELETE still works, and is still the right call, for a venue created
+  -- by mistake and never counted against.
+  --
+  -- Only set_venue_archived() writes this — UPDATE is granted per-column below
+  -- and this column is NOT in that grant, so the RPC's owner-only check and its
+  -- audit row cannot be bypassed by a plain PATCH.
+  archived_at timestamptz,
   created_at timestamptz not null default now(),
   unique (org_id, name)
 );
@@ -258,6 +273,18 @@ create table public.locations (
   org_id uuid not null references public.organisations(id) on delete cascade,
   venue_id uuid not null references public.venues(id) on delete cascade,
   name text not null,
+  -- Same idea as venues.archived_at, and the two compose rather than cascade.
+  --
+  -- Archiving a VENUE deliberately does NOT stamp its locations. A location is
+  -- *effectively* archived when
+  --   locations.archived_at is not null OR venues.archived_at is not null
+  -- and every read filters on both. If archiving a venue stamped its children,
+  -- restoring that venue could no longer tell "archived because its venue was"
+  -- from "already archived on its own beforehand", and would wrongly revive the
+  -- second kind. One stamp per decision keeps restore exact.
+  --
+  -- Only set_location_archived() writes this — see the column GRANT below.
+  archived_at timestamptz,
   created_at timestamptz not null default now(),
   unique (venue_id, name)
 );
@@ -790,13 +817,31 @@ create policy "owner manager insert venues" on public.venues
       (select plan_tier from public.organisations where id = venues.org_id) = 'multi'
       or (
         (select plan_tier from public.organisations where id = venues.org_id) = 'single'
-        and (select count(*) from public.venues where org_id = venues.org_id) = 0
+        -- Archived venues must NOT count against the single-tier cap of one.
+        -- Otherwise an operator who sells their only venue and archives it can
+        -- never create its replacement — the cap would be permanently consumed
+        -- by a venue they no longer own, with no way back except deleting the
+        -- history that archiving exists to preserve. That is exactly the
+        -- scenario archiving was added for.
+        and (select count(*) from public.venues
+              where org_id = venues.org_id and archived_at is null) = 0
       )
     )
   );
 
 create policy "owner manager delete venues" on public.venues
   for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- Only `name` is client-writable. archived_at is excluded so the ONLY way to
+-- archive or restore is set_venue_archived() below, which is owner-only and
+-- always writes an audit row — a plain PATCH would bypass both (the update
+-- policy above admits managers too). Same pattern, and same reasoning, as the
+-- column grants on profiles and organisations.
+--
+-- Supabase grants UPDATE on every newly created table, so this revoke MUST
+-- live in this file: a rebuild without it silently reopens the direct path.
+revoke update on public.venues from authenticated, anon;
+grant update (name) on public.venues to authenticated;
 
 -- locations: any org member reads; owner/manager manage. No plan-tier cap
 -- of its own any more — that boundary moved up to venues (see above), so
@@ -818,12 +863,24 @@ create policy "owner manager insert locations" on public.locations
     org_id = public.my_org_id()
     and public.my_role() in ('owner', 'manager')
     and exists (
-      select 1 from public.venues v where v.id = locations.venue_id and v.org_id = locations.org_id
+      -- `archived_at is null` so a new location can't be added to a venue
+      -- that's been retired. Nothing in the UI offers it, but an archived
+      -- venue is still readable (that's what makes Restore possible), so
+      -- without this a stale or hand-rolled client could keep filling it.
+      select 1 from public.venues v
+       where v.id = locations.venue_id and v.org_id = locations.org_id
+         and v.archived_at is null
     )
   );
 
 create policy "owner manager delete locations" on public.locations
   for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- `name` and `venue_id` stay client-writable (rename, and the existing
+-- 'location.moved' flow); archived_at does not, for the same reason as venues
+-- above — set_location_archived() is the only writer.
+revoke update on public.locations from authenticated, anon;
+grant update (name, venue_id) on public.locations to authenticated;
 
 -- memberships: any org member can see the roster; only the owner changes
 -- roles or removes staff. No insert policy — only create_organisation()/
@@ -851,8 +908,15 @@ create policy "org members insert stocktakes" on public.stocktakes
   for insert with check (
     org_id = public.my_org_id()
     and exists (
+      -- Both archived_at checks matter, and they're checked here rather than
+      -- only in the app because a phone can be holding a location list loaded
+      -- before the venue was retired. The join to venues is what enforces
+      -- "effectively archived" (see locations.archived_at) — a location can be
+      -- active in its own right while its venue is not.
       select 1 from public.locations l
+        join public.venues v on v.id = l.venue_id
        where l.id = stocktakes.location_id and l.org_id = stocktakes.org_id
+         and l.archived_at is null and v.archived_at is null
     )
   );
 
@@ -1471,6 +1535,155 @@ begin
 end $$;
 
 grant execute on function public.set_stocktake_status(uuid, text, text) to authenticated;
+
+-- ==========================================================================
+-- Archiving venues and locations.
+--
+-- Why an RPC rather than a plain UPDATE: archiving hides a venue's entire
+-- counting history from every screen, so it has to be owner-only and it has to
+-- be logged. RLS can restrict which ROWS you may update but not which COLUMNS,
+-- and the update policies on these tables admit managers — so the only way to
+-- get "owner-only, always logged" is to revoke the column and funnel writes
+-- through here. Exactly the shape of set_stocktake_status() above.
+--
+-- Archiving is the answer to "remove this venue" for anything that has been
+-- counted, because deleting it is impossible by design: stocktakes.location_id
+-- is `on delete restrict` and locations.venue_id cascades from venues, so a
+-- DELETE would have to shred the count records first. Plain DELETE still works
+-- for a venue or location that was never used, and is still the right tool
+-- there.
+--
+-- Archiving the org's LAST active venue is deliberately allowed. It's the real
+-- middle of the "sold one, buying another" transition, and the venues insert
+-- policy above ignores archived rows precisely so the replacement can be
+-- created. The org simply can't start counts until it has an active venue.
+-- ==========================================================================
+create or replace function public.set_venue_archived(
+  p_venue_id uuid,
+  p_archived boolean
+)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_venue_org uuid;
+  v_venue_name text;
+  v_was_archived timestamptz;
+  v_locations integer;
+  v_stocktakes integer;
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+begin
+  -- coalesce, not `!=`: my_role() is NULL for a caller with no membership, and
+  -- `NULL <> 'owner'` is NULL, which plpgsql treats as false — the exact
+  -- null-role bypass this codebase has already been bitten by once.
+  if coalesce(public.my_role(), '') <> 'owner' then
+    raise exception 'Only the owner can archive or restore a venue.';
+  end if;
+
+  select v.org_id, v.name, v.archived_at
+    into v_venue_org, v_venue_name, v_was_archived
+    from public.venues v where v.id = p_venue_id;
+
+  -- security definer bypasses RLS, so re-implement the org scoping here. Same
+  -- message whether the venue is missing or belongs to another org, so this
+  -- can't be used to probe for UUIDs.
+  if v_venue_org is null or v_venue_org is distinct from v_org then
+    raise exception 'Venue not found.';
+  end if;
+
+  -- No-op rather than an error — two admin tabs can race the same button, and
+  -- writing nothing avoids a misleading "archived an already-archived venue"
+  -- row in the log.
+  if (v_was_archived is not null) = p_archived then
+    return;
+  end if;
+
+  update public.venues
+     set archived_at = case when p_archived then now() else null end
+   where id = p_venue_id;
+
+  -- Counted for the log, not for a decision: "archived Old Tavern" alone
+  -- doesn't convey that 31 counts just left every screen. Same reasoning as
+  -- the items_deleted/units_deleted enrichment on stocktake deletion.
+  select count(*) into v_locations
+    from public.locations l where l.venue_id = p_venue_id;
+  select count(*) into v_stocktakes
+    from public.stocktakes s
+    join public.locations l on l.id = s.location_id
+   where l.venue_id = p_venue_id;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o where o.id = v_org;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+  values (v_org, org_label, actor, actor_label,
+          case when p_archived then 'venue.archived' else 'venue.restored' end,
+          'venue', p_venue_id, v_venue_name,
+          jsonb_build_object('archived_at', v_was_archived),
+          jsonb_build_object(
+            'archived', p_archived,
+            'locations_affected', v_locations,
+            'stocktakes_affected', v_stocktakes));
+end $$;
+
+grant execute on function public.set_venue_archived(uuid, boolean) to authenticated;
+
+-- Same contract for a single location. Note this is independent of its venue's
+-- state by design (see locations.archived_at): restoring a venue does not
+-- un-archive a location that was retired on its own beforehand.
+create or replace function public.set_location_archived(
+  p_location_id uuid,
+  p_archived boolean
+)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_loc_org uuid;
+  v_loc_name text;
+  v_was_archived timestamptz;
+  v_stocktakes integer;
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+begin
+  if coalesce(public.my_role(), '') <> 'owner' then
+    raise exception 'Only the owner can archive or restore a location.';
+  end if;
+
+  select l.org_id, l.name, l.archived_at
+    into v_loc_org, v_loc_name, v_was_archived
+    from public.locations l where l.id = p_location_id;
+
+  if v_loc_org is null or v_loc_org is distinct from v_org then
+    raise exception 'Location not found.';
+  end if;
+
+  if (v_was_archived is not null) = p_archived then
+    return;
+  end if;
+
+  update public.locations
+     set archived_at = case when p_archived then now() else null end
+   where id = p_location_id;
+
+  select count(*) into v_stocktakes
+    from public.stocktakes s where s.location_id = p_location_id;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o where o.id = v_org;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+  values (v_org, org_label, actor, actor_label,
+          case when p_archived then 'location.archived' else 'location.restored' end,
+          'location', p_location_id, v_loc_name,
+          jsonb_build_object('archived_at', v_was_archived),
+          jsonb_build_object('archived', p_archived, 'stocktakes_affected', v_stocktakes));
+end $$;
+
+grant execute on function public.set_location_archived(uuid, boolean) to authenticated;
 
 -- Quantity edits are the other way to destroy a count without deleting
 -- anything: `update stocktake_items set qty = 1` walks a 247-unit line down to

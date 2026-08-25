@@ -39,3 +39,4 @@ different product, don't paste into it).
 | `20260820_02_bepoz_export_format.sql` | Allowed `export_format = 'bepoz'` | **Superseded by 03** — skip it and run 03 instead, which covers both. Harmless if it was already run |
 | `20260820_03_standard_export_format.sql` | Renames that format to `'standard'` and migrates any `'bepoz'` row | Run **before** pushing the new `app.html`/`admin.html`. Safe whether or not 02 ran, and safe to run twice |
 | `20260820_04_default_standard_export.sql` | `export_format` column default `'full'` → `'standard'` | Order doesn't matter — no page reads the default. Metadata-only, touches no existing row |
+| `20260824_01_archive_venues_locations.sql` | `archived_at` on venues/locations, `set_venue_archived()`/`set_location_archived()`, column GRANTs, three insert policies narrowed | Run **before** pushing the new `app.html`/`admin.html`. Safe against the deployed page — renaming still works, since the GRANT keeps `name` writable |

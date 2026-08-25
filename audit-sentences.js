@@ -38,10 +38,34 @@ window.GANTRY_AUDIT = (function () {
     'venue.created': function (r) { return r.actor_label + ' added venue "' + r.target_label + '"'; },
     'venue.renamed': function (r) { return r.actor_label + ' renamed venue "' + r.before.name + '" to "' + r.after.name + '"'; },
     'venue.removed': function (r) { return r.actor_label + ' removed venue "' + r.target_label + '"'; },
+    // Archiving is the "we sold the pub" action, so the sentence has to convey
+    // how much left the screens — "archived Old Tavern" alone reads like a tidy-up
+    // when it may have hidden a year of counts. Both counts are guarded with
+    // hasNum: these rows are immutable, so an early one written before the
+    // enrichment existed must degrade to the short sentence, not "undefined".
+    'venue.archived': function (r) {
+      var s = r.actor_label + ' archived venue "' + r.target_label + '"';
+      if (r.after && hasNum(r.after.stocktakes_affected)) {
+        s += ' — ' + plural(Number(r.after.stocktakes_affected), 'stocktake') + ' hidden';
+        if (hasNum(r.after.locations_affected)) {
+          s += ' across ' + plural(Number(r.after.locations_affected), 'location');
+        }
+      }
+      return s;
+    },
+    'venue.restored': function (r) { return r.actor_label + ' restored venue "' + r.target_label + '"'; },
     'location.created': function (r) { return r.actor_label + ' added location "' + r.target_label + '"'; },
     'location.renamed': function (r) { return r.actor_label + ' renamed location "' + r.before.name + '" to "' + r.after.name + '"'; },
     'location.moved': function (r) { return r.actor_label + ' moved location "' + r.target_label + '" to a different venue'; },
     'location.removed': function (r) { return r.actor_label + ' removed location "' + r.target_label + '"'; },
+    'location.archived': function (r) {
+      var s = r.actor_label + ' archived location "' + r.target_label + '"';
+      if (r.after && hasNum(r.after.stocktakes_affected)) {
+        s += ' — ' + plural(Number(r.after.stocktakes_affected), 'stocktake') + ' hidden';
+      }
+      return s;
+    },
+    'location.restored': function (r) { return r.actor_label + ' restored location "' + r.target_label + '"'; },
     'membership.role_changed': function (r) { return r.actor_label + ' changed ' + r.target_label + '’s role from ' + r.before.role + ' to ' + r.after.role; },
     'membership.removed': function (r) { return r.actor_label + ' removed ' + r.target_label + ' from the organisation'; },
     'membership.added_by_owner': function (r) { return r.actor_label + ' added ' + r.target_label + ' to the team as ' + (r.after.role === 'manager' ? 'Manager' : 'Staff'); },

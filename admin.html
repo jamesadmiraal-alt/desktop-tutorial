@@ -82,6 +82,16 @@
   .venue-locations { margin: 4px 0 4px 18px; border-left: 2px solid var(--border); padding-left: 12px; }
   .venue-locations .loc-row { padding: 6px 0; }
   .venue-locations:empty::after { content: 'No locations in this venue yet.'; color: var(--text-dim); font-size: 0.85rem; display: block; padding: 6px 0; }
+  /* Archived venues/locations stay visible — they're restorable, and hiding
+     them would make "where did my venue go?" the next question. Dimmed rather
+     than removed, and the neutral button colour distinguishes Restore from the
+     danger-coloured destructive controls in .loc-row above. */
+  .venue-section.archived { opacity: 0.62; }
+  .archived-label { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px;
+    padding: 2px 8px; flex: none; }
+  .loc-row button.neutral { color: var(--accent); }
+  .archived-note { color: var(--text-dim); font-size: 0.85rem; padding: 4px 0 8px; }
   .add-venue-location-row { margin: 4px 0 0 18px; padding-left: 12px; display: flex; gap: 8px; }
   .add-venue-location-row input { flex: 1; }
   .add-venue-location-row button { flex: none; }
@@ -656,14 +666,51 @@
   // venues themselves are ever capped by tier (see renderVenues' atCap
   // below), so no "canRemove" gating is needed at the location level any
   // more the way it used to be when locations were the capped unit.
+  // A venue or location that has ever been counted CANNOT be deleted — see
+  // schema.sql, where stocktakes.location_id is `on delete restrict`
+  // specifically so a removal can't shred count history. Archiving is the
+  // answer for anything that's been used; delete stays for the never-used case.
+  // Both messages below say which one applies rather than just reporting
+  // failure, because "can't be removed" with no way forward is what sent an
+  // operator looking for a bug.
+  var ARCHIVE_BLURB = 'It stays out of the app but keeps every past stocktake, '
+    + 'and you can restore it later.';
+
+  // Only the owner may archive (set_venue_archived/set_location_archived both
+  // enforce it server-side). Managers can still rename and delete, so they get
+  // no archive control rather than one that always errors.
+  function canArchive() { return isOwner(); }
+
+  function archiveBtn(label, title, onClick) {
+    var b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    b.className = 'neutral';
+    b.onclick = onClick;
+    return b;
+  }
+
   function renderVenueLocations(venue, container) {
     container.innerHTML = '';
+    var venueArchived = !!venue.archived_at;
+    // Locations under an archived venue are already effectively archived (see
+    // locations.archived_at in schema.sql), so per-location controls here would
+    // be meaningless or actively confusing — one note explains the whole group.
+    if (venueArchived && (venue.locations || []).length) {
+      var note = document.createElement('div');
+      note.className = 'archived-note';
+      note.textContent = 'Locations are hidden while this venue is archived. '
+        + 'Restore the venue to manage them.';
+      container.appendChild(note);
+    }
     (venue.locations || []).forEach(function (loc) {
+      var archived = !!loc.archived_at;
       var row = document.createElement('div');
       row.className = 'loc-row';
       var input = document.createElement('input');
       input.type = 'text';
       input.value = loc.name;
+      input.disabled = archived || venueArchived;
       input.addEventListener('change', function () {
         var name = input.value.trim();
         if (!name || name === loc.name) { input.value = loc.name; return; }
@@ -674,21 +721,53 @@
         });
       });
       row.appendChild(input);
+
+      if (venueArchived) {
+        container.appendChild(row);
+        return; // venue-level state governs; nothing to act on per location
+      }
+
+      if (archived) {
+        var tag = document.createElement('span');
+        tag.className = 'archived-label';
+        tag.textContent = 'Archived';
+        row.appendChild(tag);
+        if (canArchive()) {
+          row.appendChild(archiveBtn('Restore', 'Restore location', function () {
+            setLocationArchived(loc, false);
+          }));
+        }
+        container.appendChild(row);
+        return;
+      }
+
+      if (canArchive()) {
+        row.appendChild(archiveBtn('Archive', 'Archive location', function () {
+          if (!confirm('Archive location "' + loc.name + '"?\n\n' + ARCHIVE_BLURB)) return;
+          setLocationArchived(loc, true);
+        }));
+      }
+
       var removeBtn = document.createElement('button');
       removeBtn.textContent = '✕';
-      removeBtn.title = 'Remove location';
+      removeBtn.title = 'Delete location permanently';
       removeBtn.onclick = function () {
-        if (!confirm('Remove location "' + loc.name + '"? Stocktakes already at this location keep their history, but this location itself can only be removed once it has no stocktakes.')) return;
+        if (!confirm('Delete location "' + loc.name + '" permanently?\n\n'
+          + 'This only works if it has never been counted. If it has stocktakes, '
+          + 'archive it instead.')) return;
         removeBtn.disabled = true;
         sb.from('locations').delete().eq('id', loc.id).then(function (res) {
           removeBtn.disabled = false;
           if (res.error) {
             var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
-            fail(blocked ? { message: "This location has stocktakes and can't be removed." } : res.error, blocked ? '' : 'Could not remove location');
+            fail(blocked
+              ? { message: 'This location has stocktakes, so deleting it would destroy '
+                  + 'them. Archive it instead — ' + ARCHIVE_BLURB }
+              : res.error, blocked ? '' : 'Could not delete location');
             return;
           }
           loadVenues();
-          toast('Location removed');
+          toast('Location deleted');
         });
       };
       row.appendChild(removeBtn);
@@ -696,23 +775,51 @@
     });
   }
 
+  function setLocationArchived(loc, archived) {
+    sb.rpc('set_location_archived', { p_location_id: loc.id, p_archived: archived })
+      .then(function (res) {
+        if (res.error) {
+          fail(res.error, archived ? 'Could not archive location' : 'Could not restore location');
+          return;
+        }
+        loadVenues();
+        toast(archived ? 'Location archived' : 'Location restored');
+      });
+  }
+
+  function setVenueArchived(venue, archived) {
+    sb.rpc('set_venue_archived', { p_venue_id: venue.id, p_archived: archived })
+      .then(function (res) {
+        if (res.error) {
+          fail(res.error, archived ? 'Could not archive venue' : 'Could not restore venue');
+          return;
+        }
+        loadVenues();
+        toast(archived ? 'Venue archived' : 'Venue restored');
+      });
+  }
+
   function renderVenues(venues) {
     var list = $('venues-list');
     list.innerHTML = '';
-    // A venue is only removable once there's more than one (single-venue
-    // orgs are permanently capped at exactly 1 — see atCap below) — mirrors
-    // how locations' own remove button used to be gated before this layer
-    // existed, just one level up.
-    var canRemoveVenue = venues.length > 1;
+    // Counts ACTIVE venues only, in both places it matters. An archived venue
+    // must not consume the single-tier cap of one — otherwise selling your only
+    // venue leaves you permanently unable to create its replacement, which is
+    // the exact situation archiving was built for. Mirrors the `archived_at is
+    // null` in the venues insert policy (schema.sql).
+    var activeVenues = venues.filter(function (v) { return !v.archived_at; }).length;
+    var canRemoveVenue = activeVenues > 1;
     venues.forEach(function (venue) {
+      var archived = !!venue.archived_at;
       var section = document.createElement('div');
-      section.className = 'venue-section';
+      section.className = 'venue-section' + (archived ? ' archived' : '');
 
       var venueRow = document.createElement('div');
       venueRow.className = 'loc-row venue-row';
       var venueInput = document.createElement('input');
       venueInput.type = 'text';
       venueInput.value = venue.name;
+      venueInput.disabled = archived;
       venueInput.addEventListener('change', function () {
         var name = venueInput.value.trim();
         if (!name || name === venue.name) { venueInput.value = venue.name; return; }
@@ -723,25 +830,60 @@
         });
       });
       venueRow.appendChild(venueInput);
-      if (canRemoveVenue) {
-        var removeVenueBtn = document.createElement('button');
-        removeVenueBtn.textContent = '✕';
-        removeVenueBtn.title = 'Remove venue';
-        removeVenueBtn.onclick = function () {
-          if (!confirm('Remove venue "' + venue.name + '"? It can only be removed once it has no locations.')) return;
-          removeVenueBtn.disabled = true;
-          sb.from('venues').delete().eq('id', venue.id).then(function (res) {
-            removeVenueBtn.disabled = false;
-            if (res.error) {
-              var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
-              fail(blocked ? { message: "This venue has locations and can't be removed." } : res.error, blocked ? '' : 'Could not remove venue');
-              return;
-            }
-            loadVenues();
-            toast('Venue removed');
-          });
-        };
-        venueRow.appendChild(removeVenueBtn);
+
+      if (archived) {
+        var tag = document.createElement('span');
+        tag.className = 'archived-label';
+        tag.textContent = 'Archived';
+        venueRow.appendChild(tag);
+        if (canArchive()) {
+          venueRow.appendChild(archiveBtn('Restore', 'Restore venue', function () {
+            setVenueArchived(venue, false);
+          }));
+        }
+      } else {
+        if (canArchive()) {
+          venueRow.appendChild(archiveBtn('Archive', 'Archive venue', function () {
+            // Name the consequence in numbers. "Archive Old Tavern?" reads like a
+            // tidy-up even when it's about to take a year of counts off every
+            // screen, and the operator is usually doing this once, under pressure.
+            var locs = (venue.locations || []).length;
+            if (!confirm('Archive venue "' + venue.name + '"?\n\n'
+              + 'It and its ' + locs + ' location' + (locs === 1 ? '' : 's')
+              + ' will disappear from the app for everyone, including past '
+              + 'stocktakes on the home screen.\n\n' + ARCHIVE_BLURB
+              + '\n\nExport anything you still need first.')) return;
+            setVenueArchived(venue, true);
+          }));
+        }
+        if (canRemoveVenue) {
+          var removeVenueBtn = document.createElement('button');
+          removeVenueBtn.textContent = '✕';
+          removeVenueBtn.title = 'Delete venue permanently';
+          removeVenueBtn.onclick = function () {
+            if (!confirm('Delete venue "' + venue.name + '" permanently?\n\n'
+              + 'This only works if it has no locations and has never been counted. '
+              + 'Otherwise archive it instead.')) return;
+            removeVenueBtn.disabled = true;
+            sb.from('venues').delete().eq('id', venue.id).then(function (res) {
+              removeVenueBtn.disabled = false;
+              if (res.error) {
+                // The old message blamed locations. The real blocker is usually
+                // stocktake history one level down: locations cascade from the
+                // venue, then hit `on delete restrict` from stocktakes.
+                var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
+                fail(blocked
+                  ? { message: 'This venue still has locations, or stocktakes that '
+                      + 'deleting it would destroy. Archive it instead — ' + ARCHIVE_BLURB }
+                  : res.error, blocked ? '' : 'Could not delete venue');
+                return;
+              }
+              loadVenues();
+              toast('Venue deleted');
+            });
+          };
+          venueRow.appendChild(removeVenueBtn);
+        }
       }
       section.appendChild(venueRow);
 
@@ -749,6 +891,15 @@
       locContainer.className = 'venue-locations';
       renderVenueLocations(venue, locContainer);
       section.appendChild(locContainer);
+
+      // No add form on an archived venue — the locations insert policy rejects
+      // it server-side (schema.sql), so offering the form would only produce an
+      // error. Hidden rather than disabled, per the convention elsewhere here: a
+      // greyed form still implies the capability exists.
+      if (archived) {
+        list.appendChild(section);
+        return;
+      }
 
       var addLocRow = document.createElement('div');
       addLocRow.className = 'add-venue-location-row';
@@ -779,17 +930,34 @@
     // Mirrors the RLS insert policy on venues (schema.sql): single tier gets
     // exactly one venue, ever; multi-tier is unlimited. Locations within a
     // venue are unlimited on every tier — no cap check at that level.
-    var atCap = currentOrg.planTier !== 'multi' && venues.length >= 1;
+    // activeVenues, not venues.length: an archived venue doesn't count against
+    // the cap server-side, so showing "at cap" here would hide the Add form for
+    // a single-tier org that just archived its sold venue and is entitled to
+    // create the replacement.
+    var atCap = currentOrg.planTier !== 'multi' && activeVenues >= 1;
     $('add-venue-row').style.display = atCap ? 'none' : 'flex';
     $('venue-limit-note').style.display = atCap ? '' : 'none';
   }
 
   function loadVenues() {
-    sb.from('venues').select('id,name,locations(id,name)').order('name').then(function (res) {
+    sb.from('venues').select('id,name,archived_at,locations(id,name,archived_at)')
+      .order('name').then(function (res) {
       if (res.error) { fail(res.error, 'Could not load venues'); return; }
       var venues = (res.data || []).map(function (v) {
-        v.locations = (v.locations || []).slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+        // Active locations first within each venue, then alphabetical — same
+        // reasoning as the venue ordering below.
+        v.locations = (v.locations || []).slice().sort(function (a, b) {
+          var d = (a.archived_at ? 1 : 0) - (b.archived_at ? 1 : 0);
+          return d || a.name.localeCompare(b.name);
+        });
         return v;
+      });
+      // Archived venues sink to the bottom. They're deliberately still listed —
+      // they're restorable, and hiding them makes "where did my venue go?" the
+      // next question — but they shouldn't sit between the ones in daily use.
+      venues.sort(function (a, b) {
+        var d = (a.archived_at ? 1 : 0) - (b.archived_at ? 1 : 0);
+        return d || a.name.localeCompare(b.name);
       });
       renderVenues(venues);
     });

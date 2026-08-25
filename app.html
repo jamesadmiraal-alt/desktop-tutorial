@@ -1808,14 +1808,24 @@
       (currentOrg && currentOrg.role === 'owner') ? '' : 'none';
     loadTeamAuditLog();
     Promise.all([
-      sb.from('venues').select('id,name,locations(id,name)').limit(1).maybeSingle(),
+      // Archived venues excluded, and archived locations with them. This view is
+      // the single-venue org's location management, and archiving is only
+      // reachable from admin.html, which single-tier orgs can't open — so this
+      // is defensive rather than routine. It matters after a multi→single
+      // downgrade, where an archived venue can exist and `limit(1)` could
+      // otherwise land on it and offer a rename/add form the insert policy will
+      // reject.
+      sb.from('venues').select('id,name,locations(id,name,archived_at)')
+        .is('archived_at', null).limit(1).maybeSingle(),
       sb.rpc('list_org_members')
     ]).then(function (results) {
       var venueRes = results[0], rosterRes = results[1];
       if (venueRes.error) { fail(venueRes.error, 'Could not load venue'); }
       else if (venueRes.data) {
         teamVenue = venueRes.data;
-        teamVenue.locations = (teamVenue.locations || []).slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+        teamVenue.locations = (teamVenue.locations || [])
+          .filter(function (l) { return !l.archived_at; })
+          .slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
         $('team-venue-name').value = teamVenue.name;
         renderTeamLocations();
       }
@@ -2173,8 +2183,20 @@
   // This org's pre-created locations (each nested under a venue) — fetched
   // once per login/resume, needed before "New stocktake" can offer a
   // location picker.
+  // Archived venues and locations are excluded here, which is what makes them
+  // disappear from the scanner and the new-stocktake picker. Two filters, not
+  // one: a location can be active in its own right while its venue is archived
+  // (archiving a venue deliberately doesn't stamp its children — see
+  // locations.archived_at in schema.sql), so the venue's state has to be checked
+  // too. `venues!inner` is required — PostgREST only applies a filter on an
+  // embedded resource if the join is an inner one; with the default left join
+  // the `venues.archived_at` filter is silently ignored and archived venues
+  // keep showing up.
   function loadLocations(cb) {
-    sb.from('locations').select('id,name,venue_id,venues(name)').order('name').then(function (res) {
+    sb.from('locations').select('id,name,venue_id,venues!inner(name,archived_at)')
+      .is('archived_at', null)
+      .is('venues.archived_at', null)
+      .order('name').then(function (res) {
       if (!res.error) locations = res.data || [];
       if (cb) cb();
     });
@@ -2201,8 +2223,15 @@
     document.querySelector('.take-group[data-group="ready"]').style.display = 'none';
     $('stocktake-list-completed').innerHTML = '';
     document.querySelector('.take-group[data-group="completed"]').style.display = 'none';
+    // Stocktakes at an archived location — or in an archived venue — leave Home.
+    // That's the point of archiving a sold venue, and it's reversible: nothing
+    // is deleted, so restoring brings every row back. Same `!inner` requirement
+    // and same two-level check as loadLocations() above; the confirm dialog in
+    // admin.html tells the operator to export first.
     sb.from('stocktakes')
-      .select('id,name,status,created_at,updated_at,created_by,locations(name,venues(name)),stocktake_items(qty)')
+      .select('id,name,status,created_at,updated_at,created_by,locations!inner(name,archived_at,venues!inner(name,archived_at)),stocktake_items(qty)')
+      .is('locations.archived_at', null)
+      .is('locations.venues.archived_at', null)
       .order('updated_at', { ascending: false })
       .then(function (res) {
         if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
