@@ -47,7 +47,13 @@
   }
   header {
     padding: calc(12px + env(safe-area-inset-top)) 16px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    background: var(--surface); position: sticky; top: 0; z-index: 10;
+    /* Above the overlays (z-index 50), not under them. With a dialog open the
+       header used to sit beneath the scrim, so the Gantry lockup could not be
+       tapped at all — "overlay blocked the lockup". Home is the escape hatch
+       from a half-typed dialog, so it has to stay reachable; #home-btn closes
+       the dialogs first and only then navigates, so nothing gets committed on
+       the way out. */
+    background: var(--surface); position: sticky; top: 0; z-index: 60;
   }
   header h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; white-space: nowrap; display: flex; align-items: center; }
   header .right { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -1174,10 +1180,43 @@
   // Only these three: #reset-password-overlay and the account dialogs belong to
   // flows that legitimately span a view change, and closing those here would
   // break them.
+  // ---- Ghost-click shield -------------------------------------------------
+  //
+  // A tap on a phone produces a touch sequence AND a synthesized click a moment
+  // later. If the first half of that gesture closes a dialog, the overlay stops
+  // capturing (`.overlay:not(.open) { pointer-events: none }`) and the click
+  // lands on whatever is now under the finger. That one mechanism produced most
+  // of stress test 3:
+  //
+  //   * tapping a keypad digit "dismissed the dialog and wrote nothing" — the
+  //     click went through to the list behind
+  //   * Save "bounced to Home" — commitQty() never navigates; the click-through
+  //     hit a Home card
+  //   * the pad "opened unprompted, pre-filled with a barcode nobody typed" —
+  //     the click-through landed on a line's qty chip, which opens EDIT mode
+  //     pre-filled with that line's current quantity. Typing then APPENDED to it,
+  //     which is how a 2 became 223 and a Clear turned a line into 80.
+  //   * Cancel "left the pad open", Home "closed AND committed" — same thing
+  //     landing on a chip or on Save.
+  //
+  // So: for a moment after any dialog closes, swallow clicks at the capture
+  // phase. 350ms covers the synthesized event without being long enough to eat a
+  // deliberate second tap.
+  var ghostClickUntil = 0;
+  function shieldGhostClicks() { ghostClickUntil = Date.now() + 350; }
+  document.addEventListener('click', function (e) {
+    if (Date.now() >= ghostClickUntil) return;
+    ghostClickUntil = 0;   // one shot: swallow the stray, not the next real tap
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
   function closeTransientOverlays() {
+    var wasOpen = document.querySelector('.overlay.open');
     closeQtyDialog();
     $('name-overlay').classList.remove('open');
     $('take-actions-overlay').classList.remove('open');
+    if (wasOpen) shieldGhostClicks();
   }
 
   function showView(name) {
@@ -3019,11 +3058,23 @@
   var PAD_REPEAT_MS = 50;
   var lastPadKey = { key: null, at: 0 };
 
-  $('qty-pad').addEventListener('click', function (e) {
+  // Driven by pointerup, with the synthesized click swallowed afterwards.
+  //
+  // Handling `click` alone was not enough: a tap emits a pointer sequence AND a
+  // compatibility click, and when both were acted on one press of 2 entered 22.
+  // The 50ms same-key guard below is a backstop, not the mechanism — the two
+  // events can arrive further apart than that, which is why the guard alone
+  // still let doubles through in stress test 3.
+  //
+  // pointerup rather than pointerdown so a press that slides off a key does not
+  // count, which is the behaviour a physical keypad has.
+  var lastPadPointerAt = 0;
+
+  function handlePadEvent(e) {
     var btn = e.target.closest ? e.target.closest('button[data-key]') : null;
     if (!btn) return;
-    // Nothing below this element needs this tap, and nothing above should act on
-    // it either — a keypad press is not a click on the stocktake behind.
+    // Nothing below this needs the tap, and nothing above should act on it — a
+    // keypad press is not a click on the stocktake behind.
     e.preventDefault();
     e.stopPropagation();
     var key = btn.getAttribute('data-key');
@@ -3031,6 +3082,22 @@
     if (key === lastPadKey.key && now - lastPadKey.at < PAD_REPEAT_MS) return;
     lastPadKey = { key: key, at: now };
     applyPadKey(key);
+  }
+
+  $('qty-pad').addEventListener('pointerup', function (e) {
+    lastPadPointerAt = Date.now();
+    handlePadEvent(e);
+  });
+
+  $('qty-pad').addEventListener('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    // The compatibility click for a pointerup we already handled. Swallowed —
+    // acting on it is exactly what typed the second digit.
+    if (Date.now() - lastPadPointerAt < 700) return;
+    // No recent pointer: this is a keyboard activation of a focused key, which
+    // has no pointerup to pair with. Handle it.
+    handlePadEvent(e);
   });
 
   function applyPadKey(key) {
@@ -3088,17 +3155,40 @@
   //
   // The barcode check is exact rather than heuristic: if what was typed IS the
   // code being counted, it is not a quantity, whatever its length.
+  // Is this a barcode (or two) rather than a quantity?
+  //
+  // The old test was an exact match against pendingCode, which missed the two
+  // cases that actually happened: a DIFFERENT barcode scanned into the field,
+  // and two barcodes concatenated when a second scan landed on top of the first.
+  //
+  // The rule is now positional, not equality-based: nobody counts more than
+  // 999,999 of anything, so more than six integer digits is a scanner, not a
+  // person. That also stops the far worse old behaviour — the cleaner below used
+  // to TRUNCATE to six digits, turning 9310072016247 into a perfectly plausible
+  // 931007 and saving it as a count.
+  function looksLikeBarcode(s) {
+    var t = String(s || '').trim();
+    if (!t) return false;
+    if (pendingCode && t === pendingCode) return true;
+    var digits = t.replace(/[^0-9]/g, '');
+    var intPart = t.split('.')[0].replace(/[^0-9]/g, '');
+    return intPart.length > QTY_MAX_INT_DIGITS || digits.length > 12;
+  }
+
+  function rejectBarcodeInQty() {
+    $('qty-input').value = '';
+    toast('That’s a barcode, not a quantity — enter how many', '#b91c1c');
+  }
+
   $('qty-input').addEventListener('input', function () {
     var el = $('qty-input');
     var raw = el.value;
 
-    if (pendingCode && raw.trim() === pendingCode) {
-      el.value = '';
-      toast('That’s the barcode, not a quantity — enter how many', '#b91c1c');
-      return;
-    }
+    if (looksLikeBarcode(raw)) { rejectBarcodeInQty(); return; }
 
     // Same shape the keypad produces: digits, at most one point, capped scale.
+    // Truncation is safe here only because anything barcode-shaped was rejected
+    // outright above rather than trimmed down into a believable number.
     var clean = raw.replace(/[^0-9.]/g, '');
     var parts = clean.split('.');
     clean = parts.shift().slice(0, QTY_MAX_INT_DIGITS)
@@ -3112,12 +3202,20 @@
   });
 
   function closeQtyDialog() {
+    var wasOpen = $('qty-overlay').classList.contains('open');
     dialogOpen = false;
     pendingCode = null;
     $('qty-overlay').classList.remove('open');
     // Clear the field too. Left behind, the previous count is the default the
     // next scan sees — and in ADD mode that silently doubles it.
     $('qty-input').value = '';
+    // Save is re-enabled here as well as in commitQty's handlers: closing is the
+    // one path that always runs, so a dialog can never be reopened with a dead
+    // Save button left over from a previous attempt.
+    $('qty-ok').disabled = false;
+    // The tap that closed this is about to arrive as a click on whatever is
+    // underneath. See shieldGhostClicks().
+    if (wasOpen) shieldGhostClicks();
   }
 
   function commitQty() {
@@ -3130,13 +3228,13 @@
     // as a number — 9348230001611 would be stored as nine billion bottles. This
     // is the last line of defence for a wedge scanner or a paste that got past
     // the input handler; the message says what to do rather than just refusing.
-    if (pendingCode && raw.trim() === pendingCode) {
-      $('qty-input').value = '';
-      toast('That’s the barcode, not a quantity — enter how many', '#b91c1c');
-      return;
-    }
+    if (looksLikeBarcode(raw)) { rejectBarcodeInQty(); return; }
+    // A trailing point is a half-typed number, not an error — "5." is 5. Trimming
+    // it here means Save either stores the obvious value or refuses out loud;
+    // what it must never do is grey itself out and say nothing.
+    raw = raw.trim().replace(/\.$/, '');
     var qty = qtyRound(parseFloat(raw));
-    if (raw.trim() === '' || !isFinite(parseFloat(raw)) || qty < 0) {
+    if (raw === '' || !isFinite(parseFloat(raw)) || qty < 0) {
       toast('Enter a quantity of 0 or more', '#b91c1c'); return;
     }
     var code = pendingCode;
@@ -3208,9 +3306,33 @@
   }
 
   $('qty-ok').onclick = commitQty;
-  $('qty-cancel').onclick = closeQtyDialog;
+  $('qty-cancel').onclick = function () { closeQtyDialog(); };
+
+  // Enter commits ONLY when a person is genuinely typing in this field.
+  //
+  // A keyboard-wedge scanner ends every scan with Enter, and it sends it wherever
+  // the caret happens to be. With the old unconditional handler that committed
+  // whatever was in the box — mid-Backspace, half-typed, or nothing — which is
+  // the "phantom Enter-quantity" and the saves nobody tapped Save for.
+  //
+  // readOnly is the tell: on a touch device the in-app keypad is the input
+  // method and the field is readOnly and never focused, so an Enter arriving
+  // there is a scanner, not a thumb.
   $('qty-input').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') commitQty();
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    var el = $('qty-input');
+    if (el.readOnly || document.activeElement !== el) return;
+    commitQty();
+  });
+
+  // Escape closes the dialog and writes nothing — it had no handler at all, so
+  // the only way out was Cancel.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (!$('qty-overlay').classList.contains('open')) return;
+    e.preventDefault();
+    closeQtyDialog();
   });
 
   // ---- Scanning ----
@@ -3362,7 +3484,10 @@
   // ---- Manual entry ----
   function manualAdd() {
     var v = $('manual-input').value.trim();
-    if (!v) return;
+    // Say why nothing happened. Returning in silence is indistinguishable from a
+    // dead button, which is how "typed barcode + Add: no qty dialog" gets
+    // reported.
+    if (!v) { toast('Type a barcode first', '#b91c1c'); return; }
     $('manual-input').value = '';
     openQtyDialog(v, false);
   }
