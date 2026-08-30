@@ -97,6 +97,39 @@
   .plan li::before { content: ""; width: 0.95em; height: 0.95em; flex: 0 0 auto; margin-top: 0.35em; background: var(--check); -webkit-mask: url(icons/check.svg) no-repeat center/contain; mask: url(icons/check.svg) no-repeat center/contain; }
   .plan .btn { width: 100%; }
 
+  /* POS interest form. Reuses .card / .btn / h2.section rather than inventing a
+     panel style, so it reads as part of the page rather than an embedded widget.
+     Single column at every width: it is filled in one-handed on a phone, and a
+     two-up row would only shorten the page on a desktop nobody submits from. */
+  .pos-form { max-width: 560px; margin: 0 auto; text-align: left; }
+  .pos-field { margin-bottom: 14px; }
+  .pos-field label {
+    display: block; font-size: 0.85rem; color: var(--text-dim); margin-bottom: 6px;
+  }
+  .pos-field .opt { color: var(--text-faint); font-weight: 400; }
+  .pos-form input[type="text"], .pos-form input[type="email"],
+  .pos-form select, .pos-form textarea {
+    width: 100%; font: inherit; font-size: 1rem; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border-strong);
+    border-radius: 10px; padding: 12px;
+  }
+  /* 1rem keeps iOS Safari from zooming the page on focus, which on a phone
+     leaves the form scrolled sideways and half off-screen. */
+  .pos-form textarea { min-height: 92px; resize: vertical; }
+  .pos-form input:focus-visible, .pos-form select:focus-visible,
+  .pos-form textarea:focus-visible {
+    outline: 2px solid var(--link); outline-offset: 2px;
+  }
+  .pos-form .btn { width: 100%; border: 0; cursor: pointer; font-family: inherit; }
+  .pos-form .btn[disabled] { opacity: 0.7; cursor: default; }
+  /* Errors sit next to the field they belong to, not collected at the top where
+     the operator has to work out which input is at fault. */
+  .pos-err { color: var(--danger); font-size: 0.85rem; margin-top: 6px; }
+  .pos-note { color: var(--text-faint); font-size: 0.8rem; margin-top: 12px; }
+  .pos-done h3 { margin: 12px 0 8px; font-size: 1.15rem; }
+  .pos-done p { color: var(--text-dim); font-size: 0.95rem; margin-bottom: 10px; }
+  .pos-done a { color: var(--link); }
+
   footer.site {
     text-align: center; color: var(--text-faint); font-size: 0.8rem;
     padding: 32px 20px calc(32px + env(safe-area-inset-bottom));
@@ -191,6 +224,97 @@
   </div>
 </section>
 
+<section class="wrap" style="padding: 8px 20px 40px" id="pos-interest">
+  <h2 class="section">Using a POS we don't list yet?</h2>
+  <p class="section-sub">Tell us your system and we'll build the export mapping for you.</p>
+  <div class="card">
+    <div class="pos-form">
+      <form id="pos-form" novalidate>
+        <div class="pos-field">
+          <label for="pos-email">Email</label>
+          <input id="pos-email" name="email" type="email" autocomplete="email"
+                 inputmode="email" autocapitalize="none" required
+                 aria-describedby="pos-email-err">
+          <div class="pos-err" id="pos-email-err" hidden></div>
+        </div>
+
+        <div class="pos-field">
+          <label for="pos-business">Venue or business name <span class="opt">(optional)</span></label>
+          <input id="pos-business" name="business_name" type="text" autocomplete="organization">
+        </div>
+
+        <div class="pos-field">
+          <label for="pos-system">POS system</label>
+          <select id="pos-system" name="pos_system" required aria-describedby="pos-system-err">
+            <option value="">Choose your POS…</option>
+            <option>SwiftPOS</option>
+            <option>Idealpos</option>
+            <option>Impos</option>
+            <option>Bepoz</option>
+            <option>H&amp;L</option>
+            <option>Redcat</option>
+            <option>OrderMate</option>
+            <option>Triniteq</option>
+            <option>Lightspeed / Kounta</option>
+            <option>Square</option>
+            <option>Abacus</option>
+            <option>MYOB Exo</option>
+            <option>Vectron</option>
+            <option>Other</option>
+          </select>
+          <div class="pos-err" id="pos-system-err" hidden></div>
+        </div>
+
+        <!-- Revealed only when Other is chosen. Hidden with the `hidden`
+             attribute rather than display:none in CSS so it is removed from the
+             tab order and the accessibility tree at the same time. -->
+        <div class="pos-field" id="pos-other-field" hidden>
+          <label for="pos-other">Which POS?</label>
+          <input id="pos-other" name="pos_other" type="text" aria-describedby="pos-other-err">
+          <div class="pos-err" id="pos-other-err" hidden></div>
+        </div>
+
+        <div class="pos-field">
+          <label for="pos-venues">Number of venues <span class="opt">(optional)</span></label>
+          <!-- Values are the lower bound of each range — see venue_count in
+               20260831_03_pos_interest.sql. The column is an int; operators
+               think in ranges. -->
+          <select id="pos-venues" name="venue_count">
+            <option value="">Prefer not to say</option>
+            <option value="1">1</option>
+            <option value="2">2–5</option>
+            <option value="6">6–20</option>
+            <option value="20">20+</option>
+          </select>
+        </div>
+
+        <div class="pos-field">
+          <label for="pos-notes">If you know the import format your POS expects, tell us here
+            <span class="opt">(optional)</span></label>
+          <textarea id="pos-notes" name="format_notes" maxlength="2000"
+                    placeholder="Column order, header row or not, file type — anything you know."></textarea>
+        </div>
+
+        <!-- Honeypot. Off-screen rather than display:none, because some bots
+             skip hidden fields but fill anything with a plausible name. Real
+             people never see it: aria-hidden keeps it out of screen readers and
+             tabindex="-1" out of the keyboard order. -->
+        <div style="position:absolute;left:-9999px" aria-hidden="true">
+          <label for="company_website">Company website</label>
+          <input id="company_website" name="company_website" type="text"
+                 tabindex="-1" autocomplete="off">
+        </div>
+
+        <button type="submit" class="btn success" id="pos-submit">Tell us your POS</button>
+        <!-- role="status" so a submission failure is announced without stealing
+             focus mid-form. -->
+        <div class="pos-err" id="pos-form-err" role="status" aria-live="polite" hidden></div>
+        <p class="pos-note">We'll only use this to contact you about your POS export.</p>
+      </form>
+    </div>
+  </div>
+</section>
+
 <section class="how wrap">
   <h2 class="section">How it works</h2>
   <p class="section-sub">From signup to a finished stocktake in a few minutes.</p>
@@ -249,6 +373,140 @@
   </svg>
   Gantry — stocktaking for hospitality · <a href="app.html">Open the app</a>
 </footer>
+
+<!-- Same file app.html loads, same variable names (window.BARSCAN_CONFIG with
+     supabaseUrl / supabaseAnonKey). The anon key is designed to be public — what
+     protects submissions is that pos_interest has an insert policy and no select
+     policy, so this key can write one and never read one back. -->
+<script src="config.js"></script>
+<script>
+(function () {
+  var form = document.getElementById('pos-form');
+  if (!form) return;
+
+  var cfg = window.BARSCAN_CONFIG || {};
+  var $ = function (id) { return document.getElementById(id); };
+  var systemSel = $('pos-system');
+  var otherField = $('pos-other-field');
+  var otherInput = $('pos-other');
+  var submitBtn = $('pos-submit');
+  var formErr = $('pos-form-err');
+
+  function showErr(el, msg) {
+    el.textContent = msg;
+    el.hidden = false;
+  }
+  function clearErrs() {
+    ['pos-email-err', 'pos-system-err', 'pos-other-err', 'pos-form-err'].forEach(function (id) {
+      var el = $(id);
+      el.textContent = '';
+      el.hidden = true;
+    });
+  }
+
+  // "Other" is the only option that needs a second answer, so the input only
+  // exists when it is chosen — and stops being required the moment it isn't,
+  // otherwise switching away from Other leaves the form unsubmittable with
+  // nothing on screen to explain why.
+  function syncOther() {
+    var isOther = systemSel.value === 'Other';
+    otherField.hidden = !isOther;
+    otherInput.required = isOther;
+    if (!isOther) otherInput.value = '';
+  }
+  systemSel.addEventListener('change', syncOther);
+  syncOther();
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    clearErrs();
+
+    // Honeypot: a real person never sees this field. Pretend it worked and send
+    // nothing — telling a bot it was caught only helps it try again differently.
+    if (form.elements['company_website'].value) { showThanks(); return; }
+
+    var email = $('pos-email').value.trim();
+    var system = systemSel.value;
+    var other = otherInput.value.trim();
+
+    if (!email || email.indexOf('@') === -1) {
+      showErr($('pos-email-err'), 'Enter an email address so we can reply.');
+      $('pos-email').focus();
+      return;
+    }
+    if (!system) {
+      showErr($('pos-system-err'), 'Choose your POS system.');
+      systemSel.focus();
+      return;
+    }
+    if (system === 'Other' && !other) {
+      showErr($('pos-other-err'), 'Tell us which POS you use.');
+      otherInput.focus();
+      return;
+    }
+
+    if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
+      showErr(formErr, 'This form isn’t connected yet. Please email us instead.');
+      return;
+    }
+
+    var venues = $('pos-venues').value;
+    var payload = {
+      email: email,
+      business_name: $('pos-business').value.trim() || null,
+      pos_system: system,
+      pos_other: system === 'Other' ? other : null,
+      venue_count: venues ? Number(venues) : null,
+      format_notes: $('pos-notes').value.trim() || null,
+      source: 'landing'
+    };
+
+    var label = submitBtn.textContent;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Sending…';
+
+    fetch(cfg.supabaseUrl.replace(/\/+$/, '') + '/rest/v1/pos_interest', {
+      method: 'POST',
+      headers: {
+        'apikey': cfg.supabaseAnonKey,
+        'Authorization': 'Bearer ' + cfg.supabaseAnonKey,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      showThanks();
+    }).catch(function () {
+      // Their answers stay exactly where they left them — a failed send must
+      // never cost someone the paragraph they just typed about their import
+      // format.
+      submitBtn.disabled = false;
+      submitBtn.textContent = label;
+      showErr(formErr, 'That didn’t send — check your connection and try again.');
+    });
+  });
+
+  function showThanks() {
+    var wrap = form.parentNode;
+    wrap.innerHTML =
+      '<div class="pos-done">' +
+        '<div class="icon"><span class="ico" style="--i:url(icons/check.svg)"></span></div>' +
+        '<h3>Thanks — we\'ll be in touch.</h3>' +
+        '<p>We\'ll come back to you about getting your POS export mapped.</p>' +
+        '<p>One thing that speeds this up a lot: if your POS supplier can send you a ' +
+        '<b>sample import file</b> — or the spec for one — forward it to ' +
+        // TODO: replace with the real support address. index.html has no contact
+        // address anywhere (the footer is just the wordmark and an app link), so
+        // there was nothing to reuse and guessing one would send people nowhere.
+        '<a href="mailto:TODO-SUPPORT-ADDRESS@example.com">TODO-SUPPORT-ADDRESS@example.com</a>. ' +
+        'That one file is usually the difference between a week and an afternoon.</p>' +
+      '</div>';
+    wrap.querySelector('h3').setAttribute('tabindex', '-1');
+    wrap.querySelector('h3').focus();
+  }
+})();
+</script>
 
 </body>
 </html>
