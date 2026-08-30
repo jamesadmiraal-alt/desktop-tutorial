@@ -1707,6 +1707,96 @@ create trigger stocktake_items_block_when_completed
   before insert or update or delete on public.stocktake_items
   for each row execute function public.enforce_stocktake_not_completed();
 
+-- ==========================================================================
+-- One OPEN stocktake per name per org.
+--
+-- Two staff starting a count at the same location on the same day both get the
+-- same suggested name and both tap Create, so Home ends up with two identical
+-- cards — during the 30 Aug stress test, two "Stress test 2 — 30/8/2026" rows.
+-- From there the title cannot tell them apart, and a mis-tap opens the wrong
+-- count with nothing on screen to reveal it.
+--
+-- Scoped to OPEN takes only. Completed counts are history and must not reserve
+-- a name forever: "Main Bar – 30/8/2026" has to be reusable next week.
+--
+-- WHY A TRIGGER AND NOT (only) A UNIQUE INDEX:
+-- a partial unique index on (org_id, lower(btrim(name))) is the better boundary
+-- and the migration tries to create one — but it cannot exist while duplicates
+-- already do, and the org's existing duplicate rows are real counts that must
+-- not be renamed or merged to make room for it. The trigger enforces the rule
+-- for everything written from now on and grandfathers what is already there.
+--
+-- The advisory lock is what makes it race-safe. A bare "select then insert"
+-- check is exactly the pattern that loses this race: two devices both look,
+-- both find nothing, both insert. Locking on the normalised name serialises
+-- them, so the second one sees the first.
+--
+-- INSERT only, plus the one UPDATE that genuinely adds to the open set
+-- (reopening a completed take). Deliberately NOT every UPDATE: the existing
+-- duplicate rows would then be unable to move to ready_for_export, because each
+-- collides with its twin — grandfathering has to mean they stay usable, not just
+-- present. Clients cannot rename a stocktake at all (UPDATE on stocktakes is
+-- revoked; set_stocktake_status only touches status), so there is no rename path
+-- for this to miss.
+-- ==========================================================================
+create or replace function public.enforce_unique_open_stocktake_name()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_key text := lower(btrim(new.name));
+  v_open text[] := array['in_progress', 'ready_for_export'];
+  v_clash text;
+begin
+  if new.status is null or not (new.status = any(v_open)) then
+    return new;   -- creating or moving into history: nothing to reserve
+  end if;
+
+  -- Serialise concurrent creates of the same name in the same org. Transaction
+  -- scoped, so it releases on commit or rollback with nothing to clean up.
+  perform pg_advisory_xact_lock(hashtext(new.org_id::text || '|' || v_key));
+
+  select s.name into v_clash
+    from public.stocktakes s
+   where s.org_id = new.org_id
+     and s.id is distinct from new.id
+     and s.status = any(v_open)
+     and lower(btrim(s.name)) = v_key
+   limit 1;
+
+  if v_clash is not null then
+    raise exception 'A stocktake named "%" is already in progress.', btrim(new.name)
+      using errcode = 'unique_violation';
+  end if;
+
+  return new;
+end $$;
+
+drop trigger if exists stocktakes_unique_open_name on public.stocktakes;
+create trigger stocktakes_unique_open_name
+  before insert on public.stocktakes
+  for each row execute function public.enforce_unique_open_stocktake_name();
+
+-- Reopening a completed take moves it back into the open set, where it can
+-- collide with a count someone started in the meantime. Only this transition is
+-- checked on UPDATE — see the note above about the grandfathered rows.
+drop trigger if exists stocktakes_unique_open_name_on_reopen on public.stocktakes;
+create trigger stocktakes_unique_open_name_on_reopen
+  before update of status on public.stocktakes
+  for each row
+  when (old.status = 'completed' and new.status <> 'completed')
+  execute function public.enforce_unique_open_stocktake_name();
+
+-- The stronger boundary, when the data allows it. Skipped with a notice rather
+-- than failing the run if duplicates already exist — they are real counts, and
+-- renaming them to satisfy an index is not a trade worth making.
+do $$
+begin
+  create unique index if not exists stocktakes_one_open_name_per_org
+    on public.stocktakes (org_id, lower(btrim(name)))
+    where status in ('in_progress', 'ready_for_export');
+exception when unique_violation then
+  raise notice 'Skipped stocktakes_one_open_name_per_org: duplicate open names already exist. The trigger still enforces this for new stocktakes; re-run once those counts are completed.';
+end $$;
+
 -- The only way a stocktake's status changes. Client UPDATE on stocktakes is
 -- revoked (see the policies above), so this is the whole write path — which is
 -- what makes the log entry unskippable and lets the per-transition role rule

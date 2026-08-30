@@ -2580,12 +2580,36 @@
   // "Cellars – 19/08/2026", making "deleted stocktake Cellars – 19/08/2026 —
   // 247 items" unable to say whose count was destroyed. Grouping Home fixes the
   // screen; only the name fixes the exports and the evidence trail.
+  // An open stocktake reserves its name — see enforce_unique_open_stocktake_name()
+  // in schema.sql. Completed counts don't: last week's "Main Bar – 30/8/2026" has
+  // to be reusable.
+  var OPEN_STATUSES = ['in_progress', 'ready_for_export'];
+  function nameKey(s) { return String(s || '').trim().toLowerCase(); }
+  function openTakeWithName(name) {
+    var key = nameKey(name);
+    if (!key) return null;
+    return takes.find(function (t) {
+      return OPEN_STATUSES.indexOf(t.status) !== -1 && nameKey(t.name) === key;
+    }) || null;
+  }
+
   function suggestTakeName(locId) {
     var loc = locations.find(function (l) { return l.id === locId; });
     if (!loc) return '';
     var venue = (distinctVenueCount() > 1 && loc.venues && loc.venues.name)
       ? loc.venues.name + ' · ' : '';
-    return venue + loc.name + ' – ' + new Date().toLocaleDateString();
+    var base = venue + loc.name + ' – ' + new Date().toLocaleDateString();
+    // Two people counting the same location on the same day get the same
+    // suggestion, so the untouched default is the most likely collision there is.
+    // Suffixing here means the second person can still create in one tap instead
+    // of being refused and left to invent a name mid-shift. It only ever changes
+    // the SUGGESTION — submitting a name that collides is still refused.
+    if (!openTakeWithName(base)) return base;
+    for (var n = 2; n < 100; n++) {
+      var candidate = base + ' (' + n + ')';
+      if (!openTakeWithName(candidate)) return candidate;
+    }
+    return base;   // absurd number of collisions; let the server have the last word
   }
   $('name-location').onchange = function () {
     $('name-input').value = suggestTakeName($('name-location').value);
@@ -2637,13 +2661,34 @@
     if (!name) { toast('Enter a name for the stocktake', '#b91c1c'); return; }
     var locationId = locations.length > 1 ? $('name-location').value : (locations[0] && locations[0].id);
     if (!locationId) { toast('Choose a location', '#b91c1c'); return; }
+
+    // Check before asking the server, so the common case reads as guidance
+    // rather than an error. This is NOT the boundary — the local list can be
+    // seconds out of date, and two devices can submit at the same instant.
+    // enforce_unique_open_stocktake_name() is what actually decides, and it
+    // holds an advisory lock so the simultaneous case resolves too.
+    var clash = openTakeWithName(name);
+    if (clash) {
+      toast('A stocktake named "' + clash.name + '" is already in progress', '#b91c1c');
+      return;
+    }
+
     $('name-ok').disabled = true;
-    sb.from('stocktakes').insert({ name: name, location_id: locationId }).select().single().then(function (res) {
-      $('name-ok').disabled = false;
-      if (res.error) { fail(res.error, 'Could not create stocktake'); return; }
-      $('name-overlay').classList.remove('open');
-      openTake(res.data);
-    });
+    // Re-enabled on every outcome including a rejected promise — otherwise a
+    // dropped connection leaves Create greyed out with nothing said.
+    var done = function () { $('name-ok').disabled = false; };
+    sb.from('stocktakes').insert({ name: name, location_id: locationId }).select().single().then(
+      function (res) {
+        done();
+        if (res.error) { fail(res.error, 'Could not create stocktake'); return; }
+        $('name-overlay').classList.remove('open');
+        openTake(res.data);
+      },
+      function (err) {
+        done();
+        fail({ message: (err && err.message) || 'request failed' }, 'Could not create stocktake');
+      }
+    );
   }
   $('name-ok').onclick = createTake;
   $('name-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') createTake(); });
