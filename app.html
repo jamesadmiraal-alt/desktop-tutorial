@@ -2725,11 +2725,13 @@
       // bottles, and a ± that moved by 0.25 would make counting 12 of something
       // tedious. Part bottles are typed on the keypad instead. Floor is 0 rather
       // than 1 — a line can legitimately be walked down to "none left".
+      // Deltas, not totals — see stepItemQty(). The `n > 0` check just avoids a
+      // pointless round-trip on a line already at zero; the real floor is in the
+      // database, since the on-screen value can be out of date.
       minus.onclick = function () {
-        var n = qtyNum(it.qty);
-        if (n > 0) setItemQty(it, qtyRound(Math.max(0, n - 1)));
+        if (qtyNum(it.qty) > 0) stepItemQty(it, -1);
       };
-      plus.onclick = function () { setItemQty(it, qtyRound(qtyNum(it.qty) + 1)); };
+      plus.onclick = function () { stepItemQty(it, 1); };
       val.onclick = function () { openQtyDialog(it.barcode, true); };
       qc.appendChild(minus); qc.appendChild(val); qc.appendChild(plus);
 
@@ -2776,16 +2778,31 @@
     items.unshift(row);
   }
 
-  // The −/+ steppers. Absolute set, via the RPC keyed on (stocktake_id, barcode)
-  // rather than a direct UPDATE by `it.id`: that id goes stale the moment the
-  // line is removed and rescanned on another device, and an UPDATE matching no
-  // rows reports success while changing nothing.
-  function setItemQty(it, qty) {
-    sb.rpc('set_stocktake_item_qty', {
-      p_stocktake_id: currentTake.id, p_barcode: it.barcode, p_qty: qtyRound(qty)
+  // The −/+ steppers. Sends the DELTA (±1), never a computed absolute.
+  //
+  // This used to read the on-screen qty, add one in JavaScript, and write the
+  // result. That is last-writer-wins: two devices both showing 10 both tap +,
+  // both compute 11, and the line ends at 11 rather than 12. One tap vanishes
+  // and neither operator sees anything wrong — which is how a header can read
+  // 6 items / 32 total on one device and 6 / 29 on the other.
+  //
+  // add_stocktake_item() applies the delta inside Postgres under a row lock, so
+  // both taps land. It also clamps at 0, so a decrement race can't trip the
+  // column's `check (qty >= 0)`. Keyed on (stocktake_id, barcode), not `it.id`,
+  // which goes stale as soon as the line is removed and rescanned elsewhere.
+  function stepItemQty(it, delta) {
+    sb.rpc('add_stocktake_item', {
+      p_stocktake_id: currentTake.id, p_barcode: it.barcode, p_qty: qtyRound(delta)
     }).then(function (res) {
       if (res.error) { fail({ message: it.barcode + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
-      mergeItem(res.data);
+      var row = Array.isArray(res.data) ? res.data[0] : res.data;
+      // No row means nothing was written. Saying nothing here would leave the
+      // operator believing a tap counted when it didn't.
+      if (!row) { fail({ message: it.barcode + ' was NOT saved. The server did not confirm the write.' }, ''); return; }
+      // The line and the badge both re-derive from this server row, so what's on
+      // screen is what's stored — including any change another device made
+      // between this tap and its reply.
+      mergeItem(row);
       renderItems();
     }, function (err) {
       fail({ message: it.barcode + ' was NOT saved. ' + failHint(err) }, '');
@@ -3246,10 +3263,29 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
 
+  // Every caller of this is about to put these rows in front of someone — a CSV,
+  // a shared file — so the Home card behind them must not still be showing an
+  // older total. takeTotals() reads the aggregate embedded by loadTakes(), which
+  // is a snapshot from whenever Home last loaded; another device counting since
+  // then makes the card disagree with the file. During the stress test that read
+  // as "CSV summed to 35, the card said 36".
+  //
+  // Re-pointing the snapshot at what was just fetched makes the two agree by
+  // construction rather than by luck, and costs no extra request.
+  function syncTakeSnapshot(take, takeItems) {
+    if (!take) return;
+    take.stocktake_items = takeItems.map(function (it) { return { qty: it.qty }; });
+    if (currentView === 'home') renderHome();
+  }
+
   function fetchTakeItems(takeId, cb) {
     sb.from('stocktake_items').select('*').eq('stocktake_id', takeId).then(function (res) {
       if (res.error) { fail(res.error, 'Could not load items'); return; }
       cb(res.data);
+    }, function (err) {
+      // Without this a dropped connection rejects into nothing: no toast, no
+      // download, and an operator left assuming the export worked.
+      fail(err, 'Could not load items');
     });
   }
 
@@ -3338,6 +3374,8 @@
       var fmt = exportFormat();
       var csv = fmt.build(take, takeItems);
       var name = fileName(take, fmt.suffix);
+      // The card behind this dialog must agree with the file being handed over.
+      syncTakeSnapshot(take, takeItems);
       $('take-actions-overlay').classList.remove('open');
 
       function deliver() {
@@ -3380,6 +3418,8 @@
       // imported too, so it must not carry a mark that corrupts its first barcode.
       var file = new File([(fmt.bom === false ? '' : '﻿') + csv],
                           fileName(actionsTake, fmt.suffix), { type: 'text/csv' });
+      // Same reasoning as Export: the card must not contradict the file.
+      syncTakeSnapshot(actionsTake, takeItems);
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         navigator.share({ files: [file], title: 'Gantry export: ' + actionsTake.name }).catch(function () {});
       } else if (navigator.clipboard) {

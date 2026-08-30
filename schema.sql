@@ -1495,6 +1495,19 @@ grant execute on function public.clear_stocktake_items(uuid) to authenticated;
 -- this is its first scan. Returns the resulting row so the caller can show the
 -- merged total — which is how the second scanner finds out someone else had
 -- already counted this barcode.
+--
+-- p_qty is a DELTA and may be NEGATIVE — the −/+ steppers in the item list send
+-- -1 and +1 through here. They used to compute `current ± 1` in the browser and
+-- write it as an absolute qty, which is last-writer-wins: two devices both
+-- showing 10 both tap +, both compute 11, and the line ends at 11 instead of 12.
+-- One of the two taps is silently lost, and neither operator sees anything
+-- wrong. Sending the delta and letting Postgres add it under a row lock is the
+-- only way both land.
+--
+-- Result is floored at 0 rather than rejected: the column's `check (qty >= 0)`
+-- would otherwise turn a decrement race (two devices each stepping the last unit
+-- down) into a raw constraint error in the middle of a count, and "you can't go
+-- below zero" is a clamp, not an error worth interrupting someone for.
 create or replace function public.add_stocktake_item(
   p_stocktake_id uuid,
   p_barcode text,
@@ -1524,10 +1537,9 @@ begin
   if p_qty = 'NaN'::numeric then
     raise exception 'Quantity must be a number.';
   end if;
+  -- No lower bound on the DELTA — negatives are how the − stepper works. The
+  -- RESULT is clamped at 0 below.
   v_qty := round(p_qty, 2);   -- matches numeric(12,2) and QTY_DP in app.html
-  if v_qty < 0 then
-    raise exception 'Quantity must be 0 or more.';
-  end if;
 
   -- security definer bypasses RLS, so re-implement the scoping the insert policy
   -- would have done. Same message whether the stocktake is missing or belongs to
@@ -1542,7 +1554,7 @@ begin
     -- row lock, so two devices adding at once serialise and both counts land.
     -- Computing the total in the client is what made this last-writer-wins.
     update public.stocktake_items
-       set qty = qty + v_qty,
+       set qty = greatest(qty + v_qty, 0),
            last_scanned = now(),
            last_scanned_by = auth.uid()
      where stocktake_id = p_stocktake_id
@@ -1553,8 +1565,11 @@ begin
     end if;
 
     begin
+      -- A negative delta against a line that doesn't exist yet lands at 0, not a
+      -- constraint error. Reachable when the last unit is stepped off on one
+      -- device while another removes the line entirely.
       insert into public.stocktake_items (stocktake_id, org_id, barcode, qty)
-      values (p_stocktake_id, v_org, v_code, v_qty)
+      values (p_stocktake_id, v_org, v_code, greatest(v_qty, 0))
       returning * into v_row;
       return v_row;
     exception when unique_violation then
