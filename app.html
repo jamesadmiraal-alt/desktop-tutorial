@@ -202,7 +202,16 @@
   .stocktake {
     display: flex; align-items: center; gap: 10px;
     background: var(--surface); border-radius: 12px; padding: 14px 12px; margin-bottom: 8px; cursor: pointer;
+    /* The whole card is the tap target — name, meta, totals and padding alike —
+       and the border box IS the hit rect, so there is no visible-but-dead strip.
+       min-height guarantees a comfortable thumb target even for a row whose text
+       is unusually short; it typically renders taller than this. */
+    min-height: 56px;
   }
+  /* The global `-webkit-tap-highlight-color: transparent` removes the platform's
+     own tap flash, so without this a mis-tap gives no feedback at all about which
+     card was actually hit. Matches .group-head:active. */
+  .stocktake:active { background: var(--bg); }
   .stocktake .info { flex: 1; min-width: 0; }
   .stocktake .name { font-weight: 600; font-size: 1.05rem; }
   .stocktake .meta { font-size: 0.75rem; color: var(--text-dim); margin-top: 3px; }
@@ -270,6 +279,12 @@
     display: none; align-items: center; justify-content: center; padding: 16px;
   }
   .overlay.open { display: flex; }
+  /* Belt-and-braces against an overlay eating taps meant for the list behind it.
+     `display: none` above already stops a closed overlay hit-testing, so this
+     only bites if something ever gives one an inline display — but an overlay is
+     a full-screen `inset: 0` layer at z-index 50, so the failure mode is the
+     entire app going dead to touch, with nothing on screen to explain why. */
+  .overlay:not(.open) { pointer-events: none; }
   /* max-height + scroll so a tall dialog (the quantity keypad is the tallest, at
      four button rows) can never push its own confirm button off a short phone
      screen — the overlay is centred, so overflow would be clipped at both ends
@@ -1091,8 +1106,26 @@
 
   // ---- Views ----
   var currentView = null;
+  // Dialogs tied to the view you're leaving, not to the session. Leaving a
+  // stocktake via ‹ Back (or hardware back, which calls the same handler) used
+  // to leave the quantity dialog open over Home — a full-screen `inset: 0`
+  // layer that silently swallows every tap on the list behind it.
+  //
+  // Only these three: #reset-password-overlay and the account dialogs belong to
+  // flows that legitimately span a view change, and closing those here would
+  // break them.
+  function closeTransientOverlays() {
+    closeQtyDialog();
+    $('name-overlay').classList.remove('open');
+    $('take-actions-overlay').classList.remove('open');
+  }
+
   function showView(name) {
     currentView = name;
+    // Every navigation path runs through here — ‹ Back, hardware back, opening a
+    // stocktake, Home after a save — so this is the one place that reliably
+    // catches a dialog left open by any of them.
+    closeTransientOverlays();
     ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view', 'team-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
@@ -2216,13 +2249,30 @@
 
   var creatorNames = {}; // { userId: fullName } — see loadCreatorNames() below
 
+  // Reloading must NOT tear the list down first. It used to blank all three lists
+  // and hide the Ready/Completed groups before the fetch resolved, and that caused
+  // a genuinely dangerous mis-tap on a phone:
+  //
+  //   1. The page collapsed to almost nothing, so the browser clamped
+  //      #home-view.scrollTop to 0 (measured: 236 -> 0 on an iPhone viewport).
+  //   2. Nothing restored it, so when the rows came back every card sat ~236px
+  //      from where the operator was looking.
+  //   3. Their tap landed on whatever had moved under the finger — in testing,
+  //      aiming at "Stress test 2" opened Belles, a different venue's count.
+  //      The ＋ New stocktake button also slid up into the same area, which is
+  //      how the New stocktake dialog appeared to open "on its own".
+  //
+  // Next to duplicate stocktake names that is opening the wrong count with no
+  // way to tell. So: keep the rows and the scroll position, and swap the content
+  // only once the new data is actually here. "Loading…" is only for a genuinely
+  // empty list, where there is nothing to preserve and nothing to mis-tap.
   function loadTakes() {
     showView('home');
-    $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
-    $('stocktake-list-ready').innerHTML = '';
-    document.querySelector('.take-group[data-group="ready"]').style.display = 'none';
-    $('stocktake-list-completed').innerHTML = '';
-    document.querySelector('.take-group[data-group="completed"]').style.display = 'none';
+    var scroller = $('home-view');
+    var keepScroll = scroller.scrollTop;
+    if (!document.querySelector('#home-view .stocktake')) {
+      $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
+    }
     // Stocktakes at an archived location — or in an archived venue — leave Home.
     // That's the point of archiving a sold venue, and it's reversible: nothing
     // is deleted, so restoring brings every row back. Same `!inner` requirement
@@ -2234,9 +2284,18 @@
       .is('locations.venues.archived_at', null)
       .order('updated_at', { ascending: false })
       .then(function (res) {
+        // On failure the previous rows are deliberately left on screen rather
+        // than replaced by an empty list — stale but tappable beats a blank
+        // Home, and the toast says what happened.
         if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
         takes = res.data;
-        loadCreatorNames(renderHome);
+        loadCreatorNames(function () {
+          renderHome();
+          // Put the operator back where they were. renderHome() replaces every
+          // row, so without this the scroll resets and the layout shifts under
+          // whatever they were reaching for.
+          scroller.scrollTop = keepScroll;
+        });
       });
   }
 
@@ -2302,8 +2361,27 @@
       }
     };
     row.appendChild(info); row.appendChild(more); row.appendChild(del);
-    row.onclick = function () { openTake(t); };
+    // Identify the row by id in the DOM as well as in the closure. Duplicate
+    // stocktake names exist, so "which card is this?" cannot be answered from
+    // the visible text — this makes it answerable when debugging, and lets a
+    // test assert the card-to-id mapping directly instead of inferring it from
+    // list position.
+    row.dataset.takeId = t.id;
+    row.onclick = function () { openTakeById(t.id); };
     return row;
+  }
+
+  // Open strictly by id, resolved against the CURRENT list at click time rather
+  // than reusing the object captured when the row was drawn. Never by name (two
+  // stocktakes can share one) and never by list position (the list regroups by
+  // venue and reorders by updated_at). If the row is stale — deleted on another
+  // device since this list was drawn — say so and refresh instead of opening a
+  // take that no longer exists.
+  function openTakeById(id) {
+    var t = null;
+    for (var i = 0; i < takes.length; i++) { if (takes[i].id === id) { t = takes[i]; break; } }
+    if (!t) { toast('That stocktake is no longer available', '#b91c1c'); loadTakes(); return; }
+    openTake(t);
   }
 
   // Which Home groups are collapsed, remembered across sessions — a collapse that
