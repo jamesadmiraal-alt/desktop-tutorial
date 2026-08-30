@@ -1552,7 +1552,16 @@
           exportFormat: org.export_format,
           heartbeatIntervalSeconds: org.heartbeat_interval_seconds
         };
+      } else if (memberRes.error && currentOrg) {
+        // A FAILED request is not an answer. This branch used to treat a dropped
+        // connection exactly like "this user has no organisation", clearing
+        // currentOrg — which then hides the account chip and routes towards the
+        // setup/login screens. An operator mid-count on venue wifi does not need
+        // to be logged out because one request timed out; the next refresh asks
+        // again. Keep what we already knew.
+        fail(memberRes.error, 'Could not refresh your organisation');
       } else {
+        // No error, genuinely no membership — or no prior org to fall back on.
         currentOrg = null;
       }
       // No free tier — an org that hasn't completed checkout yet (or whose
@@ -1600,6 +1609,11 @@
     });
   }
 
+  // True once this session has successfully held a seat. It is the difference
+  // between "we have never been let in" (fail closed) and "we were let in and one
+  // request just failed" (retry, don't eject).
+  var seatEverGranted = false;
+
   // Wraps claim_seat and handles its three outcomes. takeover=true is the second
   // call, made after the operator confirms they want the login moved here.
   function claimSeat(takeover, onGranted, cb) {
@@ -1607,6 +1621,22 @@
       .then(function (res) {
         var d = res.data || {};
         if (res.error) {
+          // A transport failure is not a denial.
+          //
+          // For an ALREADY-ESTABLISHED session this used to eject the operator to
+          // the seats-full screen — which lives inside the auth view, so a
+          // dropped request mid-count looked like being dumped back to login,
+          // with the header chrome and account chip gone. That is a worse outcome
+          // than a minute of unverified session: the heartbeat re-checks on its
+          // own interval and will eject properly if the seat really is gone.
+          //
+          // A FIRST claim still fails closed. Nothing has been granted yet, so
+          // there is nothing to preserve and the strict behaviour is right.
+          if (seatEverGranted) {
+            fail(res.error, 'Could not confirm your seat — retrying shortly');
+            if (cb) cb();
+            return;
+          }
           // We don't know why it failed, so show the safe actionable dead end but
           // don't email anyone — see notifySeatDenied for why a guess is worse
           // than silence here.
@@ -1631,6 +1661,9 @@
           return;
         }
         seatsFull = false;
+        // From here on a dropped claim_seat is treated as a blip to retry rather
+        // than grounds to eject — see the res.error branch above.
+        seatEverGranted = true;
         if (d.took_over) toast('Signed in here — your other device has been signed out');
         startSeatHeartbeat();
         if (onGranted) onGranted();
@@ -2480,7 +2513,18 @@
     // test assert the card-to-id mapping directly instead of inferring it from
     // list position.
     row.dataset.takeId = t.id;
-    row.onclick = function () { openTakeById(t.id); };
+    row.onclick = function (e) {
+      // Nothing above this row should also act on the tap. The group header is a
+      // sibling rather than an ancestor so it cannot receive this by bubbling,
+      // but a card tap being read as anything other than "open this take" is the
+      // exact failure being fixed, and one line makes that structural rather
+      // than incidental.
+      if (e) e.stopPropagation();
+      // By id read from the row itself, not a captured object: a background
+      // refresh can rebuild this list at any moment, and the id in the DOM is
+      // the one the operator actually tapped.
+      openTakeById(row.dataset.takeId);
+    };
     return row;
   }
 
@@ -2515,10 +2559,23 @@
   function saveCollapsedGroups() {
     try { localStorage.setItem(GROUP_COLLAPSE_KEY, JSON.stringify(collapsedGroups)); } catch (e) {}
   }
+  // One tap = one toggle. This header never got the double-fire guard the
+  // keypad did, and a tap that arrives as two events toggles twice: the group
+  // expands and collapses again inside the same gesture, which reads exactly as
+  // the reported "expand, then it auto-collapses a second later" and "had to
+  // expand, then click again". 350ms because a deliberate collapse-then-expand
+  // is a considered action, never a reflex.
+  var lastGroupToggle = { name: null, at: 0 };
   document.querySelectorAll('.take-group').forEach(function (g) {
     var name = g.getAttribute('data-group');
     var head = g.querySelector('.group-head');
-    head.onclick = function () {
+    head.onclick = function (e) {
+      // The header is the ONLY thing that collapses a group. Stopping the event
+      // here means a tap on it can never also be read as something else.
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      var now = Date.now();
+      if (name === lastGroupToggle.name && now - lastGroupToggle.at < 350) return;
+      lastGroupToggle = { name: name, at: now };
       collapsedGroups[name] = !collapsedGroups[name];
       saveCollapsedGroups();
       head.setAttribute('aria-expanded', collapsedGroups[name] ? 'false' : 'true');
@@ -3000,11 +3057,37 @@
       // Deltas, not totals — see stepItemQty(). The `n > 0` check just avoids a
       // pointless round-trip on a line already at zero; the real floor is in the
       // database, since the on-screen value can be out of date.
-      minus.onclick = function () {
-        if (qtyNum(it.qty) > 0) stepItemQty(it, -1);
+      // Every handler resolves its line from the ROW's data-barcode at click
+      // time, never from the `it` captured when the row was drawn.
+      //
+      // The list now refreshes in the background, so a captured `it` can be an
+      // object that is no longer in `items` — detached, with a stale qty, and
+      // pointing at a line the operator is not looking at. That is how
+      // 9342007000890 drifted 6 -> 9 -> 10 with nobody touching Coolroom: the
+      // taps were landing on the right ROW and the wrong OBJECT.
+      row.dataset.barcode = it.barcode;
+      function lineFromRow() {
+        var bc = row.dataset.barcode;
+        for (var i = 0; i < items.length; i++) if (items[i].barcode === bc) return items[i];
+        return null;
+      }
+      minus.onclick = function (e) {
+        if (e) e.stopPropagation();
+        var line = lineFromRow();
+        if (line && qtyNum(line.qty) > 0) stepItemQty(line, -1);
       };
-      plus.onclick = function () { stepItemQty(it, 1); };
-      val.onclick = function () { openQtyDialog(it.barcode, true); };
+      plus.onclick = function (e) {
+        if (e) e.stopPropagation();
+        var line = lineFromRow();
+        if (line) stepItemQty(line, 1);
+      };
+      val.onclick = function (e) {
+        // stopPropagation matters here specifically: without it a tap that grazes
+        // the chip could be handled further up and end with focus somewhere else
+        // entirely — the reported "qty chip tap jumped to Filter".
+        if (e) e.stopPropagation();
+        openQtyDialog(row.dataset.barcode, true);
+      };
       // A completed count is read-only — the database refuses these writes, so
       // offering the controls would only produce refusals. The qty stays visible
       // and readable; it just can't be moved.
@@ -3018,7 +3101,14 @@
 
       var del = document.createElement('button');
       del.className = 'del'; del.textContent = '✕';
-      del.onclick = function () {
+      del.onclick = function (e) {
+        if (e) e.stopPropagation();
+        // Same rule as the steppers: resolve the line now, from the row, so a
+        // background refresh between drawing and tapping can't delete a
+        // different barcode than the one on screen.
+        var line = lineFromRow();
+        if (!line) { toast('That line has changed — try again', '#b91c1c'); renderItems(); return; }
+        it = line;
         if (!confirm('Remove ' + it.barcode + '?')) return;
         // RPC, not a direct .delete(): DELETE on stocktake_items is revoked from
         // `authenticated` (schema.sql), so every removal lands in the activity
