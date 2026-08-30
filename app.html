@@ -240,6 +240,13 @@
   .stocktake .more { background: transparent; color: var(--text-dim); font-size: 1.3rem; padding: 8px; }
   .stocktake .del { background: transparent; color: var(--delete-icon); font-size: 1.1rem; padding: 8px; }
   .empty { text-align: center; color: var(--text-faint); padding: 32px 16px; }
+  /* Completed-count banner. Warning-toned rather than danger: nothing has gone
+     wrong, the count is simply finished. */
+  #readonly-note {
+    margin: 10px 12px 0; padding: 10px 12px; border-radius: 10px;
+    background: var(--surface); border-left: 3px solid var(--warning);
+    color: var(--text-body); font-size: 0.85rem; line-height: 1.45;
+  }
 
   /* ---- Scan view ---- */
   /* The view itself scrolls as one unit (matching #home-view/#account-view)
@@ -801,6 +808,13 @@
     <button id="back-btn">‹ Back</button>
     <div class="name" id="current-name"></div>
     <span class="count-badge" id="badge"></span>
+  </div>
+  <!-- Shown only for a completed count. Without it the scan view looks entirely
+       normal while every write is refused by the database, which reads as the
+       app being broken rather than the count being finished. -->
+  <div id="readonly-note" style="display:none">
+    <b>This count is completed.</b> It has been exported, so it can’t be changed.
+    Ask a manager to reopen it from ⋯ on the stocktake list.
   </div>
   <div id="reader-wrap">
     <div id="reader"></div>
@@ -2663,7 +2677,33 @@
       $('badge').textContent = '';
     }
     showView('scan');
+    // loadItems() first: it sets the loading flag and paints "Loading…". Calling
+    // applyTakeReadOnly() before it would render an empty `items` with no load in
+    // flight, which paints "No scans yet" over a count that has plenty.
     loadItems();
+    applyTakeReadOnly();
+  }
+
+  // A completed count is read-only. The database refuses every write into one
+  // (enforce_stocktake_not_completed, schema.sql) — this is the screen agreeing
+  // with it, so the operator finds out before typing a number rather than after.
+  //
+  // Deliberately NOT the enforcement: another device can complete the take while
+  // this one is mid-count, so the local status is only ever a hint. The trigger
+  // is what makes it true, and its message is what the toast shows.
+  function takeIsReadOnly() {
+    return !!(currentTake && currentTake.status === 'completed');
+  }
+
+  function applyTakeReadOnly() {
+    var ro = takeIsReadOnly();
+    $('readonly-note').style.display = ro ? '' : 'none';
+    // The camera is the loudest affordance on this screen; leaving it live on a
+    // finished count invites a scan that can only be refused.
+    if (ro && scanning) stopScanner();
+    $('toggle-cam').disabled = ro;
+    $('manual-row').style.display = ro ? 'none' : '';
+    renderItems();   // repaints the ± and ✕ controls in their disabled state
   }
 
   // Refetch the current take's lines in place. Deliberately NOT via openTake():
@@ -2753,6 +2793,7 @@
       return;
     }
     listEl.innerHTML = '';
+    var readOnly = takeIsReadOnly();
     filtered.forEach(function (it) {
       var row = document.createElement('div');
       row.className = 'item';
@@ -2783,6 +2824,15 @@
       };
       plus.onclick = function () { stepItemQty(it, 1); };
       val.onclick = function () { openQtyDialog(it.barcode, true); };
+      // A completed count is read-only — the database refuses these writes, so
+      // offering the controls would only produce refusals. The qty stays visible
+      // and readable; it just can't be moved.
+      //
+      // The ± buttons are disabled, which is self-explanatory. The qty chip is a
+      // div and cannot look disabled, so its handler stays wired: openQtyDialog()
+      // refuses and says why. Nulling it made the tap do nothing at all, which
+      // reads as the app being broken rather than the count being finished.
+      if (readOnly) { minus.disabled = true; plus.disabled = true; }
       qc.appendChild(minus); qc.appendChild(val); qc.appendChild(plus);
 
       var del = document.createElement('button');
@@ -2799,6 +2849,7 @@
           renderItems();
         });
       };
+      if (readOnly) del.disabled = true;
 
       row.appendChild(info); row.appendChild(qc); row.appendChild(del);
       listEl.appendChild(row);
@@ -2861,6 +2912,15 @@
 
   // ---- Quantity dialog ----
   function openQtyDialog(code, isEdit) {
+    // Refuse before the keypad appears rather than after a quantity is typed.
+    // Covers the scan path too — onScan() routes through here — so a scan into a
+    // finished count says so instead of opening a dialog whose Save can only
+    // fail. The database is the enforcement; this is not making someone type a
+    // number first to find out.
+    if (takeIsReadOnly()) {
+      toast('This count is completed — ask a manager to reopen it', '#b91c1c');
+      return;
+    }
     var existing = items.find(function (it) { return it.barcode === code; });
     pendingCode = code;
     dialogOpen = true;
@@ -3356,12 +3416,17 @@
   // the encoding on save, so a manual fix hides this while the app's own file
   // would still have failed.
   var STANDARD_FORMAT = {
-    build: buildStandardCsv, suffix: 'standard', label: 'Standard', bom: false
+    build: buildStandardCsv, suffix: 'standard', label: 'Standard', short: 'Standard', bom: false
   };
+  // `short` is what goes on the Export button. The operator cannot see which
+  // shape they are about to get — the format is an org setting in Admin, not a
+  // per-export choice — and the two files are wildly different: a headerless
+  // barcode,qty pair versus a five-column file with a header. Naming it on the
+  // button is the only cue at the moment it matters.
   var EXPORT_FORMATS = {
     standard: STANDARD_FORMAT,
     bepoz: STANDARD_FORMAT, // pre-rename value; see above
-    full: { build: buildCsv, suffix: '', label: 'Gantry CSV', bom: true }
+    full: { build: buildCsv, suffix: '', label: 'Gantry CSV', short: 'Gantry', bom: true }
   };
   function exportFormat() {
     return EXPORT_FORMATS[currentOrg && currentOrg.exportFormat] || EXPORT_FORMATS.full;
@@ -3453,6 +3518,15 @@
       btn.className = act.cls;
       btn.onclick = function () { setTakeStatus(t, act.status, 'manual'); };
     }
+
+    // Name the shape on the button. Which file you get is an org setting in
+    // Admin, invisible from here, and the two are not interchangeable — a
+    // headerless barcode,qty pair for a POS import versus a five-column file
+    // with a header for a human. Sending the wrong one at a venue is what cost
+    // the first on-site trial.
+    var fmt = exportFormat();
+    $('take-export').innerHTML = ICO('download') + ' Export CSV (' + fmt.short + ')';
+
     $('take-actions-overlay').classList.add('open');
   }
   $('take-actions-cancel').onclick = function () { $('take-actions-overlay').classList.remove('open'); };
@@ -3492,6 +3566,20 @@
   $('take-export').onclick = function () { exportStocktake(); };
 
   function exportStocktake() {
+    // An in-progress count is not finished, and exporting used to mark it
+    // Completed regardless — jumping straight past Ready for export, which is
+    // the state that tells head office a count is done. So one tap on a take
+    // someone was still counting both handed out a half-finished file and
+    // declared the count over, with nothing said either way.
+    //
+    // Checked before fetching anything: refusing after a round-trip would make
+    // the file look like it was on its way. A re-export of an already-completed
+    // take is still allowed — head office losing the file is not a reason to
+    // recount.
+    if (actionsTake.status !== 'ready_for_export' && actionsTake.status !== 'completed') {
+      toast('Mark this stocktake ready for export first', '#b91c1c');
+      return;
+    }
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
       // Snapshot everything up front: the overlay closes below and actionsTake can

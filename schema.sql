@@ -1661,6 +1661,52 @@ end $$;
 
 grant execute on function public.set_stocktake_item_qty(uuid, text, numeric) to authenticated;
 
+-- ==========================================================================
+-- A completed stocktake stops accepting counts.
+--
+-- Exporting is the end of the workflow: head office has the file and is acting
+-- on those numbers. Until this existed, a phone still sitting in the stocktake
+-- could keep scanning into it afterwards — during the 30 Aug stress test the
+-- header drifted 36 / 35 / 33 / 36 after an export, so the CSV in head office's
+-- hands and the count in the app were two different things and nothing said so.
+--
+-- A TRIGGER rather than an RLS predicate, for two reasons:
+--   1. add_stocktake_item() and set_stocktake_item_qty() are security definer
+--      and bypass RLS entirely, so a policy would not stop the app's own write
+--      path — the one people actually use.
+--   2. An RLS refusal surfaces as "new row violates row-level security policy",
+--      which tells a bartender nothing. A trigger can say what happened and what
+--      to do about it, and that message reaches the toast unchanged.
+--
+-- DELETE is included so "completed" means immutable rather than
+-- append-blocked — otherwise a line could still be removed from a finished
+-- count. Deleting the whole stocktake still works: `on delete cascade` runs as
+-- an AFTER trigger on the parent, so by the time the child delete reaches here
+-- the parent row is already gone and the status lookup finds nothing. Same
+-- parent-already-gone property log_stocktakes_change() relies on.
+-- ==========================================================================
+create or replace function public.enforce_stocktake_not_completed()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_status text;
+begin
+  select s.status into v_status
+    from public.stocktakes s
+   where s.id = coalesce(new.stocktake_id, old.stocktake_id);
+
+  if v_status = 'completed' then
+    raise exception 'This stocktake is completed — ask a manager to reopen it before changing counts.'
+      using errcode = 'check_violation';
+  end if;
+
+  return coalesce(new, old);
+end $$;
+
+drop trigger if exists stocktake_items_block_when_completed on public.stocktake_items;
+create trigger stocktake_items_block_when_completed
+  before insert or update or delete on public.stocktake_items
+  for each row execute function public.enforce_stocktake_not_completed();
+
 -- The only way a stocktake's status changes. Client UPDATE on stocktakes is
 -- revoked (see the policies above), so this is the whole write path — which is
 -- what makes the log entry unskippable and lets the per-transition role rule
