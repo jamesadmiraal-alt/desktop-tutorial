@@ -1236,7 +1236,7 @@
     // views — this is the affordance, not the enforcement.
     $('home-btn').disabled = !signedInAndUsable;
     $('user-badge').textContent = currentUser ? currentUser.email : '';
-    if (name !== 'scan') stopScanner();
+    if (name !== 'scan') { stopScanner(); stopItemsPolling(); }
   }
 
   if (!configured) { showView('setup'); return; }
@@ -2766,6 +2766,9 @@
     // flight, which paints "No scans yet" over a count that has plenty.
     loadItems();
     applyTakeReadOnly();
+    // From here the list keeps itself current with what everyone else is
+    // scanning, not just this device.
+    startItemsPolling();
   }
 
   // A completed count is read-only. The database refuses every write into one
@@ -2793,39 +2796,133 @@
   // Refetch the current take's lines in place. Deliberately NOT via openTake():
   // that resets filters and can blank the list, so calling it to refresh after a
   // save is what produced an empty screen straight after a successful write.
-  function loadItems(cb) {
+  // What the list currently shows, as a comparable string. A background refresh
+  // that finds nothing new must not touch the DOM: re-rendering rebuilds every
+  // row, and rebuilding rows under a thumb is how a tap lands on the wrong
+  // control. Sorted, so a change of order alone isn't mistaken for a change of
+  // data.
+  function itemsSignature(list) {
+    return (list || []).map(function (i) {
+      return i.barcode + ':' + qtyText(i.qty);
+    }).sort().join('|');
+  }
+
+  // `quiet` is a background refresh: no "Loading…", no failure toast, and no
+  // repaint unless something actually changed. Used by the poll and by
+  // focus/visibility, which fire while the operator is mid-count and must not
+  // disturb the screen.
+  function loadItems(cb, quiet) {
     if (!currentTake) return;
     var takeId = currentTake.id;
     var token = ++itemsRequestToken;
-    itemsLoading = true;
-    itemsLoadFailed = false;
-    renderItems();   // paints "Loading…" only when there is nothing to show yet
+    if (!quiet) {
+      itemsLoading = true;
+      itemsLoadFailed = false;
+      renderItems();   // paints "Loading…" only when there is nothing to show yet
+    }
     sb.from('stocktake_items')
       .select('*')
       .eq('stocktake_id', takeId)
       .order('last_scanned', { ascending: false })
       .then(function (res) {
         if (token !== itemsRequestToken) return;   // superseded; ignore
-        itemsLoading = false;
+        if (!quiet) itemsLoading = false;
         if (res.error) {
           // Leave whatever is already on screen alone — stale lines are more
-          // use than a wrongly-empty list — and say the load failed.
-          itemsLoadFailed = true;
-          fail(res.error, 'Could not load items');
-          renderItems();
+          // use than a wrongly-empty list. A background poll fails silently:
+          // one dropped request on venue wifi is not worth a red toast over a
+          // count that is still perfectly readable.
+          if (!quiet) {
+            itemsLoadFailed = true;
+            fail(res.error, 'Could not load items');
+            renderItems();
+          }
           return;
         }
-        items = res.data || [];
-        renderItems();
+        var fresh = res.data || [];
+        var changed = itemsSignature(fresh) !== itemsSignature(items);
+        items = fresh;
+        if (changed || !quiet) renderItems();
+        // Keep the Home card's embedded aggregate in step with what the scan
+        // view is showing. Without this, Home and the open take disagree until
+        // the next full loadTakes() — "inside 6/275 vs Home 13/366".
+        syncTakeSnapshot(takeById(takeId), fresh);
         if (cb) cb();
       }, function (err) {
         if (token !== itemsRequestToken) return;
+        if (quiet) return;   // background failure: say nothing, change nothing
         itemsLoading = false;
         itemsLoadFailed = true;
         fail(err, 'Could not load items');
         renderItems();
       });
   }
+
+  function takeById(id) {
+    for (var i = 0; i < takes.length; i++) if (takes[i].id === id) return takes[i];
+    return null;
+  }
+
+  // ---- Keeping an open take live ------------------------------------------
+  //
+  // The scan list was loaded once, on open, and only ever updated with what THIS
+  // device wrote. Another tester's scans were in the database and on Home but
+  // absent from the open list — "Floor: open take 7 items · 277 vs Home 13 ·
+  // 366" — and the two numbers drifted further apart the longer both people
+  // counted.
+  //
+  // Polling rather than Realtime: no new dependency on the vendored client, no
+  // socket to keep alive through a phone locking, and a missed message can't
+  // leave the screen permanently wrong — the next tick corrects it regardless.
+  // The signature check above means a tick that finds nothing new costs one
+  // request and touches no DOM.
+  var ITEMS_POLL_MS = 7000;
+  var itemsPollTimer = null;
+
+  function startItemsPolling() {
+    stopItemsPolling();
+    itemsPollTimer = setInterval(function () {
+      if (currentView !== 'scan' || !currentTake) return;
+      if (document.hidden) return;      // backgrounded: the visibility handler catches up
+      // Not while a quantity is being typed. The refresh itself is harmless, but
+      // the dialog's "Already scanned (qty N)" hint was written when it opened,
+      // and changing the number underneath mid-entry is worse than being a few
+      // seconds behind. The close path refreshes immediately.
+      if (dialogOpen) return;
+      // Not while the first load is still going. Every call bumps
+      // itemsRequestToken, so a tick landing mid-load would invalidate that
+      // load's own reply — it would return early, never clear itemsLoading, and
+      // the screen would sit on "Loading…" for good. A slow first fetch plus one
+      // tick is all that takes.
+      if (itemsLoading) return;
+      loadItems(null, true);
+    }, ITEMS_POLL_MS);
+  }
+
+  function stopItemsPolling() {
+    if (itemsPollTimer) { clearInterval(itemsPollTimer); itemsPollTimer = null; }
+  }
+
+  // Coming back to the app is the moment someone is most likely to be looking at
+  // a stale number — the phone was in a pocket while a colleague counted. Both
+  // events fire on iOS depending on how you return, so both are handled and the
+  // signature check makes the duplicate free.
+  function refreshOnReturn() {
+    if (document.hidden) return;
+    // itemsLoading guard for the same reason as the poll: never supersede a load
+    // that is still running, or its reply is discarded and the loading flag
+    // never clears.
+    if (currentView === 'scan' && currentTake && !dialogOpen && !itemsLoading) {
+      loadItems(null, true);
+    } else if (currentView === 'home' && !document.querySelector('.overlay.open')) {
+      // Home's totals come from an aggregate embedded at load time, so it goes
+      // stale exactly the same way. Guarded on no open dialog because loadTakes()
+      // routes through showView(), which closes them.
+      loadTakes();
+    }
+  }
+  document.addEventListener('visibilitychange', refreshOnReturn);
+  window.addEventListener('focus', refreshOnReturn);
 
   $('back-btn').onclick = function () {
     // Invalidate any in-flight items request, or its reply can arrive after the
@@ -3216,6 +3313,11 @@
     // The tap that closed this is about to arrive as a click on whatever is
     // underneath. See shieldGhostClicks().
     if (wasOpen) shieldGhostClicks();
+    // Polling is suppressed while the dialog is up, so catch up the moment it
+    // closes — including straight after a save, which is exactly when someone
+    // wants to see the line settle at the real total. currentView is already the
+    // NEW view when showView() calls this, so leaving the take doesn't fire it.
+    if (wasOpen && currentView === 'scan' && currentTake) loadItems(null, true);
   }
 
   function commitQty() {
