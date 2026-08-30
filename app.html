@@ -2588,27 +2588,81 @@
   $('name-ok').onclick = createTake;
   $('name-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') createTake(); });
 
+  // `items` being empty means two completely different things — "this stocktake
+  // has nothing in it" and "we haven't been told yet" — and renderItems() used to
+  // render both as "No scans yet." That is the worst possible lie for this
+  // screen: an operator mid-count is shown an empty list for a take that has
+  // their work in it, and the honest reaction is to count it again.
+  //
+  // These two flags are what let the empty state tell the truth.
+  var itemsLoading = false;
+  var itemsLoadFailed = false;
+  // Guards against an out-of-order reply. Open take A, go back, open take B: A's
+  // slow response could still land and repaint B's screen with A's lines, under
+  // B's name. Each request carries a token and only the newest one may render.
+  var itemsRequestToken = 0;
+
   function openTake(t) {
+    var sameTake = !!(currentTake && currentTake.id === t.id);
     currentTake = t;
-    items = [];
     filterQuery = '';
     $('filter-input').value = '';
     $('current-name').textContent = t.name;
-    $('list').innerHTML = '<div class="empty">Loading…</div>';
-    $('badge').textContent = '';
+    // Re-opening the take that's already on screen keeps its lines up while the
+    // refresh runs — no blank flash, nothing to misread. Opening a DIFFERENT
+    // take must clear first: showing one stocktake's lines under another's name
+    // is far worse than a moment of "Loading…".
+    if (!sameTake) {
+      items = [];
+      $('badge').textContent = '';
+    }
     showView('scan');
+    loadItems();
+  }
+
+  // Refetch the current take's lines in place. Deliberately NOT via openTake():
+  // that resets filters and can blank the list, so calling it to refresh after a
+  // save is what produced an empty screen straight after a successful write.
+  function loadItems(cb) {
+    if (!currentTake) return;
+    var takeId = currentTake.id;
+    var token = ++itemsRequestToken;
+    itemsLoading = true;
+    itemsLoadFailed = false;
+    renderItems();   // paints "Loading…" only when there is nothing to show yet
     sb.from('stocktake_items')
       .select('*')
-      .eq('stocktake_id', t.id)
+      .eq('stocktake_id', takeId)
       .order('last_scanned', { ascending: false })
       .then(function (res) {
-        if (res.error) { fail(res.error, 'Could not load items'); return; }
-        items = res.data;
+        if (token !== itemsRequestToken) return;   // superseded; ignore
+        itemsLoading = false;
+        if (res.error) {
+          // Leave whatever is already on screen alone — stale lines are more
+          // use than a wrongly-empty list — and say the load failed.
+          itemsLoadFailed = true;
+          fail(res.error, 'Could not load items');
+          renderItems();
+          return;
+        }
+        items = res.data || [];
+        renderItems();
+        if (cb) cb();
+      }, function (err) {
+        if (token !== itemsRequestToken) return;
+        itemsLoading = false;
+        itemsLoadFailed = true;
+        fail(err, 'Could not load items');
         renderItems();
       });
   }
 
   $('back-btn').onclick = function () {
+    // Invalidate any in-flight items request, or its reply can arrive after the
+    // next take is open and repaint the wrong lines.
+    itemsRequestToken++;
+    itemsLoading = false;
+    itemsLoadFailed = false;
     currentTake = null; items = []; filterQuery = '';
     loadTakes();
   };
@@ -2617,9 +2671,24 @@
   function renderItems() {
     var listEl = $('list');
     var qty = items.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0);
-    $('badge').textContent = items.length + ' items · ' + qtyText(qty) + ' total qty';
+    // Same rule as the empty state below: don't assert "0 items · 0 total qty"
+    // for a take whose lines simply haven't arrived. Blank claims nothing.
+    $('badge').textContent = (!items.length && (itemsLoading || itemsLoadFailed))
+      ? ''
+      : items.length + ' items · ' + qtyText(qty) + ' total qty';
     if (!items.length) {
-      listEl.innerHTML = '<div class="empty">No scans yet.<br>Point the camera at a barcode to start.</div>';
+      // Three different reasons for an empty list, and they must not look alike.
+      // "No scans yet" is a factual claim about the stocktake, so it is only
+      // allowed once the server has actually said so.
+      if (itemsLoading) {
+        listEl.innerHTML = '<div class="empty">Loading…</div>';
+      } else if (itemsLoadFailed) {
+        listEl.innerHTML = '<div class="empty">Couldn’t load this stocktake’s lines.<br>'
+          + 'Check your signal and tap ‹ Back, then open it again.<br>'
+          + '<b>Nothing has been lost.</b></div>';
+      } else {
+        listEl.innerHTML = '<div class="empty">No scans yet.<br>Point the camera at a barcode to start.</div>';
+      }
       return;
     }
     var filtered = filterQuery
