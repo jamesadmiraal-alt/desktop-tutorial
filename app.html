@@ -278,7 +278,11 @@
     position: fixed; inset: 0; background: var(--scrim); z-index: 50;
     display: none; align-items: center; justify-content: center; padding: 16px;
   }
-  .overlay.open { display: flex; }
+  /* pointer-events stated explicitly in BOTH states. While open the overlay is a
+     full-viewport `inset: 0` layer, so it must swallow every tap — on the pad,
+     on the 8px gaps between keys, and on the scrim around the dialog — and none
+     of them may reach the stocktake list or Home cards underneath. */
+  .overlay.open { display: flex; pointer-events: auto; }
   /* Belt-and-braces against an overlay eating taps meant for the list behind it.
      `display: none` above already stops a closed overlay hit-testing, so this
      only bites if something ever gives one an inline display — but an overlay is
@@ -2853,10 +2857,32 @@
   // Keypad → input. The guards here are what keep the field always parseable, so
   // commitQty never has to defend against half-typed nonsense.
   var QTY_MAX_INT_DIGITS = 6; // fits numeric(12,2) with room to spare
+  // One physical tap must produce exactly one digit. On some phones a single tap
+  // arrives as more than one event — a synthesized click following a pointer
+  // event, or a stray repeat — and the operator gets 22 for one press of 2.
+  //
+  // 50ms is chosen to separate the platform from the person: nobody can
+  // deliberately hit the SAME key twice that fast, while a genuine "11" typed at
+  // speed is still well over 100ms apart. Keyed on the key itself so 1 then 2 in
+  // quick succession is never suppressed.
+  var PAD_REPEAT_MS = 50;
+  var lastPadKey = { key: null, at: 0 };
+
   $('qty-pad').addEventListener('click', function (e) {
     var btn = e.target.closest ? e.target.closest('button[data-key]') : null;
     if (!btn) return;
+    // Nothing below this element needs this tap, and nothing above should act on
+    // it either — a keypad press is not a click on the stocktake behind.
+    e.preventDefault();
+    e.stopPropagation();
     var key = btn.getAttribute('data-key');
+    var now = Date.now();
+    if (key === lastPadKey.key && now - lastPadKey.at < PAD_REPEAT_MS) return;
+    lastPadKey = { key: key, at: now };
+    applyPadKey(key);
+  });
+
+  function applyPadKey(key) {
     var el = $('qty-input');
     var v = el.value;
 
@@ -2883,7 +2909,15 @@
     // Strip a leading zero only when a real digit follows it — "07" becomes "7",
     // but "0.4" must keep its zero, and a bare "0" is now a legitimate count.
     el.value = v.replace(/^0+(?=\d)/, '');
-  });
+  }
+
+  // Taps that land on the scrim or the gaps between keys must die here. The
+  // overlay is a full-viewport layer, so without this a miss between two keys
+  // could bubble out to whatever is listening further up. It deliberately does
+  // NOT close the dialog: a mis-tap next to the 8 key should cost nothing, not
+  // discard a half-typed count. Only Cancel, a successful Save, or leaving the
+  // view close it.
+  $('qty-overlay').addEventListener('click', function (e) { e.stopPropagation(); });
 
   // readonly on touch only. Without it, tapping the field to reposition the caret
   // raises the OS keyboard over our keypad — two input methods fighting for the
@@ -2892,10 +2926,47 @@
   // directly, so nothing is lost. Desktop keeps a fully editable field.
   if (hasTouchKeypad()) $('qty-input').readOnly = true;
 
+  // Anything that reaches this field from a real keyboard gets the same rules the
+  // keypad enforces. Two sources make that necessary:
+  //
+  //   * A keyboard-wedge scanner. It types the barcode wherever the caret is, and
+  //     on desktop this field is focused the moment the dialog opens — so the
+  //     barcode lands in the QUANTITY box as well as in #qty-code, and a hurried
+  //     Save would store 9348230001611 bottles.
+  //   * A paste, which the pad's key-by-key guards never see.
+  //
+  // The barcode check is exact rather than heuristic: if what was typed IS the
+  // code being counted, it is not a quantity, whatever its length.
+  $('qty-input').addEventListener('input', function () {
+    var el = $('qty-input');
+    var raw = el.value;
+
+    if (pendingCode && raw.trim() === pendingCode) {
+      el.value = '';
+      toast('That’s the barcode, not a quantity — enter how many', '#b91c1c');
+      return;
+    }
+
+    // Same shape the keypad produces: digits, at most one point, capped scale.
+    var clean = raw.replace(/[^0-9.]/g, '');
+    var parts = clean.split('.');
+    clean = parts.shift().slice(0, QTY_MAX_INT_DIGITS)
+          + (parts.length ? '.' + parts.join('').slice(0, QTY_DP) : '');
+    clean = clean.replace(/^0+(?=\d)/, '');
+    if (clean !== raw) {
+      // Only rewrite when something actually changed, or the caret jumps to the
+      // end on every keystroke and typing a mid-string digit becomes impossible.
+      el.value = clean;
+    }
+  });
+
   function closeQtyDialog() {
     dialogOpen = false;
     pendingCode = null;
     $('qty-overlay').classList.remove('open');
+    // Clear the field too. Left behind, the previous count is the default the
+    // next scan sees — and in ADD mode that silently doubles it.
+    $('qty-input').value = '';
   }
 
   function commitQty() {
@@ -2904,6 +2975,15 @@
     // `!0` is true, so the previous check made zero unenterable. Zero is now a
     // legitimate count ("checked this line, there are none"), so the only invalid
     // entries are blank, non-numeric, and negative.
+    // Checked before the numeric parse, because a barcode parses perfectly well
+    // as a number — 9348230001611 would be stored as nine billion bottles. This
+    // is the last line of defence for a wedge scanner or a paste that got past
+    // the input handler; the message says what to do rather than just refusing.
+    if (pendingCode && raw.trim() === pendingCode) {
+      $('qty-input').value = '';
+      toast('That’s the barcode, not a quantity — enter how many', '#b91c1c');
+      return;
+    }
     var qty = qtyRound(parseFloat(raw));
     if (raw.trim() === '' || !isFinite(parseFloat(raw)) || qty < 0) {
       toast('Enter a quantity of 0 or more', '#b91c1c'); return;
