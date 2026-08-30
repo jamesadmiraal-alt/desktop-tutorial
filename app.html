@@ -1066,6 +1066,20 @@
     if (code === '42501' || /permission denied/i.test(msg)) {
       return 'This login may now be in use on another device — log in again and re-scan.';
     }
+    // Should be unreachable now that scans go through add_stocktake_item(),
+    // which merges in Postgres. Kept because the raw text —
+    // "duplicate key value violates unique constraint
+    // stocktake_items_stocktake_id_barcode_key" — is what an operator actually
+    // saw during the stress test, and it tells them nothing about what to do.
+    if (code === '23505' || /duplicate key/i.test(msg)) {
+      return 'Someone else scanned this barcode at the same moment. Scan it again — the two counts will be added together.';
+    }
+    // The database half of a release hasn't been applied. Worth naming, because
+    // otherwise every save fails with "Could not find the function ..." and it
+    // reads like the scanner is broken.
+    if (code === 'PGRST202' || /Could not find the function/i.test(msg)) {
+      return 'This app needs a database update that has not been applied yet — tell your administrator before counting.';
+    }
     return msg;
   }
 
@@ -2670,15 +2684,43 @@
     });
   }
 
+  // Merge a row the SERVER returned into the local list, matched on barcode
+  // rather than id.
+  //
+  // Barcode is the right key for two reasons. It's unique per stocktake, so it
+  // cannot mismatch. And when another device has already scanned this barcode,
+  // the row coming back carries THEIR id — matching on id would fail to find the
+  // local line and duplicate it on screen, showing two lines for a barcode the
+  // database is quite correctly storing once.
+  function mergeItem(row) {
+    if (!row) return;
+    // PostgREST returns a composite-returning function as an object, but be
+    // tolerant of the array form rather than writing `undefined` into the list.
+    if (Array.isArray(row)) row = row[0];
+    if (!row || !row.barcode) return;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].barcode === row.barcode) { items[i] = row; return; }
+    }
+    // Not held locally at all — this is the other scanner's line arriving. It
+    // has to appear immediately, or the operator carries on believing the
+    // barcode is uncounted.
+    items.unshift(row);
+  }
+
+  // The −/+ steppers. Absolute set, via the RPC keyed on (stocktake_id, barcode)
+  // rather than a direct UPDATE by `it.id`: that id goes stale the moment the
+  // line is removed and rescanned on another device, and an UPDATE matching no
+  // rows reports success while changing nothing.
   function setItemQty(it, qty) {
-    var now = new Date().toISOString();
-    qty = qtyRound(qty);
-    sb.from('stocktake_items').update({ qty: qty, last_scanned: now }).eq('id', it.id)
-      .then(function (res) {
-        if (res.error) { fail(res.error, 'Update failed'); return; }
-        it.qty = qty; it.last_scanned = now;
-        renderItems();
-      });
+    sb.rpc('set_stocktake_item_qty', {
+      p_stocktake_id: currentTake.id, p_barcode: it.barcode, p_qty: qtyRound(qty)
+    }).then(function (res) {
+      if (res.error) { fail({ message: it.barcode + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
+      mergeItem(res.data);
+      renderItems();
+    }, function (err) {
+      fail({ message: it.barcode + ' was NOT saved. ' + failHint(err) }, '');
+    });
   }
 
   // ---- Quantity dialog ----
@@ -2782,40 +2824,70 @@
     }
     var code = pendingCode;
     var mode = $('qty-overlay').dataset.mode;
-    var existing = items.find(function (it) { return it.barcode === code; });
+
+    // The whole write now goes to Postgres, and which RPC is the ONLY decision
+    // made here. It used to be INSERT-vs-UPDATE, chosen by looking for the
+    // barcode in the local `items` array — and that array cannot see the other
+    // scanner's rows. Two people counting the same stocktake therefore both took
+    // the INSERT branch, and the second one hit
+    // `stocktake_items_stocktake_id_barcode_key`.
+    //
+    // add_stocktake_item() adds to whatever is already stored, creating the line
+    // if needed, with the arithmetic done by the database under a row lock. No
+    // client-computed total is sent, so nothing can overwrite a colleague's
+    // count. Edit mode still means "make it exactly this", but keyed on
+    // (stocktake_id, barcode) rather than a possibly-stale row id.
+    var isEdit = (mode === 'edit');
+    var rpc = isEdit ? 'set_stocktake_item_qty' : 'add_stocktake_item';
+    var beforeQty = null;
+    var known = items.find(function (it) { return it.barcode === code; });
+    if (known) beforeQty = qtyNum(known.qty);
+
     $('qty-ok').disabled = true;
+    // Re-enabled on EVERY outcome, including a rejected promise. Previously this
+    // only ran inside the success handler, so a network drop left the operator
+    // looking at a permanently greyed Save with no explanation.
     var done = function () { $('qty-ok').disabled = false; };
-    if (existing) {
-      // qtyRound around the addition, not just on the parts: 0.1 + 0.2 is
-      // 0.30000000000000004 in binary floating point, and storing that would drift
-      // the count every time the same barcode is scanned again.
-      var newQty = (mode === 'edit') ? qty : qtyRound(qtyNum(existing.qty) + qty);
-      var now = new Date().toISOString();
-      sb.from('stocktake_items').update({ qty: newQty, last_scanned: now }).eq('id', existing.id)
-        .then(function (res) {
-          done();
-          if (res.error) { fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
-          existing.qty = newQty; existing.last_scanned = now;
-          renderItems();
+
+    sb.rpc(rpc, { p_stocktake_id: currentTake.id, p_barcode: code, p_qty: qty }).then(
+      function (res) {
+        done();
+        // This is the one moment a scan can genuinely be lost: if the login was
+        // taken over on another device a heartbeat ago, this write fails and the
+        // number the operator just typed is gone. A bare "Save failed" would
+        // leave them re-scanning blind, so name the barcode and the likely cause.
+        if (res.error) { fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
+        var row = Array.isArray(res.data) ? res.data[0] : res.data;
+        if (!row) { fail({ message: code + ' was NOT saved. The server did not confirm the write.' }, ''); return; }
+        mergeItem(row);
+        renderItems();
+
+        // Say the resulting TOTAL whenever it isn't just what they typed. That
+        // sentence is how the second scanner discovers a colleague had already
+        // counted this barcode — the case that previously showed a raw Postgres
+        // error, and before that silently overwrote their count.
+        var total = qtyNum(row.qty);
+        if (isEdit) {
+          toast(code + '  set to ' + qtyText(total));
+        } else if (beforeQty === null && total !== qty) {
+          // The client had never seen this line, yet the total came back higher
+          // than what was typed — so another device had already counted it. Say
+          // how much was there, because that is the number the operator is about
+          // to be surprised by, and it is derivable: total minus what they typed.
+          toast(code + '  ×' + qtyText(qty) + ' added to ' + qtyText(qtyRound(total - qty))
+                + ' already counted — now ' + qtyText(total));
+        } else if (total !== qty) {
+          toast(code + '  ×' + qtyText(qty) + ' added — now ' + qtyText(total));
+        } else {
           toast(code + '  ×' + qtyText(qty) + ' saved');
-          closeQtyDialog();
-        });
-    } else {
-      sb.from('stocktake_items').insert({ stocktake_id: currentTake.id, barcode: code, qty: qty })
-        .select().single()
-        .then(function (res) {
-          done();
-          // This is the one moment a scan can genuinely be lost: if the login was
-          // taken over on another device a heartbeat ago, this write fails and the
-          // number the operator just typed is gone. A bare "Save failed" would
-          // leave them re-scanning blind, so name the barcode and the likely cause.
-          if (res.error) { fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
-          items.unshift(res.data);
-          renderItems();
-          toast(code + '  ×' + qtyText(qty) + ' saved');
-          closeQtyDialog();
-        });
-    }
+        }
+        closeQtyDialog();
+      },
+      function (err) {
+        done();
+        fail({ message: code + ' was NOT saved. ' + failHint(err) }, '');
+      }
+    );
   }
 
   $('qty-ok').onclick = commitQty;

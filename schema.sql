@@ -1453,6 +1453,199 @@ end $$;
 
 grant execute on function public.clear_stocktake_items(uuid) to authenticated;
 
+-- ==========================================================================
+-- Writing a scanned quantity. Both of these exist because two people counting
+-- the SAME stocktake is normal, and the client cannot see the other device's
+-- rows.
+--
+-- What went wrong without them: app.html decided INSERT-vs-UPDATE from its own
+-- in-memory `items` array. The other scanner's row isn't in that array, so both
+-- devices took the INSERT branch and the second hit
+-- `stocktake_items_stocktake_id_barcode_key`. The operator got a raw Postgres
+-- error, Save stayed greyed out, and — worse — the second scanner had no way to
+-- know the barcode was already counted, so the natural response was to retype
+-- the number and lose the first person's count.
+--
+-- The merge therefore has to happen in Postgres, where both writers are
+-- serialised on the same row, not in a client array that is stale by
+-- definition. `unique (stocktake_id, barcode)` stays exactly as it was: it is
+-- what makes the merge correct rather than something to design around.
+--
+-- WHY A LOOP RATHER THAN `insert ... on conflict do update`:
+-- this table carries log_item_qty_reduced_audit, an `after update ... for each
+-- statement` trigger using `referencing old table / new table`. Whether
+-- ON CONFLICT DO UPDATE composes safely with transition tables is not something
+-- that could be verified against this project's database before shipping, and a
+-- wrong guess fails at call time in the middle of a count rather than at deploy.
+-- The update-then-insert loop below is the documented concurrency-safe upsert,
+-- behaves identically, and additionally keeps the unique_violation retry INSIDE
+-- the transaction, where it cannot be lost to a dropped connection the way a
+-- client-side retry can.
+--
+-- NO AUDIT ROW HERE, deliberately. log_item_qty_reduced() above logs quantity
+-- DECREASES only, on the stated grounds that "increases are ordinary scanning,
+-- and logging them would bury the interesting rows". A scan is the most common
+-- write in the product; logging each one would push the deletions and status
+-- changes the log exists to evidence off the first page. The decrease trigger
+-- still fires for set_stocktake_item_qty() below when an edit lowers a line,
+-- which is the direction that destroys a count.
+-- ==========================================================================
+
+-- Scan / ADD path. Adds p_qty to whatever is already there, creating the line if
+-- this is its first scan. Returns the resulting row so the caller can show the
+-- merged total — which is how the second scanner finds out someone else had
+-- already counted this barcode.
+create or replace function public.add_stocktake_item(
+  p_stocktake_id uuid,
+  p_barcode text,
+  p_qty numeric
+)
+returns public.stocktake_items
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_take_org uuid;
+  v_code text := btrim(coalesce(p_barcode, ''));
+  v_qty numeric;
+  v_row public.stocktake_items;
+begin
+  if v_org is null then
+    raise exception 'You do not belong to an organisation.';
+  end if;
+  if v_code = '' then
+    raise exception 'A barcode is required.';
+  end if;
+  if p_qty is null then
+    raise exception 'A quantity is required.';
+  end if;
+  -- numeric accepts 'NaN', and `'NaN' >= 0` is true, so neither the range check
+  -- below nor the column's own `check (qty >= 0)` would stop it — it would just
+  -- turn the line's total into NaN permanently.
+  if p_qty = 'NaN'::numeric then
+    raise exception 'Quantity must be a number.';
+  end if;
+  v_qty := round(p_qty, 2);   -- matches numeric(12,2) and QTY_DP in app.html
+  if v_qty < 0 then
+    raise exception 'Quantity must be 0 or more.';
+  end if;
+
+  -- security definer bypasses RLS, so re-implement the scoping the insert policy
+  -- would have done. Same message whether the stocktake is missing or belongs to
+  -- another org, so this cannot be used to probe for UUIDs.
+  select s.org_id into v_take_org from public.stocktakes s where s.id = p_stocktake_id;
+  if v_take_org is null or v_take_org is distinct from v_org then
+    raise exception 'Stocktake not found.';
+  end if;
+
+  loop
+    -- `qty + v_qty` is evaluated by Postgres against the committed row under a
+    -- row lock, so two devices adding at once serialise and both counts land.
+    -- Computing the total in the client is what made this last-writer-wins.
+    update public.stocktake_items
+       set qty = qty + v_qty,
+           last_scanned = now(),
+           last_scanned_by = auth.uid()
+     where stocktake_id = p_stocktake_id
+       and barcode = v_code
+    returning * into v_row;
+    if found then
+      return v_row;
+    end if;
+
+    begin
+      insert into public.stocktake_items (stocktake_id, org_id, barcode, qty)
+      values (p_stocktake_id, v_org, v_code, v_qty)
+      returning * into v_row;
+      return v_row;
+    exception when unique_violation then
+      -- Another device inserted this exact barcode between our UPDATE finding
+      -- nothing and our INSERT. Go round again; the UPDATE will now find their
+      -- row and add to it. This is the race the old client-side branch lost.
+      null;
+    end;
+  end loop;
+end $$;
+
+grant execute on function public.add_stocktake_item(uuid, text, numeric) to authenticated;
+
+-- Absolute set, for the keypad's Edit mode and the −/+ steppers. Keyed on
+-- (stocktake_id, barcode) rather than the row id the client happens to be
+-- holding: that id can be stale — the line may have been removed and rescanned
+-- on another device — and an UPDATE by a stale id silently affects nothing while
+-- reporting success.
+--
+-- This one CAN lower a quantity, so log_item_qty_reduced_audit fires for it and
+-- the reduction is recorded. That is intended: an edit walking a 247-unit line
+-- down to 1 is exactly what that trigger exists to catch.
+create or replace function public.set_stocktake_item_qty(
+  p_stocktake_id uuid,
+  p_barcode text,
+  p_qty numeric
+)
+returns public.stocktake_items
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_take_org uuid;
+  v_code text := btrim(coalesce(p_barcode, ''));
+  v_qty numeric;
+  v_row public.stocktake_items;
+begin
+  if v_org is null then
+    raise exception 'You do not belong to an organisation.';
+  end if;
+  if v_code = '' then
+    raise exception 'A barcode is required.';
+  end if;
+  if p_qty is null then
+    raise exception 'A quantity is required.';
+  end if;
+  if p_qty = 'NaN'::numeric then
+    raise exception 'Quantity must be a number.';
+  end if;
+  v_qty := round(p_qty, 2);
+  if v_qty < 0 then
+    raise exception 'Quantity must be 0 or more.';
+  end if;
+
+  select s.org_id into v_take_org from public.stocktakes s where s.id = p_stocktake_id;
+  if v_take_org is null or v_take_org is distinct from v_org then
+    raise exception 'Stocktake not found.';
+  end if;
+
+  update public.stocktake_items
+     set qty = v_qty,
+         last_scanned = now(),
+         last_scanned_by = auth.uid()
+   where stocktake_id = p_stocktake_id
+     and barcode = v_code
+  returning * into v_row;
+  if found then
+    return v_row;
+  end if;
+
+  -- Line isn't there — removed on another device while this one still showed it.
+  -- Recreate it at the requested quantity rather than failing: the operator
+  -- asked for this barcode to read this number.
+  begin
+    insert into public.stocktake_items (stocktake_id, org_id, barcode, qty)
+    values (p_stocktake_id, v_org, v_code, v_qty)
+    returning * into v_row;
+    return v_row;
+  exception when unique_violation then
+    update public.stocktake_items
+       set qty = v_qty,
+           last_scanned = now(),
+           last_scanned_by = auth.uid()
+     where stocktake_id = p_stocktake_id
+       and barcode = v_code
+    returning * into v_row;
+    return v_row;
+  end;
+end $$;
+
+grant execute on function public.set_stocktake_item_qty(uuid, text, numeric) to authenticated;
+
 -- The only way a stocktake's status changes. Client UPDATE on stocktakes is
 -- revoked (see the policies above), so this is the whole write path — which is
 -- what makes the log entry unskippable and lets the per-transition role rule
