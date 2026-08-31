@@ -513,7 +513,7 @@
       <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="single">
         <span><span class="opt-name">Single-venue</span>
-          <div class="opt-sub">1 location, unlimited products</div></span>
+          <div class="opt-sub">One user (the owner), 1 location, unlimited products</div></span>
         <span class="opt-price">$29<small>/mo</small></span>
       </button>
       <button class="upgrade-opt best" data-tier="multi">
@@ -622,7 +622,7 @@
     <h3>Subscription</h3>
     <div id="acct-plan-single" style="display:none">
       <span class="plan-badge pro">Single-venue plan</span>
-      <div class="plan-desc">1 location, unlimited products per stocktake.</div>
+      <div class="plan-desc">One user — you, the owner. 1 location, unlimited products per stocktake.</div>
       <button id="manage-sub-btn-single" class="manage-sub-btn">Manage subscription</button>
       <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="multi">
@@ -682,8 +682,16 @@
     <div id="team-roster-list"></div>
   </div>
   <div class="acct-card" id="team-add-member-card">
-    <h3>Add team member</h3>
-    <p class="plan-desc" style="margin-bottom:10px">Creates their login directly — no join code needed. They can change this password later from this app.</p>
+    <h3 id="team-add-member-title">Add team member</h3>
+    <p class="plan-desc" style="margin-bottom:10px" id="team-add-member-intro">Creates their login directly — no join code needed. They can change this password later from this app.</p>
+    <!-- Shown instead of the form on Single-venue, which covers one user: the
+         owner. Same wording as add_team_member()'s exception and
+         create-team-member's 403, so the answer is identical whether they read
+         it here or hit the API. The upgrade lives on Account, not here — one
+         checkout path, already priced. -->
+    <div id="team-single-venue-note" style="display:none">
+      <button id="team-upgrade-btn" class="primary" style="margin-top:4px;width:100%">Upgrade to Multi-venue</button>
+    </div>
     <div id="team-add-member-form">
       <label for="team-member-name">Name</label>
       <input id="team-member-name" type="text" placeholder="Full name">
@@ -1391,7 +1399,19 @@
     $('payment-pending-row').style.display = 'none';
     $('auth-submit').style.display = 'none';
     var orgName = currentOrg ? currentOrg.name : 'Your organisation';
-    if (reason === 'no_seats_purchased') {
+    if (reason === 'single_venue_owner_only') {
+      // Not a seat problem at all, so none of the seat advice applies. Telling
+      // this person to "ask a teammate to log out" or "add a seat from the admin
+      // console" would send them after two things that don't exist on this plan:
+      // there is no pool to free up, and admin.html is multi-venue only.
+      //
+      // The only person who can act is the owner, and the only action is an
+      // upgrade — so that is the entire message.
+      $('auth-heading').textContent = 'Single-venue is owner only';
+      $('seats-full-message').textContent = orgName + ' is on the Single-venue plan ($29/mo), '
+        + 'which covers one user — the owner. The owner can upgrade to Multi-venue ($59/mo) '
+        + 'from their Account screen to add the team.';
+    } else if (reason === 'no_seats_purchased') {
       $('auth-heading').textContent = 'No staff seats yet';
       $('seats-full-message').textContent = orgName + ' hasn’t purchased any concurrent staff '
         + 'seats yet — ask the owner to add one from the admin console before you can log in here.';
@@ -1652,11 +1672,17 @@
           // that has nothing to do with seats.
           if (d.reason === 'no_organisation') { showOrgSetupPrompt(); return; }
           showSeatsFullPrompt(d.reason);
-          // Both are real seat-capacity signals worth telling the owner about
-          // (record_seat_denial() on the server already reports seats_purchased,
-          // so a 0-purchased denial reads clearly there too). 'other_device'
-          // isn't a seat problem at all, and mailing the owner about it would
-          // train them to ignore the alert that matters.
+          // An allowlist, not a blocklist, and deliberately so: a new denial
+          // reason must opt IN to emailing the owner rather than inheriting it.
+          //
+          // Both of these are real seat-capacity signals worth telling the owner
+          // about (record_seat_denial() on the server already reports
+          // seats_purchased, so a 0-purchased denial reads clearly there too).
+          // 'other_device' isn't a seat problem at all, and
+          // 'single_venue_owner_only' is a plan boundary rather than a full pool
+          // — record_seat_denial() already treats non-multi as "not subject to
+          // the seat limit", so mailing about either would train the owner to
+          // ignore the alert that matters.
           if (d.reason === 'seats_full' || d.reason === 'no_seats_purchased') notifySeatDenied();
           return;
         }
@@ -1935,6 +1961,11 @@
   $('acct-back').onclick = function () { loadTakes(); };
   $('open-team-btn').onclick = function () { openTeam(); };
   $('team-back').onclick = function () { openAccount(); };
+  // Points at the checkout that already exists rather than inventing a second
+  // one: Account is where #acct-plan-single's upgrade options live, already
+  // priced at $59/mo plus $29/mo per extra concurrent user, already wired to the
+  // Payment Links in config.js.
+  $('team-upgrade-btn').onclick = function () { openAccount(); };
   // Logo-as-home, same destination as the explicit back buttons — only does
   // anything from views that already have a "back" concept; a no-op elsewhere
   // (home is already home, and auth/setup screens have no home state to return
@@ -1985,6 +2016,29 @@
     // — a greyed form still implies the capability exists.
     $('team-add-member-card').style.display =
       (currentOrg && currentOrg.role === 'owner') ? '' : 'none';
+
+    // Single-venue is ONE user: the owner. Swap the form for the upgrade rather
+    // than showing a form whose only possible outcome is a 403 — the server
+    // refuses this on both add_team_member() and create-team-member, so offering
+    // it would be inviting someone to fail.
+    //
+    // The roster, venue/location rename and activity log all stay: they are how
+    // an owner sees whoever is already on the org (a leftover member is locked
+    // out at login, not deleted) and what has happened to their counts.
+    var isMulti = !!(currentOrg && currentOrg.planTier === 'multi');
+    $('team-add-member-form').style.display = isMulti ? '' : 'none';
+    $('team-single-venue-note').style.display = isMulti ? 'none' : '';
+    // Any leftover "account created" panel from a previous multi session would
+    // otherwise sit above the upgrade copy and contradict it.
+    if (!isMulti) $('team-add-member-result').style.display = 'none';
+    $('team-add-member-title').textContent = isMulti
+      ? 'Add team member'
+      : 'Single-venue is just you';
+    $('team-add-member-intro').textContent = isMulti
+      ? 'Creates their login directly — no join code needed. They can change this password later from this app.'
+      : 'Single-venue ($29/mo) is just you — the owner. Upgrade to Multi-venue ($59/mo) to add the team. '
+        + 'Extra concurrent seats on Multi are $29/mo each.';
+
     loadTeamAuditLog();
     Promise.all([
       // Archived venues excluded, and archived locations with them. This view is
@@ -2185,7 +2239,11 @@
     $('team-add-member-btn').disabled = true;
     sb.functions.invoke('create-team-member', { body: { fullName: name, email: email, role: role } }).then(function (res) {
       $('team-add-member-btn').disabled = false;
-      if (res.error || (res.data && res.data.error)) { failFn(res, 'Could not add team member'); return; }
+      // No "Could not add team member:" prefix. Every error this function
+      // returns is already a complete, owner-facing sentence — the plan gate's
+      // is an upgrade offer naming $59 and $29 — and prefixing it turns advice
+      // into what reads as an internal failure report.
+      if (res.error || (res.data && res.data.error)) { failFn(res, ''); return; }
       $('team-add-member-form').style.display = 'none';
       // Adopted an existing account (no temp password issued) vs. created a new
       // one — show one panel or the other, never an empty password box.

@@ -1486,9 +1486,11 @@
         renderOrg();
         buildActionFilter();
 
-        // Concurrent seats are a multi-venue-only concept — single-venue has no
-        // seat pool at all (unlimited staff, unchanged). The TAB is hidden rather
-        // than the card, so single-venue never sees a tab that leads nowhere.
+        // Concurrent seats are a multi-venue-only concept. Single-venue has no
+        // seat pool because it has no team to pool: that plan is ONE user, the
+        // owner — claim_seat() refuses any non-owner session on it (schema.sql,
+        // Rule 1b). The TAB is hidden rather than the card, so single-venue never
+        // sees a tab that leads nowhere.
         if (currentOrg.planTier === 'multi') {
           $('tab-btn-seats').style.display = '';
           $('seat-count-input').value = currentOrg.concurrentSeats;

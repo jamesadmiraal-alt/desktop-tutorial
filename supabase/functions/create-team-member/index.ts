@@ -86,10 +86,33 @@ Deno.serve(async (req) => {
   if (role !== "manager" && role !== "staff") return jsonResponse({ error: "Invalid role." }, 400);
 
   try {
-    const memberRes = await userDb(authHeader, `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role`);
+    const memberRes = await userDb(
+      authHeader,
+      `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role,organisations(plan_tier)`,
+    );
     const members = await memberRes.json();
     if (!members?.[0] || members[0].role !== "owner") {
       return jsonResponse({ error: "Only the owner can add team members." }, 403);
+    }
+
+    // Single-venue is ONE user: the owner. A team is what Multi-venue is for.
+    //
+    // Refused HERE, before the Admin API is touched, so no auth user is created
+    // and rolled back — a half-provisioned account whose email can never be
+    // re-used is a worse outcome than a clean refusal. add_team_member() in
+    // schema.sql enforces the same rule for anything that reaches the database
+    // directly; this exists so the operator gets a readable 403 instead of a
+    // raw plpgsql exception, and so nothing is created on the way.
+    //
+    // Same sentence as the RPC and the Team view — keep the three in step.
+    if (members[0]?.organisations?.plan_tier !== "multi") {
+      return jsonResponse(
+        {
+          error:
+            "Single-venue is just you — the owner. Upgrade to Multi-venue ($59/mo) to add team members. Extra concurrent seats on Multi are $29/mo each.",
+        },
+        403,
+      );
     }
 
     const tempPassword = randomSixDigitCode();

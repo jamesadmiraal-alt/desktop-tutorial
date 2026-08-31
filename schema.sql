@@ -604,6 +604,20 @@ begin
     raise exception 'Invalid or expired daily code.';
   end if;
 
+  -- Single-venue is ONE user: the owner. A valid pair of codes is still not a
+  -- way onto that plan.
+  --
+  -- Checked after the codes, deliberately. Refusing before them would tell an
+  -- unauthenticated guesser which join codes are real, and the plan a stranger's
+  -- org is on is not their business.
+  --
+  -- `is distinct from` rather than `<>`: plan_tier is not null today, but a null
+  -- here would make `<>` evaluate to NULL, which plpgsql treats as false — the
+  -- exact null-comparison bypass this file has already been bitten by.
+  if target_org.plan_tier is distinct from 'multi' then
+    raise exception 'This organisation is on the Single-venue plan (owner only). Ask the owner to upgrade to Multi-venue.';
+  end if;
+
   insert into public.memberships (org_id, user_id, role) values (target_org.id, auth.uid(), 'staff');
 
   return target_org.id;
@@ -635,6 +649,22 @@ begin
   if public.my_role() is distinct from 'owner' then
     raise exception 'Only the owner can add team members.';
   end if;
+
+  -- Single-venue is ONE user: the owner. A team is what the Multi-venue plan is
+  -- for, so this is a plan boundary rather than a permission one — hence the
+  -- message names the price and the way out instead of just refusing.
+  --
+  -- Deliberately AFTER the owner check: a staff member who somehow reached here
+  -- should be told they are not the owner, which is true and actionable, rather
+  -- than being handed an upgrade pitch they cannot act on.
+  --
+  -- adopt_existing_team_member() delegates here, so it inherits this gate. The
+  -- same sentence is returned by create-team-member (403) and shown on the Team
+  -- view; keep the three in step if it is ever reworded.
+  if (select plan_tier from public.organisations where id = org_id) is distinct from 'multi' then
+    raise exception 'Single-venue is just you — the owner. Upgrade to Multi-venue ($59/mo) to add team members. Extra concurrent seats on Multi are $29/mo each.';
+  end if;
+
   if p_role not in ('manager', 'staff') then
     raise exception 'Invalid role.';
   end if;
@@ -2230,6 +2260,26 @@ begin
             auth.uid(), actor_label, jsonb_build_object('signed_out_previous_device', true));
 
     return jsonb_build_object('granted', true, 'took_over', true);
+  end if;
+
+  -- ---- Rule 1b: single-venue is one user, the owner ----
+  --
+  -- Rule 2 below only engages for multi, so a single-venue non-owner used to fall
+  -- straight through to the insert and get a session. That is why extra logins
+  -- worked on the $29 plan: nothing server-side stopped them.
+  --
+  -- Placed after Rule 1 so a returning owner still refreshes their own row, and
+  -- before the insert so no active_sessions row is created for someone who is
+  -- about to be refused.
+  --
+  -- 'pending' orgs are covered too — the owner is let through (they need to reach
+  -- checkout), anyone else is not.
+  --
+  -- No notifySeatDenied() for this reason, and record_seat_denied() already
+  -- treats non-multi as "not subject to the seat limit", so nothing emails the
+  -- owner about it. This is a plan boundary, not a full pool.
+  if v_plan is distinct from 'multi' and v_role is distinct from 'owner' then
+    return jsonb_build_object('granted', false, 'reason', 'single_venue_owner_only');
   end if;
 
   -- ---- Rule 2: the seat pool (multi-venue, non-owner) ----
