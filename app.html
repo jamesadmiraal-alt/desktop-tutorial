@@ -513,7 +513,7 @@
       <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="single">
         <span><span class="opt-name">Single-venue</span>
-          <div class="opt-sub">1 location, unlimited products</div></span>
+          <div class="opt-sub">1 location, unlimited products — just you, the owner</div></span>
         <span class="opt-price">$29<small>/mo</small></span>
       </button>
       <button class="upgrade-opt best" data-tier="multi">
@@ -622,7 +622,7 @@
     <h3>Subscription</h3>
     <div id="acct-plan-single" style="display:none">
       <span class="plan-badge pro">Single-venue plan</span>
-      <div class="plan-desc">1 location, unlimited products per stocktake.</div>
+      <div class="plan-desc">1 location, unlimited products per stocktake — just you, the owner. Upgrade to Multi-venue to add a team.</div>
       <button id="manage-sub-btn-single" class="manage-sub-btn">Manage subscription</button>
       <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="multi">
@@ -650,7 +650,10 @@
 <!-- ===== Team & location (single-venue only — see open-team-btn in Account.
      Multi-venue uses admin.html instead; this exists purely because
      admin.html is gated to multi-venue only, and single-venue orgs still
-     need to rename their one location and manage their team.) ===== -->
+     need to rename their one location and see their (owner-only) roster
+     and activity log. Single-venue is licensed for one user — the owner —
+     so there is no team to manage here; #team-add-member-card shows an
+     upgrade prompt instead of an add form. See loadTeamView(). ===== -->
 <div id="team-view" class="view">
   <div class="subheader" style="margin:-16px -12px 14px">
     <button id="team-back">‹ Back</button>
@@ -683,8 +686,18 @@
   </div>
   <div class="acct-card" id="team-add-member-card">
     <h3>Add team member</h3>
-    <p class="plan-desc" style="margin-bottom:10px">Creates their login directly — no join code needed. They can change this password later from this app.</p>
+    <!-- Single-venue ($29/mo) is licensed for one user: the owner. Team
+         members are a Multi-venue ($59/mo) feature — see add_team_member()
+         in schema.sql and create-team-member's Edge Function check. This
+         upsell replaces the add form for that tier; loadTeamView() toggles
+         which of the two shows. -->
+    <div id="team-add-member-upsell" style="display:none">
+      <p class="plan-desc" style="margin-bottom:10px">Single-venue ($29/mo) is just you. Upgrade to
+        Multi-venue ($59/mo) to add the team. Extra concurrent seats on Multi are $29/mo each.</p>
+      <button id="team-add-member-upgrade-btn" class="primary" style="width:100%">Go to Account to upgrade</button>
+    </div>
     <div id="team-add-member-form">
+      <p class="plan-desc" style="margin-bottom:10px">Creates their login directly — no join code needed. They can change this password later from this app.</p>
       <label for="team-member-name">Name</label>
       <input id="team-member-name" type="text" placeholder="Full name">
       <label for="team-member-email">Email</label>
@@ -1391,7 +1404,16 @@
     $('payment-pending-row').style.display = 'none';
     $('auth-submit').style.display = 'none';
     var orgName = currentOrg ? currentOrg.name : 'Your organisation';
-    if (reason === 'no_seats_purchased') {
+    if (reason === 'single_venue_owner_only') {
+      // Single-venue ($29/mo) is licensed for one user: the owner. Neither
+      // "ask a teammate to log out" nor "add a seat from the admin console"
+      // applies here — those are Multi-venue concepts — so this gets its
+      // own copy rather than falling into the generic seats-full wording.
+      $('auth-heading').textContent = 'Single-venue is owner only';
+      $('seats-full-message').textContent = orgName + ' is on the Single-venue plan ($29/mo) — '
+        + 'that plan is the owner only. The owner can upgrade to Multi-venue ($59/mo) from Account '
+        + 'to add a team; extra concurrent seats on Multi are $29/mo each.';
+    } else if (reason === 'no_seats_purchased') {
       $('auth-heading').textContent = 'No staff seats yet';
       $('seats-full-message').textContent = orgName + ' hasn’t purchased any concurrent staff '
         + 'seats yet — ask the owner to add one from the admin console before you can log in here.';
@@ -1983,8 +2005,26 @@
     // create-team-member 403s a non-owner, so a manager was previously shown a
     // full form that could only ever fail on submit. Hidden rather than disabled
     // — a greyed form still implies the capability exists.
-    $('team-add-member-card').style.display =
-      (currentOrg && currentOrg.role === 'owner') ? '' : 'none';
+    var isOwner = !!(currentOrg && currentOrg.role === 'owner');
+    // Single-venue ($29/mo) is licensed for one user: the owner. #team-view
+    // is only reachable at all for single-venue orgs today (multi-venue
+    // uses admin.html — see open-team-btn/open-admin-btn in
+    // renderOrgAccountInfo()), so in practice this is always the single
+    // case here, but the check stays explicit rather than assumed — same
+    // defense-in-depth the server side (add_team_member, join_organisation,
+    // claim_seat) applies, and it's what keeps this card correct if that
+    // routing ever changes.
+    var isMulti = !!(currentOrg && currentOrg.planTier === 'multi');
+    $('team-add-member-card').style.display = isOwner ? '' : 'none';
+    $('team-add-member-upsell').style.display = (isOwner && !isMulti) ? '' : 'none';
+    // Don't stomp on an in-progress "member just added" result panel — the
+    // add-member success handler calls loadTeamView() again immediately
+    // afterward (to refresh the roster) while that panel is still showing;
+    // only decide the form's visibility when no result is currently shown.
+    // "Add another" (below) hides the result and re-shows the form itself.
+    if ($('team-add-member-result').style.display !== '') {
+      $('team-add-member-form').style.display = (isOwner && isMulti) ? '' : 'none';
+    }
     loadTeamAuditLog();
     Promise.all([
       // Archived venues excluded, and archived locations with them. This view is
@@ -2207,6 +2247,10 @@
     var pw = $('team-add-result-password').textContent;
     if (navigator.clipboard) navigator.clipboard.writeText(pw).then(function () { toast('Password copied'); });
   };
+  // Points at the existing Account upgrade (.upgrade-opt[data-tier="multi"]
+  // in #acct-plan-single) rather than opening checkout directly from here —
+  // one upgrade entry point, not a second one invented for this card.
+  $('team-add-member-upgrade-btn').onclick = openAccount;
   $('team-add-again-btn').onclick = function () {
     $('team-member-name').value = ''; $('team-member-email').value = ''; $('team-member-role').value = 'staff';
     $('team-add-member-result').style.display = 'none';

@@ -1486,9 +1486,12 @@
         renderOrg();
         buildActionFilter();
 
-        // Concurrent seats are a multi-venue-only concept — single-venue has no
-        // seat pool at all (unlimited staff, unchanged). The TAB is hidden rather
-        // than the card, so single-venue never sees a tab that leads nowhere.
+        // Concurrent seats are a multi-venue-only concept — single-venue ($29/mo)
+        // is licensed for one user, the owner, and has no seat pool at all (see
+        // add_team_member()/claim_seat()'s plan_tier checks in schema.sql). The
+        // TAB is hidden rather than the card, so single-venue never sees a tab
+        // that leads nowhere — though admin.html itself is already gated to
+        // multi-venue-only at the door, so this branch is defense in depth.
         if (currentOrg.planTier === 'multi') {
           $('tab-btn-seats').style.display = '';
           $('seat-count-input').value = currentOrg.concurrentSeats;

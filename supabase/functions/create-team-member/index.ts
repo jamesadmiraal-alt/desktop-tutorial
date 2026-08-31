@@ -86,10 +86,27 @@ Deno.serve(async (req) => {
   if (role !== "manager" && role !== "staff") return jsonResponse({ error: "Invalid role." }, 400);
 
   try {
-    const memberRes = await userDb(authHeader, `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role`);
+    const memberRes = await userDb(
+      authHeader,
+      `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role,organisations(plan_tier)`,
+    );
     const members = await memberRes.json();
     if (!members?.[0] || members[0].role !== "owner") {
       return jsonResponse({ error: "Only the owner can add team members." }, 403);
+    }
+
+    // Single-venue ($29/mo) is licensed for one user: the owner. Refuse
+    // before ever touching the Admin API — no auth user gets created here
+    // to then roll back, since there's nothing on this plan to add a team
+    // member to. add_team_member() (schema.sql) enforces the same rule
+    // server-side as a backstop; this check just avoids the wasted
+    // createUser/deleteUser round trip on the common case.
+    const planTier = members[0].organisations?.plan_tier;
+    if (planTier !== "multi") {
+      return jsonResponse(
+        { error: "Single-venue is just you — the owner. Upgrade to Multi-venue ($59/mo) to add team members. Extra concurrent seats on Multi are $29/mo each." },
+        403,
+      );
     }
 
     const tempPassword = randomSixDigitCode();

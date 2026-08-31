@@ -598,6 +598,13 @@ begin
   if target_org.id is null then
     raise exception 'Invalid organisation code.';
   end if;
+  -- Single-venue ($29/mo) is licensed for one user: the owner. Joining by
+  -- code is how a second person would otherwise get in for free, so this
+  -- has to be checked here, not just at the create-team-member/add_team_member
+  -- gate — join_organisation is a completely separate, self-service path.
+  if target_org.plan_tier is distinct from 'multi' then
+    raise exception 'This organisation is on the Single-venue plan (owner only). Ask the owner to upgrade to Multi-venue.';
+  end if;
   if target_org.daily_code is null
      or target_org.daily_code_date is distinct from current_date
      or target_org.daily_code is distinct from p_daily_code then
@@ -634,6 +641,13 @@ begin
   -- caller gets is a constraint violation instead of "you're not the owner".
   if public.my_role() is distinct from 'owner' then
     raise exception 'Only the owner can add team members.';
+  end if;
+  -- Single-venue ($29/mo) is licensed for one user: the owner. Team members
+  -- are a Multi-venue ($59/mo) feature; extra concurrent seats on Multi are
+  -- $29/mo each. adopt_existing_team_member() delegates here via perform(),
+  -- so this one check covers both add paths.
+  if (select plan_tier from public.organisations where id = org_id) is distinct from 'multi' then
+    raise exception 'Single-venue is just you — the owner. Upgrade to Multi-venue ($59/mo) to add team members. Extra concurrent seats on Multi are $29/mo each.';
   end if;
   if p_role not in ('manager', 'staff') then
     raise exception 'Invalid role.';
@@ -2230,6 +2244,21 @@ begin
             auth.uid(), actor_label, jsonb_build_object('signed_out_previous_device', true));
 
     return jsonb_build_object('granted', true, 'took_over', true);
+  end if;
+
+  -- ---- Rule 1.5: single-venue is owner-only ----
+  -- A single-venue org ($29/mo) is licensed for one user: the owner. Any
+  -- other membership on it (e.g. a stale one left over from before the org
+  -- was downgraded from multi, or one created before this rule existed)
+  -- must never be able to claim an active session — that's exactly the
+  -- "second person logs in on the $29 plan" bypass this closes. Grouped
+  -- with 'pending' too (`is distinct from 'multi'`, not `= 'single'`):
+  -- an org that's never paid at all has even less business granting a
+  -- non-owner a session. The owner is unaffected on any plan — this only
+  -- checks v_role, and role='owner' already fell through Rule 1 above via
+  -- their own active_sessions row, or reaches the insert below untouched.
+  if v_plan is distinct from 'multi' and v_role is distinct from 'owner' then
+    return jsonb_build_object('granted', false, 'reason', 'single_venue_owner_only');
   end if;
 
   -- ---- Rule 2: the seat pool (multi-venue, non-owner) ----
