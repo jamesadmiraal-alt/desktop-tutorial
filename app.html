@@ -476,6 +476,16 @@
           <button type="button" class="pw-toggle" data-for="auth-pass2" title="Show password">Show</button>
         </div>
       </div>
+      <!-- Signup only. Unticked by default and unticked is a real answer: the
+           account works either way, and handle_new_user() records what they
+           chose with a timestamp. Separate from the account itself on purpose —
+           bundling consent into "Sign up" is what makes a list unusable. -->
+      <div id="marketing-row" style="display:none">
+        <label class="checkbox-row" style="margin-top:12px">
+          <input type="checkbox" id="auth-marketing">
+          <span>Email me tips and updates about Gantry</span>
+        </label>
+      </div>
     </div>
     <!-- Signup-only, and also shown on its own (auth-credentials hidden)
          when a signed-in user has no organisation yet — e.g. a retry after
@@ -496,6 +506,11 @@
       <input id="org-name" type="text" placeholder="e.g. The Local Bar">
       <label for="org-country">Country <small style="color:var(--text-dim)">(sets your billing currency)</small></label>
       <select id="org-country" autocomplete="country"></select>
+      <!-- Says what happens next, on the screen where it happens.
+           create_organisation() puts a new org on 'trial' with a venue and a
+           'Main' location, so this is a description of the outcome, not a promise
+           made somewhere else. No card is collected anywhere in this flow. -->
+      <div class="auth-note">Starts on the free trial — 5 products per stocktake, exports included, no card needed.</div>
     </div>
     <div id="org-join-row" style="display:none">
       <label for="org-join-code">Organisation code</label>
@@ -503,9 +518,12 @@
       <label for="org-daily-code">Today's code</label>
       <input id="org-daily-code" type="text" autocapitalize="none" placeholder="Shown live on the admin screen today">
     </div>
-    <!-- No free tier: shown instead of Home whenever a signed-in user's org
-         is still 'pending' (never paid, or a lapsed subscription) — see
-         showPaymentPendingPrompt(). Reuses the same .upgrade-opt/
+    <!-- Shown instead of Home whenever a signed-in user's org is 'pending'.
+         New signups no longer land here — create_organisation() starts them on
+         'trial' — so in practice this is now a LAPSED subscription, or an org
+         created before the trial existed and never converted. The copy stays
+         tier-neutral for that reason. See showPaymentPendingPrompt().
+         Reuses the same .upgrade-opt/
          .bill-annually-toggle wiring as the Account view's Single-venue
          upsell, just in a different place in the DOM. -->
     <div id="payment-pending-row" style="display:none">
@@ -620,6 +638,25 @@
   </div>
   <div class="acct-card" id="acct-subscription-card">
     <h3>Subscription</h3>
+    <!-- Trial. No "Manage subscription" button: there is no Stripe customer yet,
+         so the portal would 400 — the only action here is choosing a plan. -->
+    <div id="acct-plan-trial" style="display:none">
+      <!-- .free is the neutral pill variant, not a claim about the tier — a bare
+           .plan-badge has no background of its own and would render as loose text. -->
+      <span class="plan-badge free">Trial</span>
+      <div class="plan-desc">5 products per stocktake, as many stocktakes as you like, exports included. Pick a plan to count without the cap.</div>
+      <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
+      <button class="upgrade-opt" data-tier="single">
+        <span><span class="opt-name">Single-venue</span>
+          <div class="opt-sub">One venue, one user — just you.</div></span>
+        <span class="opt-price">$29<small>/mo</small></span>
+      </button>
+      <button class="upgrade-opt best" data-tier="multi">
+        <span><span class="opt-name">Multi-venue</span>
+          <div class="opt-sub">Several venues, and a team counting at the same time.</div></span>
+        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
+      </button>
+    </div>
     <div id="acct-plan-single" style="display:none">
       <span class="plan-badge pro">Single-venue plan</span>
       <div class="plan-desc">One user — you, the owner. 1 location, unlimited products per stocktake.</div>
@@ -869,6 +906,41 @@
       <button id="take-share">Share</button>
       <button id="take-clear" class="danger">Clear items</button>
       <button id="take-actions-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Trial limit =====
+     Raised when enforce_trial_scan_limit() refuses a sixth product. The two
+     .upgrade-opt buttons here need no wiring of their own: the load-time
+     querySelectorAll('.upgrade-opt') binds goUpgrade() and renderUpgradePrices()
+     fills the amounts from config.js, so these stay correct in every currency
+     without a second price list to keep in sync.
+
+     It explains the DIFFERENCE, not just the prices — someone who has just been
+     stopped mid-count is deciding between two plans for the first time, and
+     "$29 vs $59" alone doesn't tell them which one they are. -->
+<div id="trial-limit-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">That's the trial</div>
+    <p class="plan-desc" style="margin:10px 0 4px">
+      The trial covers <b>5 products per stocktake</b>, and you've just filled this one.
+      Everything you've counted is saved, and you can still export it.
+    </p>
+    <p class="plan-desc" style="margin:0 0 6px">Pick a plan to count without the cap:</p>
+    <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
+    <button class="upgrade-opt" data-tier="single">
+      <span><span class="opt-name">Single-venue</span>
+        <div class="opt-sub">One venue, one user — just you. Unlimited products and stocktakes.</div></span>
+      <span class="opt-price">$29<small>/mo</small></span>
+    </button>
+    <button class="upgrade-opt best" data-tier="multi">
+      <span><span class="opt-name">Multi-venue</span>
+        <div class="opt-sub">Several venues, and a team. Every venue's counts in one place, plus extra people counting at the same time.</div></span>
+      <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
+    </button>
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="trial-limit-close" class="flex">Not now</button>
     </div>
   </div>
 </div>
@@ -1224,6 +1296,10 @@
     closeQtyDialog();
     $('name-overlay').classList.remove('open');
     $('take-actions-overlay').classList.remove('open');
+    // Included so navigating away doesn't leave the trial wall stranded over
+    // Home. Nothing is lost by closing it: it holds no input, and the same
+    // options live in Account.
+    $('trial-limit-overlay').classList.remove('open');
     if (wasOpen) shieldGhostClicks();
   }
 
@@ -1313,6 +1389,7 @@
     $('tab-signup').classList.toggle('on', mode === 'signup');
     $('signup-name-row').style.display = mode === 'signup' ? '' : 'none';
     $('confirm-row').style.display = mode === 'signup' ? '' : 'none';
+    $('marketing-row').style.display = mode === 'signup' ? '' : 'none';
     $('login-extras').style.display = mode === 'login' ? '' : 'none';
     $('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
     $('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
@@ -1357,8 +1434,9 @@
     showView('auth');
   }
 
-  // No free tier: shown instead of Home whenever the signed-in user's org
-  // is 'pending' — never completed checkout, or a lapsed subscription (see
+  // Shown instead of Home whenever the signed-in user's org is 'pending'.
+  // Since the trial exists, a NEW signup no longer lands here — 'pending' now
+  // means a lapsed subscription, or an org created before the trial (see
   // refreshOrgStatus()). The upgrade-opt buttons here are the same ones
   // Account view's Single-venue card uses, just relocated — clicking one
   // goes straight to Stripe with this org's id as client_reference_id
@@ -1485,7 +1563,14 @@
       if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
       // Org creation/joining is a separate step after this succeeds — see
       // showOrgSetupPrompt() — so nothing org-related is validated here.
-      sb.auth.signUp({ email: email, password: pw, options: { data: { full_name: name } } }).then(function (res) {
+      // marketing_opt_in travels as signup metadata so handle_new_user() records
+      // it in the same transaction as the account — there is never a moment where
+      // someone exists with no recorded answer, and the client cannot set it for
+      // anybody else. Sent as a real boolean, and false is stored as false.
+      sb.auth.signUp({
+        email: email, password: pw,
+        options: { data: { full_name: name, marketing_opt_in: !!$('auth-marketing').checked } }
+      }).then(function (res) {
         done();
         if (res.error) { fail(res.error, 'Sign up failed'); return; }
         if (res.data.session) {
@@ -1889,8 +1974,13 @@
     // link into a "Multi-venue only" denied screen. Single-venue gets the
     // in-app Team view instead (#team-view) — same capability, different
     // surface, since it doesn't need admin.html's desktop/multi-venue UI.
+    // Trial goes with single, not multi: a trial org has one venue and one
+    // 'Main' location created for it, and renaming that location is the first
+    // thing most operators want ("Main" is not what they call their cellar).
+    // admin.html would deny them anyway.
     $('open-admin-btn').style.display = (canManage && currentOrg.planTier === 'multi') ? '' : 'none';
-    $('open-team-btn').style.display = (canManage && currentOrg.planTier === 'single') ? '' : 'none';
+    $('open-team-btn').style.display =
+      (canManage && (currentOrg.planTier === 'single' || currentOrg.planTier === 'trial')) ? '' : 'none';
     renderCountryDisplay();
   }
   // Shows the name (or an explicit prompt when it's never been set — accounts
@@ -1952,8 +2042,10 @@
   function renderPlan() {
     // Only ever called once currentOrg exists and isn't 'pending' —
     // refreshOrgStatus() intercepts and gates out the 'pending' case
-    // before this runs (see there).
+    // before this runs (see there). 'trial' does NOT get intercepted: it is a
+    // working tier, so it reaches here and gets its own card.
     var tier = currentOrg ? currentOrg.planTier : null;
+    $('acct-plan-trial').style.display = tier === 'trial' ? '' : 'none';
     $('acct-plan-single').style.display = tier === 'single' ? '' : 'none';
     $('acct-plan-multi').style.display = tier === 'multi' ? '' : 'none';
   }
@@ -2031,13 +2123,20 @@
     // Any leftover "account created" panel from a previous multi session would
     // otherwise sit above the upgrade copy and contradict it.
     if (!isMulti) $('team-add-member-result').style.display = 'none';
+    // Three states, not two: a trial org isn't on Single-venue, so telling it
+    // "Single-venue is just you" would name a plan they haven't bought and read
+    // as a downgrade.
+    var isTrial = !!(currentOrg && currentOrg.planTier === 'trial');
     $('team-add-member-title').textContent = isMulti
       ? 'Add team member'
-      : 'Single-venue is just you';
+      : (isTrial ? 'Counting with a team?' : 'Single-venue is just you');
     $('team-add-member-intro').textContent = isMulti
       ? 'Creates their login directly — no join code needed. They can change this password later from this app.'
-      : 'Single-venue ($29/mo) is just you — the owner. Upgrade to Multi-venue ($59/mo) to add the team. '
-        + 'Extra concurrent seats on Multi are $29/mo each.';
+      : (isTrial
+        ? 'The trial is just you. Single-venue ($29/mo) is one venue, one user; Multi-venue ($59/mo) adds '
+          + 'several venues and a team, at $29/mo per extra concurrent user.'
+        : 'Single-venue ($29/mo) is just you — the owner. Upgrade to Multi-venue ($59/mo) to add the team. '
+          + 'Extra concurrent seats on Multi are $29/mo each.');
 
     loadTeamAuditLog();
     Promise.all([
@@ -3224,6 +3323,11 @@
     sb.rpc('add_stocktake_item', {
       p_stocktake_id: currentTake.id, p_barcode: it.barcode, p_qty: qtyRound(delta)
     }).then(function (res) {
+      // Only reachable if the line was deleted on another device between the
+      // render and this tap, so add_stocktake_item() has to re-create it and
+      // meets the cap. Showing the plans is still the right answer — the count
+      // genuinely has no room for this line any more.
+      if (res.error && isTrialLimit(res.error)) { showTrialLimit(); return; }
       if (res.error) { fail({ message: it.barcode + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
       var row = Array.isArray(res.data) ? res.data[0] : res.data;
       // No row means nothing was written. Saying nothing here would leave the
@@ -3446,6 +3550,26 @@
     }
   });
 
+  // Matched on the message prefix raised by enforce_trial_scan_limit()
+  // (schema.sql). Prefix rather than the whole sentence so the copy can be
+  // reworded without silently turning the upgrade dialog back into a red toast —
+  // and if it ever IS renamed, the fallback is the plain message, which still
+  // says what happened.
+  function isTrialLimit(err) {
+    return /Trial limit reached/.test((err && err.message) || '');
+  }
+  function showTrialLimit() {
+    // This dialog can be the first upgrade surface someone ever sees — they may
+    // never have opened Account this session, so the buttons still carry their
+    // static AUD markup until this runs.
+    renderUpgradePrices();
+    $('trial-limit-overlay').classList.add('open');
+  }
+  $('trial-limit-close').onclick = function () {
+    $('trial-limit-overlay').classList.remove('open');
+    shieldGhostClicks();
+  };
+
   function closeQtyDialog() {
     var wasOpen = $('qty-overlay').classList.contains('open');
     dialogOpen = false;
@@ -3521,6 +3645,10 @@
         // taken over on another device a heartbeat ago, this write fails and the
         // number the operator just typed is gone. A bare "Save failed" would
         // leave them re-scanning blind, so name the barcode and the likely cause.
+        // The trial cap is not a failure to report — it is the moment the
+        // product asks to be bought. Show the plans instead of a red toast, and
+        // close the keypad so the dialog isn't stacked behind it.
+        if (res.error && isTrialLimit(res.error)) { closeQtyDialog(); showTrialLimit(); return; }
         if (res.error) { fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
         var row = Array.isArray(res.data) ? res.data[0] : res.data;
         if (!row) { fail({ message: code + ' was NOT saved. The server did not confirm the write.' }, ''); return; }
@@ -3550,6 +3678,10 @@
       },
       function (err) {
         done();
+        // Same branch as above. supabase-js surfaces a Postgres exception as
+        // res.error rather than a rejection, so this arm is belt-and-braces —
+        // but the operator must never see the cap as "network problem".
+        if (isTrialLimit(err)) { closeQtyDialog(); showTrialLimit(); return; }
         fail({ message: code + ' was NOT saved. ' + failHint(err) }, '');
       }
     );

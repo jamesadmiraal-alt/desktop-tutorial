@@ -175,10 +175,13 @@
      Scan bottles, cans and kegs, punch in the count, and export a clean CSV —
      no hardware, nothing to install.</p>
   <div class="cta-row">
-    <a class="btn success" href="app.html">Get started</a>
+    <a class="btn success" href="app.html">Start free trial</a>
     <a class="btn" href="#pricing">See pricing</a>
   </div>
-  <div class="note">Plans from $29/month.</div>
+  <!-- The cap is stated here rather than left to be discovered at the fifth
+       scan. "No card needed" is literally true — nothing in the signup flow
+       collects payment details. -->
+  <div class="note">5 products per stocktake, free — no card needed. Plans from $29/month.</div>
 </section>
 
 <section class="features wrap">
@@ -321,15 +324,19 @@
   <div class="steps">
     <div class="step"><div class="n">1</div><h3>Sign up</h3><p>Create your account with a name, email and password.</p></div>
     <div class="step"><div class="n">2</div><h3>Set up your organisation</h3><p>Name it and add your first venue — or join an existing one with a code.</p></div>
-    <div class="step"><div class="n">3</div><h3>Choose a plan</h3><p>Pick Single- or Multi-venue and check out securely with Stripe.</p></div>
-    <div class="step"><div class="n">4</div><h3>Scan</h3><p>Point your phone's camera at a barcode — beep, done.</p></div>
-    <div class="step"><div class="n">5</div><h3>Count</h3><p>The number pad pops up — type the quantity and save. Scan again to add to the count.</p></div>
-    <div class="step"><div class="n">6</div><h3>Export</h3><p>Download or share the finished stocktake as CSV — ready for your books or stock system.</p></div>
+    <!-- "Choose a plan" is step 6, not step 3: on the trial you scan, count and
+         export before any money changes hands, and these numbers are a real
+         sequence, so they have to match the order things actually happen in. -->
+    <div class="step"><div class="n">3</div><h3>Scan</h3><p>Point your phone's camera at a barcode — beep, done.</p></div>
+    <div class="step"><div class="n">4</div><h3>Count</h3><p>The number pad pops up — type the quantity and save. Scan again to add to the count.</p></div>
+    <div class="step"><div class="n">5</div><h3>Export</h3><p>Download or share the finished stocktake as CSV — ready for your books or stock system.</p></div>
+    <div class="step"><div class="n">6</div><h3>Choose a plan</h3><p>The trial covers 5 products per stocktake. When you need a full count, pick Single- or Multi-venue and check out securely with Stripe.</p></div>
   </div>
 </section>
 
 <section class="pricing wrap" id="pricing">
   <h2 class="section">Simple pricing</h2>
+  <p class="section-sub">Try it free first — 5 products per stocktake, as many stocktakes as you like, exports included. No card needed.</p>
   <div class="plans">
     <div class="plan">
       <h3>Single-venue</h3>

@@ -84,6 +84,19 @@ drop table if exists public.profiles cascade;
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text,   -- set at signup, for audit/history reference (who did a stocktake)
+  -- Did they tick the box at signup to hear from us. Written once by
+  -- handle_new_user() from the signup metadata; NOT in the client-writable
+  -- column grant below, so nobody can flip their own (or anyone else's) after
+  -- the fact without going through a deliberate future opt-out path.
+  --
+  -- Default false, and false is a real answer meaning "do not email". Under the
+  -- Australian Spam Act a commercial message needs consent, so the value of
+  -- this column is that it is EVIDENCE of what someone agreed to — which is
+  -- why the timestamp records when they said yes, not when the row appeared.
+  -- Transactional mail about their own account is a separate thing and is not
+  -- governed by this flag.
+  marketing_opt_in boolean not null default false,
+  marketing_opt_in_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -154,8 +167,18 @@ create table public.organisations (
   -- exist either — see the locations insert policy below) until the owner
   -- completes checkout for 'single' or 'multi'. stripe-webhook flips this
   -- and creates the org's first location together, on checkout.session.completed.
+  -- 'trial' is a WORKING tier, unlike 'pending'. A new org starts here with a
+  -- venue and one location already created (see create_organisation), so the
+  -- operator can scan immediately — capped at TRIAL_SCAN_LIMIT lines per
+  -- stocktake by enforce_trial_scan_limit() below. Exports are not capped: the
+  -- point of the trial is to see a real file come out the other end.
+  --
+  -- 'pending' still exists and still means "checkout never completed or the
+  -- subscription lapsed" — a hard stop with nothing usable behind it. A trial
+  -- has never paid either, but it has something to show; conflating the two
+  -- would either paywall the trial or let a lapsed customer keep counting.
   plan_tier text not null default 'pending'
-    check (plan_tier in ('pending', 'single', 'multi')),
+    check (plan_tier in ('pending', 'trial', 'single', 'multi')),
 
   -- Billing country, moved here from profiles.country — it's what currency
   -- checkout uses, and checkout is now an org-level action. Same 30-day
@@ -439,8 +462,23 @@ create trigger touch_stocktake_on_items
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.profiles (id, full_name)
-  values (new.id, new.raw_user_meta_data->>'full_name')
+  -- Marketing consent is captured HERE, from the signup metadata, rather than
+  -- written by the client afterwards. Two reasons: it is recorded in the same
+  -- transaction as the account (so there is no window where someone exists with
+  -- no recorded answer), and the client cannot set it for anybody else.
+  --
+  -- Default false. An absent or unparseable value means "did not consent",
+  -- never "assume yes" — the whole value of the flag is that it is evidence.
+  -- The timestamp is only stamped when they actually said yes, so it answers
+  -- "when did they agree" rather than "when did we ask".
+  insert into public.profiles (id, full_name, marketing_opt_in, marketing_opt_in_at)
+  values (
+    new.id,
+    new.raw_user_meta_data->>'full_name',
+    coalesce((new.raw_user_meta_data->>'marketing_opt_in')::boolean, false),
+    case when coalesce((new.raw_user_meta_data->>'marketing_opt_in')::boolean, false)
+         then now() end
+  )
   on conflict do nothing;
   return new;
 end $$;
@@ -564,6 +602,7 @@ create or replace function public.create_organisation(org_name text, org_country
 returns uuid language plpgsql security definer set search_path = public as $$
 declare
   new_org_id uuid;
+  new_venue_id uuid;
 begin
   if exists (select 1 from public.memberships where user_id = auth.uid()) then
     raise exception 'You already belong to an organisation.';
@@ -576,9 +615,22 @@ begin
   values (trim(org_name), org_country, substr(md5(random()::text || clock_timestamp()::text), 1, 8))
   returning id into new_org_id;
 
-  -- No location created here — the org starts 'pending' (see the column
-  -- comment above) and has no usable location until checkout completes;
-  -- stripe-webhook creates the first one alongside flipping plan_tier.
+  -- A new org starts on TRIAL, not 'pending', and gets somewhere to scan.
+  --
+  -- 'pending' deliberately had no venue or location, which is what made it a
+  -- hard paywall: with nowhere to put a stocktake there was nothing to do. A
+  -- trial has to be the opposite — the operator should be scanning within
+  -- seconds of signing up — so the first venue and location are created here
+  -- rather than waiting for stripe-webhook's ensureFirstVenue() on checkout.
+  --
+  -- The webhook still runs on upgrade and is idempotent about this, so an org
+  -- that trials and then pays does not end up with two venues.
+  update public.organisations set plan_tier = 'trial' where id = new_org_id;
+
+  insert into public.venues (org_id, name) values (new_org_id, trim(org_name))
+  returning id into new_venue_id;
+  insert into public.locations (org_id, venue_id, name)
+  values (new_org_id, new_venue_id, 'Main');
 
   insert into public.memberships (org_id, user_id, role) values (new_org_id, auth.uid(), 'owner');
 
@@ -1736,6 +1788,60 @@ drop trigger if exists stocktake_items_block_when_completed on public.stocktake_
 create trigger stocktake_items_block_when_completed
   before insert or update or delete on public.stocktake_items
   for each row execute function public.enforce_stocktake_not_completed();
+
+-- ==========================================================================
+-- The trial: five lines per stocktake, exports uncapped.
+--
+-- Five LINES, not five scan events. Scanning the same barcode again adds to the
+-- line it already made, which is the app's core behaviour and must not be what
+-- burns the allowance — an operator counting six bottles of one wine has used
+-- one of their five, not six.
+--
+-- INSERT only. Editing a quantity, stepping it with +/-, and re-exporting all
+-- stay open: the cap is on how much of a count you can build, not on correcting
+-- what you have built. Exports are deliberately never capped — the whole point
+-- of the trial is seeing a real file come out the other end.
+--
+-- Unlimited stocktakes, each capped. A trial operator can start as many as they
+-- like and will meet this wall in each one, which is the intended shape: enough
+-- to prove the workflow, not enough to count a cellar.
+--
+-- A trigger rather than the insert POLICY (where the old free-plan's 3-product
+-- cap used to live) because add_stocktake_item() is security definer and
+-- bypasses RLS — a policy would miss the app's own scan path entirely. The
+-- message is prefixed 'Trial limit reached' and the client matches on that to
+-- raise the upgrade dialog, so keep the prefix stable if the wording changes.
+-- ==========================================================================
+create or replace function public.enforce_trial_scan_limit()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_plan text;
+  v_lines integer;
+begin
+  select o.plan_tier into v_plan
+    from public.stocktakes s
+    join public.organisations o on o.id = s.org_id
+   where s.id = new.stocktake_id;
+
+  if v_plan is distinct from 'trial' then
+    return new;
+  end if;
+
+  select count(*) into v_lines
+    from public.stocktake_items i where i.stocktake_id = new.stocktake_id;
+
+  if v_lines >= 5 then
+    raise exception 'Trial limit reached — the trial covers 5 products per stocktake. Choose a plan to keep counting.'
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end $$;
+
+drop trigger if exists stocktake_items_trial_limit on public.stocktake_items;
+create trigger stocktake_items_trial_limit
+  before insert on public.stocktake_items
+  for each row execute function public.enforce_trial_scan_limit();
 
 -- ==========================================================================
 -- One OPEN stocktake per name per org.
