@@ -104,12 +104,31 @@
   .plan-desc { color: var(--text-dim); font-size: 0.88rem; line-height: 1.5; }
   .upgrade-opt {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    flex-wrap: wrap;
     width: 100%; text-align: left; margin-top: 10px; padding: 14px;
     border: 1px solid var(--border); background: var(--bg); border-radius: 12px;
   }
+  /* `flex: 1 1 0` — a zero basis, not `auto`. With an auto basis the column
+     asks for its full max-content width, which on a long description exceeds
+     the row and (now that the row wraps) shoves the price onto its own line.
+     A zero basis makes it take whatever is left beside the price instead.
+     min-width: 0 is what actually lets it shrink: without it a flex item
+     refuses to go below its longest unbreakable content, which is how
+     "Multi-venue" ended up wrapping one letter per line. */
+  .upgrade-opt > span:first-child { flex: 1 1 0; min-width: 0; }
   .upgrade-opt .opt-name { font-weight: 700; }
   .upgrade-opt .opt-sub { font-size: 0.78rem; color: var(--text-dim); font-weight: 400; margin-top: 2px; }
-  .upgrade-opt .opt-price { font-weight: 800; font-size: 1.05rem; white-space: nowrap; }
+  .upgrade-opt .opt-price { font-weight: 800; font-size: 1.05rem; white-space: nowrap; flex: 0 0 auto; }
+  /* Multi's per-seat qualifier is a footnote to the whole option, not part of
+     the amount. It used to sit inside .opt-price, where `white-space: nowrap`
+     made a ~230px sentence unshrinkable — inside a 360px dialog that starved
+     the name and description beside it down to a single-word column. Full
+     width on its own line instead; `flex: 1 0 100%` forces the wrap. */
+  .upgrade-opt .opt-note {
+    flex: 1 0 100%; font-size: 0.72rem; font-weight: 400;
+    color: var(--text-dim); margin-top: 6px;
+  }
+  .upgrade-opt .opt-note:empty { display: none; }
   .upgrade-opt.best { border-color: var(--success); }
   .save-tag {
     background: var(--success); color: var(--on-accent); font-size: 0.68rem; font-weight: 700;
@@ -537,7 +556,8 @@
       <button class="upgrade-opt best" data-tier="multi">
         <span><span class="opt-name">Multi-venue</span>
           <div class="opt-sub">Unlimited venues and locations</div></span>
-        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
+        <span class="opt-price">$59<small>/mo</small></span>
+        <span class="opt-note">+$29/mo per extra concurrent user</span>
       </button>
     </div>
     <!-- Multi-venue only: all of this org's purchased concurrent seats are
@@ -654,7 +674,8 @@
       <button class="upgrade-opt best" data-tier="multi">
         <span><span class="opt-name">Multi-venue</span>
           <div class="opt-sub">Several venues, and a team counting at the same time.</div></span>
-        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
+        <span class="opt-price">$59<small>/mo</small></span>
+        <span class="opt-note">+$29/mo per extra concurrent user</span>
       </button>
     </div>
     <div id="acct-plan-single" style="display:none">
@@ -665,7 +686,8 @@
       <button class="upgrade-opt" data-tier="multi">
         <span><span class="opt-name">Upgrade to Multi-venue</span>
           <div class="opt-sub">Unlimited venues and locations</div></span>
-        <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
+        <span class="opt-price">$59<small>/mo</small></span>
+        <span class="opt-note">+$29/mo per extra concurrent user</span>
       </button>
       <div id="acct-note">Thanks for supporting Gantry!</div>
     </div>
@@ -936,8 +958,9 @@
     </button>
     <button class="upgrade-opt best" data-tier="multi">
       <span><span class="opt-name">Multi-venue</span>
-        <div class="opt-sub">Several venues, and a team. Every venue's counts in one place, plus extra people counting at the same time.</div></span>
-      <span class="opt-price">$59<small>/mo</small><br><small>+$29/mo per extra concurrent user</small></span>
+        <div class="opt-sub">Several venues, and a team counting at the same time — every venue's counts in one place.</div></span>
+      <span class="opt-price">$59<small>/mo</small></span>
+      <span class="opt-note">+$29/mo per extra concurrent user</span>
     </button>
     <div class="dialog-actions" style="margin-top:14px">
       <button id="trial-limit-close" class="flex">Not now</button>
@@ -1897,15 +1920,24 @@
     document.querySelectorAll('.upgrade-opt').forEach(function (b) {
       var priceEl = b.querySelector('.opt-price');
       if (!priceEl) return;
+      // The per-seat line lives outside .opt-price so it can wrap — see the
+      // .opt-note rule. Single-tier buttons have no .opt-note at all, hence the
+      // null guard; and it is cleared rather than left stale, since one button
+      // can be re-rendered for either tier.
+      var noteEl = b.querySelector('.opt-note');
       var tier = b.dataset.tier;
       var tierInfo = info[tier] || {};
       var symbol = tierInfo.symbol || '$';
       var entry = tierInfo[period] || {};
       if (tier === 'multi') {
-        priceEl.innerHTML = symbol + (entry.basePrice || (billAnnually ? '590' : '59')) + '<small>' + unit + '</small><br>' +
-          '<small>+' + symbol + (entry.perSeatPrice || (billAnnually ? '290' : '29')) + unit + ' per extra concurrent user</small>';
+        priceEl.innerHTML = symbol + (entry.basePrice || (billAnnually ? '590' : '59')) + '<small>' + unit + '</small>';
+        if (noteEl) {
+          noteEl.textContent = '+' + symbol + (entry.perSeatPrice || (billAnnually ? '290' : '29'))
+            + unit + ' per extra concurrent user';
+        }
       } else {
         priceEl.innerHTML = symbol + (entry.price || (billAnnually ? '290' : '29')) + '<small>' + unit + '</small>';
+        if (noteEl) noteEl.textContent = '';
       }
     });
   }
