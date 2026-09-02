@@ -129,7 +129,7 @@ knows which org to upgrade.
 
 ## 4. Fill in the webhook's price → tier map
 
-`supabase/functions/stripe-webhook/index.ts` has a `PRICE_TIER_MAP` near the top,
+`supabase/functions/super-stripewebhooks/index.ts` has a `PRICE_TIER_MAP` near the top,
 currently empty (placeholder). For each of the 16 prices created in §1, find its
 Price ID (Stripe Dashboard → Product catalog → the product → the price → copy
 the ID, looks like `price_1AbCdE...`) and add an entry — the map only needs to
@@ -161,31 +161,52 @@ Update this (and redeploy, §7) every time you add a new price/Payment Link.
 
 ## 5. Deploy the webhook (Supabase)
 
-The function lives at `supabase/functions/stripe-webhook/index.ts`. It now makes
-one outbound Stripe API call per checkout (to determine which tier was
+The function lives at `supabase/functions/super-stripewebhooks/index.ts` and is
+deployed under that same slug.
+
+**The name is historical, and until 2026-09-02 the folder and the deployed slug
+disagreed** — the folder was `stripe-webhook` while the live function (the one
+Stripe actually calls) was `super-stripewebhooks`. Since the CLI deploys by
+folder name, `supabase functions deploy stripe-webhook` created a *second*
+function that nothing called, while the real one stayed on the old code — a
+deploy that reports success and changes nothing. The folder was renamed to match
+so that can't happen again. **Don't rename either one back.**
+
+It makes one outbound Stripe API call per checkout (to determine which tier was
 purchased), so it needs `STRIPE_SECRET_KEY` — see §8, which you likely already
 added for `create-portal-session`/`delete-account`; Supabase secrets are
-project-wide, so nothing extra to do there if so.
+project-wide, so nothing extra to do there if so. It also *optionally* sends the
+"thanks for upgrading" email — see [`EMAIL-SETUP.md`](EMAIL-SETUP.md); with no
+mail provider secret the checkout works exactly as before and the send is
+skipped.
 
-**Easiest — dashboard editor:** Supabase Dashboard → **Edge Functions** → **Deploy a new
-function** → via editor → name it `stripe-webhook`, paste the file's contents, deploy.
-Then under the function's settings **disable "Enforce JWT verification"** (Stripe calls
-it unauthenticated; it verifies its own signature instead).
-
-**Or via CLI:**
+**CLI:**
 
 ```sh
-supabase functions deploy stripe-webhook --no-verify-jwt --project-ref vfixdchbkmqryfhirphx
+supabase functions deploy super-stripewebhooks --no-verify-jwt --use-api --project-ref vfixdchbkmqryfhirphx
 ```
+
+`--no-verify-jwt` is specific to this function: Stripe calls it unauthenticated
+and it verifies its own HMAC signature instead. Every other function keeps JWT
+verification ON. `--use-api` bundles server-side, which is what you want when
+Docker isn't installed.
+
+**Or the dashboard editor:** Supabase Dashboard → **Edge Functions** →
+`super-stripewebhooks` → paste, deploy. Note it now imports
+`../_shared/email.ts`, so the editor needs both files, and JWT verification must
+stay **disabled** for this one.
 
 ## 6. Point Stripe at the webhook
 
 1. Stripe Dashboard → **Developers** → **Webhooks** → **+ Add endpoint** (or edit
    the existing one if you already had it from before the org-tier rework)
-2. Endpoint URL:
+2. Endpoint URL — the path is the deployed **slug** (see §5 on the name):
    ```
-   https://vfixdchbkmqryfhirphx.supabase.co/functions/v1/stripe-webhook
+   https://vfixdchbkmqryfhirphx.supabase.co/functions/v1/super-stripewebhooks
    ```
+   If Stripe currently points somewhere else, that endpoint is not the function
+   being maintained. Check it before assuming a webhook problem is a code
+   problem.
 3. Events to send: `checkout.session.completed`, `customer.subscription.deleted`,
    and **`customer.subscription.updated`** (new — covers a tier change made
    directly on a subscription, e.g. by you in the dashboard)
@@ -202,16 +223,16 @@ supabase functions deploy stripe-webhook --no-verify-jwt --project-ref vfixdchbk
 3. You're redirected back to the app with a "Payment received" message
 4. Within a few seconds the webhook flips the organisation's plan — open
    👤 Account and the matching plan badge should appear
-5. For Multi-venue specifically: in `admin.html`'s new "Concurrent seats"
-   card, set the seat count to 1 and click Update — check the Stripe
+5. For Multi-venue specifically: in `admin.html`'s "How many can count at once"
+   card, set the extra people to 1 and click Update — check the Stripe
    Dashboard's subscription afterward and confirm its quantity is 2
-   (1 base slot + 1 purchased seat)
+   (the owner's included slot + 1 purchased)
 6. To test cancellation: Stripe Dashboard → Customers → cancel the subscription →
-   the organisation drops back to Free
+   the organisation drops back to `pending` (locked out — there is no free tier)
 
 ## 8. Add the Stripe secret key to Supabase
 
-`stripe-webhook`, `create-portal-session`, `delete-account`, and
+`super-stripewebhooks`, `create-portal-session`, `delete-account`, and
 `set-seat-count` all call Stripe's API (not just verify inbound events), so
 they need your actual secret key.
 

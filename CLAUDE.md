@@ -51,11 +51,19 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   upgrading and hop back after. `app.html`'s `countryChangeEligible()` is only a client-side
   heads-up (shows the actual next-eligible date before bothering to make a request) — the
   trigger is the real boundary.
-- `supabase/functions/stripe-webhook/index.ts` — Deno edge function (deployed in Supabase
-  under the name **`super-stripewebhooks`**, note the different name!) that flips
-  `profiles.is_pro` on `checkout.session.completed` / `customer.subscription.deleted`.
-  Stripe calls it unauthenticated (JWT verification OFF, verifies its own HMAC signature
-  instead) and it never calls Stripe's API outbound — only `STRIPE_WEBHOOK_SECRET`.
+- `supabase/functions/super-stripewebhooks/index.ts` — Deno edge function that sets
+  `organisations.plan_tier` on `checkout.session.completed` /
+  `customer.subscription.deleted` / `customer.subscription.updated`, creates the org's
+  first venue+location if missing, and sends the welcome email. Stripe calls it
+  unauthenticated (JWT verification OFF — it verifies its own HMAC signature instead),
+  which is the opposite of every other function here, so its deploy needs
+  `--no-verify-jwt`. It DOES call Stripe's API outbound (to read the purchased price),
+  so it needs `STRIPE_SECRET_KEY` as well as `STRIPE_WEBHOOK_SECRET`.
+  **The folder name and the deployed slug must stay identical.** They disagreed until
+  2026-09-02 (folder `stripe-webhook`, slug `super-stripewebhooks`) and because the CLI
+  deploys by folder name, a deploy reported success while creating a second function
+  nothing called and leaving the live one on old code. Renaming either side re-arms
+  that trap.
 - `supabase/functions/create-portal-session/index.ts` and `.../delete-account/index.ts` —
   the opposite trust model from the webhook: JWT verification stays ON (they act on behalf
   of whoever calls them, identified from that caller's own session), and they *do* call
