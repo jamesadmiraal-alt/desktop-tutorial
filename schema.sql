@@ -84,10 +84,12 @@ drop table if exists public.profiles cascade;
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text,   -- set at signup, for audit/history reference (who did a stocktake)
-  -- Did they tick the box at signup to hear from us. Written once by
-  -- handle_new_user() from the signup metadata; NOT in the client-writable
-  -- column grant below, so nobody can flip their own (or anyone else's) after
-  -- the fact without going through a deliberate future opt-out path.
+  -- Did they tick the box at signup to hear from us. The box is PRE-TICKED as
+  -- of 2026-09-01 (opt-out), so this records what they submitted rather than
+  -- what was assumed. Written by handle_new_user() from the signup metadata,
+  -- and changed afterwards ONLY through set_marketing_opt_in() further down —
+  -- it is NOT in the client-writable column grant below, so no plain PATCH can
+  -- flip it on their own row or anyone else's.
   --
   -- Default false, and false is a real answer meaning "do not email". Under the
   -- Australian Spam Act a commercial message needs consent, so the value of
@@ -714,7 +716,7 @@ begin
   -- same sentence is returned by create-team-member (403) and shown on the Team
   -- view; keep the three in step if it is ever reworded.
   if (select plan_tier from public.organisations where id = org_id) is distinct from 'multi' then
-    raise exception 'Single-venue is just you — the owner. Upgrade to Multi-venue ($59/mo) to add team members. Extra concurrent seats on Multi are $29/mo each.';
+    raise exception 'Single-venue is just you — the owner. Multi-venue ($59/mo) lets you set up as many people as you like, and costs $29/mo for each extra person counting at the same time.';
   end if;
 
   if p_role not in ('manager', 'staff') then
@@ -1842,6 +1844,50 @@ drop trigger if exists stocktake_items_trial_limit on public.stocktake_items;
 create trigger stocktake_items_trial_limit
   before insert on public.stocktake_items
   for each row execute function public.enforce_trial_scan_limit();
+
+-- ==========================================================================
+-- Turning marketing email back off.
+--
+-- The signup checkbox is pre-ticked (opt-out), which makes a working off switch
+-- necessary rather than optional: consent that cannot be withdrawn isn't
+-- consent, and the practical alternative to an unsubscribe is people marking
+-- the mail as spam, which costs the sending domain far more.
+--
+-- An RPC rather than widening the column GRANT: profiles' client-writable grant
+-- is deliberately full_name only (see "update own profile" above), so no plain
+-- PATCH can set marketing_opt_in on any row. This function grants exactly one
+-- capability — change MY OWN answer — because auth.uid() is the row and is not
+-- a parameter.
+--
+-- marketing_opt_in_at answers "when did they agree", so it is stamped on yes
+-- and CLEARED on no. A stale agreed-at date left on someone who has opted out
+-- is precisely the field you would wrongly reach for to justify emailing them.
+-- ==========================================================================
+create or replace function public.set_marketing_opt_in(p_opt_in boolean)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare
+  v_opt_in boolean := coalesce(p_opt_in, false);
+begin
+  if auth.uid() is null then
+    raise exception 'Not signed in.';
+  end if;
+
+  update public.profiles
+     set marketing_opt_in = v_opt_in,
+         marketing_opt_in_at = case when v_opt_in then now() else null end
+   where id = auth.uid();
+
+  -- An UPDATE matching zero rows is a success in Postgres, and a user really
+  -- can have no profiles row (handle_new_user() only fires at signup), so
+  -- reporting success would leave the toggle showing an unstored preference.
+  if not found then
+    raise exception 'Your profile record is missing — log out and back in, then try again.';
+  end if;
+
+  return v_opt_in;
+end $$;
+
+grant execute on function public.set_marketing_opt_in(boolean) to authenticated;
 
 -- ==========================================================================
 -- One OPEN stocktake per name per org.

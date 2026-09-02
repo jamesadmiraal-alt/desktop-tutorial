@@ -479,7 +479,12 @@
       </div>
       <label for="auth-email">Email</label>
       <input id="auth-email" type="email" autocomplete="email" autocapitalize="none" inputmode="email">
-      <label for="auth-pass">Password</label>
+      <!-- The rule is stated before they type, not after they submit. It used to
+           only appear as a red toast once the form had been filled in and
+           rejected, which is the worst moment to learn it. Signup-only: on the
+           login tab the requirement is whatever their existing password already
+           is, and showing it there implies their old one might not qualify. -->
+      <label for="auth-pass">Password <small id="pw-rule" style="color:var(--text-dim);display:none">(at least 6 characters)</small></label>
       <div class="pw-field">
         <input id="auth-pass" type="password" autocomplete="current-password">
         <button type="button" class="pw-toggle" data-for="auth-pass" title="Show password">Show</button>
@@ -495,15 +500,25 @@
           <button type="button" class="pw-toggle" data-for="auth-pass2" title="Show password">Show</button>
         </div>
       </div>
-      <!-- Signup only. Unticked by default and unticked is a real answer: the
-           account works either way, and handle_new_user() records what they
-           chose with a timestamp. Separate from the account itself on purpose —
-           bundling consent into "Sign up" is what makes a list unusable. -->
+      <!-- Signup only, and pre-ticked by request: opt-out rather than opt-in.
+           Whichever way it is left, handle_new_user() records the actual answer
+           with a timestamp, so the record is of what they submitted rather than
+           what we assumed. The label stays plain and the box stays visible above
+           the button — a pre-ticked box that is also easy to miss is the part
+           that gets a sender blocklisted. Anyone can turn it off later in
+           Account (set_marketing_opt_in), which is what makes opt-out fair. -->
       <div id="marketing-row" style="display:none">
         <label class="checkbox-row" style="margin-top:12px">
-          <input type="checkbox" id="auth-marketing">
+          <input type="checkbox" id="auth-marketing" checked>
           <span>Email me tips and updates about Gantry</span>
         </label>
+        <!-- Signup-only, and stated rather than buried: this is the moment the
+             terms are being agreed to, so it is the moment they have to be
+             reachable. target=_blank so a half-filled form isn't lost to a
+             navigation — the password fields would come back empty. -->
+        <div class="auth-note" style="margin-top:10px">By creating an account you agree to our
+          <a href="terms.html" target="_blank" rel="noopener">Terms</a> and
+          <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</div>
       </div>
     </div>
     <!-- Signup-only, and also shown on its own (auth-credentials hidden)
@@ -512,7 +527,10 @@
          signup, or (org-setup-note below) a login where email confirmation
          meant the org never got created at signup time in the first place.
          See showOrgSetupPrompt(). -->
-    <div id="org-setup-note" class="auth-note" style="display:none">Signed in as <b id="org-setup-email"></b>.</div>
+    <!-- No full stop after the address: it renders hard against the domain and
+         reads as part of it ("…@gmail.com."), which on an email is exactly the
+         kind of character someone then tries to copy. -->
+    <div id="org-setup-note" class="auth-note" style="display:none">Signed in as <b id="org-setup-email"></b></div>
     <button id="org-setup-logout" class="link-btn" style="display:none">Log out</button>
     <div id="org-mode-row" style="display:none">
       <div class="auth-tabs">
@@ -530,6 +548,13 @@
            'Main' location, so this is a description of the outcome, not a promise
            made somewhere else. No card is collected anywhere in this flow. -->
       <div class="auth-note">Starts on the free trial — 5 products per stocktake, exports included, no card needed.</div>
+      <!-- Someone who already knows they need it shouldn't have to fill a
+           stocktake to five products and get stopped to find the plans. This
+           creates the organisation exactly as normal — it still lands on
+           'trial' — and simply routes to Account afterwards, where the trial
+           card already lists both plans in their currency. No separate
+           checkout, and nothing that can strand an org part-created. -->
+      <button id="skip-trial-btn" class="link-btn" type="button">Know you need it already? Choose a plan</button>
     </div>
     <div id="org-join-row" style="display:none">
       <label for="org-join-code">Organisation code</label>
@@ -557,7 +582,7 @@
         <span><span class="opt-name">Multi-venue</span>
           <div class="opt-sub">Unlimited venues and locations</div></span>
         <span class="opt-price">$59<small>/mo</small></span>
-        <span class="opt-note">+$29/mo per extra concurrent user</span>
+        <span class="opt-note">+$29/mo per extra person counting at the same time</span>
       </button>
     </div>
     <!-- Multi-venue only: all of this org's purchased concurrent seats are
@@ -633,6 +658,19 @@
         <button id="acct-name-save" class="primary flex">Save name</button>
       </div>
     </div>
+    <!-- The off switch for the pre-ticked signup box. It lives here, in the
+         personal card, because that is where someone looks for "settings about
+         me" — and it has to exist somewhere findable, or the only way to stop
+         the email is to mark it as spam. Writes via set_marketing_opt_in()
+         (schema.sql); the column itself stays outside the client-writable
+         grant. This is only about marketing — mail about your own account and
+         subscription is separate and unaffected, which the note says plainly. -->
+    <label style="margin-top:14px">Email</label>
+    <label class="checkbox-row">
+      <input type="checkbox" id="acct-marketing">
+      <span>Tips and updates about Gantry</span>
+    </label>
+    <div class="plan-desc" style="margin-top:4px">Turning this off doesn't affect emails about your account or subscription.</div>
   </div>
   <div class="acct-card">
     <h3>Organisation</h3>
@@ -675,7 +713,7 @@
         <span><span class="opt-name">Multi-venue</span>
           <div class="opt-sub">Several venues, and a team counting at the same time.</div></span>
         <span class="opt-price">$59<small>/mo</small></span>
-        <span class="opt-note">+$29/mo per extra concurrent user</span>
+        <span class="opt-note">+$29/mo per extra person counting at the same time</span>
       </button>
     </div>
     <div id="acct-plan-single" style="display:none">
@@ -687,13 +725,13 @@
         <span><span class="opt-name">Upgrade to Multi-venue</span>
           <div class="opt-sub">Unlimited venues and locations</div></span>
         <span class="opt-price">$59<small>/mo</small></span>
-        <span class="opt-note">+$29/mo per extra concurrent user</span>
+        <span class="opt-note">+$29/mo per extra person counting at the same time</span>
       </button>
       <div id="acct-note">Thanks for supporting Gantry!</div>
     </div>
     <div id="acct-plan-multi" style="display:none">
       <span class="plan-badge pro">Multi-venue plan</span>
-      <div class="plan-desc">Unlimited venues, locations and products. Add or remove concurrent user seats any time from the admin console — billing adjusts automatically.</div>
+      <div class="plan-desc">Unlimited venues, locations and products, and as many people set up as you like. Change how many can count at the same time from the admin console any time — billing adjusts automatically.</div>
       <button id="manage-sub-btn-multi" class="manage-sub-btn">Manage subscription</button>
       <div id="acct-note">Update your payment method, view invoices, or cancel — handled securely by Stripe.
         Trouble with the button above? Reply to your welcome email.</div>
@@ -703,6 +741,14 @@
   <div class="acct-footer-note">
     <div class="acct-footer-text">Permanently delete your account, all stocktakes, and your subscription. This can't be undone.</div>
     <button id="delete-account-btn">Delete account</button>
+  </div>
+  <!-- Reachable from inside the app, not only from the marketing site: someone
+       who signed up months ago has no reason to go back to index.html to find
+       out what they agreed to. Opened externally so it works the same in the
+       native WebView, where a relative link would leave the app shell. -->
+  <div class="acct-footer-note" style="text-align:center">
+    <button id="open-terms-btn" class="link-btn">Terms</button>
+    <button id="open-privacy-btn" class="link-btn">Privacy Policy</button>
   </div>
 </div>
 
@@ -932,6 +978,33 @@
   </div>
 </div>
 
+<!-- ===== Check your email =====
+     Shown after a signup that needs email confirmation. This used to be a
+     toast, which is the wrong shape for it: a toast fades, and the one thing
+     the operator has to do next happens outside the app entirely, so there is
+     nothing on screen to come back to. A dialog stays until dismissed.
+
+     It names the address, because a typo here is the single most common reason
+     the email "never arrives", and it says to check spam, because on the
+     default Supabase sender it very often is there. -->
+<div id="signup-sent-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Check your email</div>
+    <p class="plan-desc" style="margin:10px 0 4px">
+      We've sent a confirmation link to <b id="signup-sent-email"></b>.
+      Open it and you'll come straight back here to finish setting up.
+    </p>
+    <p class="plan-desc" style="margin:0">
+      Nothing after a minute or two? Check your spam folder — and check the
+      address above is right.
+    </p>
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="signup-resend" class="flex">Resend</button>
+      <button id="signup-sent-ok" class="primary flex">Got it</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Trial limit =====
      Raised when enforce_trial_scan_limit() refuses a sixth product. The two
      .upgrade-opt buttons here need no wiring of their own: the load-time
@@ -960,7 +1033,7 @@
       <span><span class="opt-name">Multi-venue</span>
         <div class="opt-sub">Several venues, and a team counting at the same time — every venue's counts in one place.</div></span>
       <span class="opt-price">$59<small>/mo</small></span>
-      <span class="opt-note">+$29/mo per extra concurrent user</span>
+      <span class="opt-note">+$29/mo per extra person counting at the same time</span>
     </button>
     <div class="dialog-actions" style="margin-top:14px">
       <button id="trial-limit-close" class="flex">Not now</button>
@@ -1323,6 +1396,7 @@
     // Home. Nothing is lost by closing it: it holds no input, and the same
     // options live in Account.
     $('trial-limit-overlay').classList.remove('open');
+    $('signup-sent-overlay').classList.remove('open');
     if (wasOpen) shieldGhostClicks();
   }
 
@@ -1406,6 +1480,15 @@
   // showOrgSetupPrompt(), after the account itself exists. Showing both
   // forms at once on a single screen is exactly what read as "messy and
   // confusing" before this split.
+  // Minimum password length, in ONE place. It is enforced at signup and at
+  // password reset, and now also stated on the form, so three things had to
+  // agree by hand. Supabase Auth has its own minimum (Dashboard -> Auth ->
+  // Password policy) — raising this without raising that means the server
+  // accepts what the app rejects, and lowering it means the reverse.
+  var PASSWORD_MIN = 6;
+  var passwordRule = 'at least ' + PASSWORD_MIN + ' characters';
+  $('pw-rule').textContent = '(' + passwordRule + ')';
+
   function setAuthMode(mode) {
     authMode = mode;
     $('tab-login').classList.toggle('on', mode === 'login');
@@ -1413,6 +1496,7 @@
     $('signup-name-row').style.display = mode === 'signup' ? '' : 'none';
     $('confirm-row').style.display = mode === 'signup' ? '' : 'none';
     $('marketing-row').style.display = mode === 'signup' ? '' : 'none';
+    $('pw-rule').style.display = mode === 'signup' ? '' : 'none';
     $('login-extras').style.display = mode === 'login' ? '' : 'none';
     $('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
     $('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
@@ -1513,13 +1597,18 @@
         + 'which covers one user — the owner. The owner can upgrade to Multi-venue ($59/mo) '
         + 'from their Account screen to add the team.';
     } else if (reason === 'no_seats_purchased') {
-      $('auth-heading').textContent = 'No staff seats yet';
-      $('seats-full-message').textContent = orgName + ' hasn’t purchased any concurrent staff '
-        + 'seats yet — ask the owner to add one from the admin console before you can log in here.';
+      // Says what to ask for in the words the owner will see on their own
+      // screen. "Hasn't purchased any concurrent staff seats" described the
+      // billing row rather than the situation, which is simply that only the
+      // owner can count right now.
+      $('auth-heading').textContent = 'Only the owner can count so far';
+      $('seats-full-message').textContent = 'On ' + orgName + ', only the owner can count at the '
+        + 'moment. Ask them to allow more people to count at the same time, from the admin console.';
     } else {
-      $('auth-heading').textContent = 'All seats are in use';
-      $('seats-full-message').textContent = 'All of ' + orgName + '’s concurrent user seats are '
-        + 'in use right now — ask a teammate to log out, or add another seat from the admin console.';
+      $('auth-heading').textContent = 'Everyone else is counting';
+      $('seats-full-message').textContent = orgName + ' has as many people counting right now as '
+        + 'the plan allows. Wait for someone to finish and log out, or ask the owner to allow one '
+        + 'more from the admin console.';
     }
     $('seats-full-row').style.display = '';
     showView('auth');
@@ -1549,21 +1638,45 @@
   // separate step from signUp() (see schema.sql's own comment on this) so a
   // bad invite code or name doesn't waste the signup itself — failure here
   // just re-shows the same toast-and-retry form.
+  // Set by "Know you need it already? Choose a plan" — see #skip-trial-btn.
+  // Only changes where we land AFTER the organisation is created, never how it
+  // is created: the org is still made on 'trial' by create_organisation(), so a
+  // failed or abandoned checkout leaves a working trial rather than a stranded
+  // org. Cleared on every attempt so a later plain "Continue" doesn't inherit it.
+  var skipTrialToPlans = false;
   function completeOrgSetup() {
     var validation = validateOrgFields();
     if (validation) { toast(validation, '#b91c1c'); return; }
     $('auth-submit').disabled = true;
+    $('skip-trial-btn').disabled = true;
+    var toPlans = skipTrialToPlans;
+    skipTrialToPlans = false;
     var rpcCall = orgSignupMode === 'create'
       ? sb.rpc('create_organisation', { org_name: $('org-name').value.trim(), org_country: $('org-country').value })
       : sb.rpc('join_organisation', { p_join_code: $('org-join-code').value.trim(), p_daily_code: $('org-daily-code').value.trim() });
     rpcCall.then(function (res) {
       $('auth-submit').disabled = false;
+      $('skip-trial-btn').disabled = false;
       if (res.error) { fail(res.error, 'Could not set up organisation'); return; }
       needsOrgSetup = false;
       toast('Account created — welcome!');
+      if (toPlans) {
+        // openAccount() runs its own refreshOrgStatus(), so the plan card and
+        // the prices are correct for the org that was just created. Home's
+        // lists aren't loaded yet — ‹ Back from Account calls loadTakes().
+        openAccount();
+        return;
+      }
       finishLogin();
     });
   }
+  // Joining an existing org has no trial to skip (its plan is whatever the
+  // owner pays for), so this only makes sense on the create side.
+  $('skip-trial-btn').onclick = function () {
+    if (orgSignupMode !== 'create') return;
+    skipTrialToPlans = true;
+    completeOrgSetup();
+  };
 
   function finishLogin() {
     refreshOrgStatus(function () {
@@ -1582,7 +1695,7 @@
     if (authMode === 'signup') {
       var name = $('auth-name').value.trim();
       if (!name) { toast('Enter your name', '#b91c1c'); done(); return; }
-      if (pw.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); done(); return; }
+      if (pw.length < PASSWORD_MIN) { toast('Password must be ' + passwordRule, '#b91c1c'); done(); return; }
       if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
       // Org creation/joining is a separate step after this succeeds — see
       // showOrgSetupPrompt() — so nothing org-related is validated here.
@@ -1590,9 +1703,20 @@
       // it in the same transaction as the account — there is never a moment where
       // someone exists with no recorded answer, and the client cannot set it for
       // anybody else. Sent as a real boolean, and false is stored as false.
+      //
+      // emailRedirectTo sends the confirmation link back to THIS page rather
+      // than Supabase's default site URL. supabase-js has detectSessionInUrl on
+      // by default, so arriving back establishes the session and boots straight
+      // into org setup — no separate landing page, and no "now go and log in"
+      // step. Same shape resetPasswordForEmail() already uses below. The URL
+      // must also be allowlisted in Auth -> URL Configuration, or Supabase
+      // silently falls back to the site URL (see EMAIL-SETUP.md).
       sb.auth.signUp({
         email: email, password: pw,
-        options: { data: { full_name: name, marketing_opt_in: !!$('auth-marketing').checked } }
+        options: {
+          data: { full_name: name, marketing_opt_in: !!$('auth-marketing').checked },
+          emailRedirectTo: location.origin + location.pathname
+        }
       }).then(function (res) {
         done();
         if (res.error) { fail(res.error, 'Sign up failed'); return; }
@@ -1601,8 +1725,10 @@
           $('auth-pass').value = ''; $('auth-pass2').value = '';
           showOrgSetupPrompt();
         } else {
-          toast('Check your email to confirm your account, then log in', '#2563eb');
-          setAuthMode('login');
+          // No session means email confirmation is on and the next thing they
+          // must do is leave the app. A toast would have faded before they got
+          // back from their inbox.
+          showSignupSent(email);
         }
       });
     } else {
@@ -1618,6 +1744,54 @@
   $('auth-submit').onclick = submitAuth;
   $('auth-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter' && authMode === 'login') submitAuth(); });
   $('auth-pass2').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAuth(); });
+
+  // ---- "Check your email" (signup with confirmation on) ----
+  // Holds the address so Resend can re-send to exactly what was submitted,
+  // rather than to whatever the field happens to contain by then — the field is
+  // cleared on the way out, and re-sending to a half-edited address would look
+  // like the first email had simply failed.
+  var signupSentEmail = '';
+  function showSignupSent(email) {
+    signupSentEmail = email;
+    $('signup-sent-email').textContent = email;
+    $('signup-resend').disabled = false;
+    $('signup-resend').textContent = 'Resend';
+    $('signup-sent-overlay').classList.add('open');
+  }
+  $('signup-sent-ok').onclick = function () {
+    $('signup-sent-overlay').classList.remove('open');
+    shieldGhostClicks();
+    // Their password is confirmed and typed; leaving them on Sign up would
+    // invite a second account when they come back from the inbox.
+    $('auth-pass').value = ''; $('auth-pass2').value = '';
+    setAuthMode('login');
+  };
+  // One send per tap, and the button stays disabled afterwards. Supabase rate
+  // limits this endpoint, so an operator tapping it four times gets errors
+  // rather than four emails — the button has to make that visible instead of
+  // inviting it.
+  $('signup-resend').onclick = function () {
+    if (!signupSentEmail) return;
+    $('signup-resend').disabled = true;
+    $('signup-resend').textContent = 'Sending…';
+    sb.auth.resend({
+      type: 'signup', email: signupSentEmail,
+      options: { emailRedirectTo: location.origin + location.pathname }
+    }).then(function (res) {
+      if (res && res.error) {
+        $('signup-resend').disabled = false;
+        $('signup-resend').textContent = 'Resend';
+        fail(res.error, 'Could not resend');
+        return;
+      }
+      $('signup-resend').textContent = 'Sent';
+      toast('Confirmation email sent again');
+    }, function (err) {
+      $('signup-resend').disabled = false;
+      $('signup-resend').textContent = 'Resend';
+      fail(err, 'Could not resend');
+    });
+  };
 
   // ---- Forgot / reset password ----
   $('forgot-pass-btn').onclick = function () {
@@ -1642,7 +1816,7 @@
   $('reset-pass-cancel').onclick = function () { $('reset-password-overlay').classList.remove('open'); };
   $('reset-pass-save').onclick = function () {
     var p1 = $('reset-pass1').value, p2 = $('reset-pass2').value;
-    if (p1.length < 6) { toast('Password must be at least 6 characters', '#b91c1c'); return; }
+    if (p1.length < PASSWORD_MIN) { toast('Password must be ' + passwordRule, '#b91c1c'); return; }
     if (p1 !== p2) { toast('Passwords do not match', '#b91c1c'); return; }
     $('reset-pass-save').disabled = true;
     sb.auth.updateUser({ password: p1 }).then(function (res) {
@@ -1662,7 +1836,7 @@
     if (!currentUser) return;
     var previousTier = currentOrg ? currentOrg.planTier : null;
     Promise.all([
-      sb.from('profiles').select('full_name').eq('id', currentUser.id).maybeSingle(),
+      sb.from('profiles').select('full_name, marketing_opt_in').eq('id', currentUser.id).maybeSingle(),
       sb.from('memberships')
         .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, heartbeat_interval_seconds)')
         .eq('user_id', currentUser.id).maybeSingle()
@@ -1670,6 +1844,7 @@
       var profileRes = results[0], memberRes = results[1];
       if (!profileRes.error && profileRes.data) {
         currentUser.name = profileRes.data.full_name || '';
+        currentUser.marketingOptIn = !!profileRes.data.marketing_opt_in;
       }
       if (!memberRes.error && memberRes.data && memberRes.data.organisations) {
         var org = memberRes.data.organisations;
@@ -1933,7 +2108,7 @@
         priceEl.innerHTML = symbol + (entry.basePrice || (billAnnually ? '590' : '59')) + '<small>' + unit + '</small>';
         if (noteEl) {
           noteEl.textContent = '+' + symbol + (entry.perSeatPrice || (billAnnually ? '290' : '29'))
-            + unit + ' per extra concurrent user';
+            + unit + ' per extra person counting at the same time';
         }
       } else {
         priceEl.innerHTML = symbol + (entry.price || (billAnnually ? '290' : '29')) + '<small>' + unit + '</small>';
@@ -1957,6 +2132,12 @@
   // Stripe checkout/billing-portal links above.
   var ADMIN_URL = 'https://jamesadmiraal-alt.github.io/desktop-tutorial/admin.html';
   $('open-admin-btn').onclick = function () { openExternal(ADMIN_URL); };
+  // Absolute for the same reason as ADMIN_URL: prepare-native.js copies only a
+  // whitelist of files into the native bundle, and these documents aren't in
+  // it, so a relative href would 404 inside the WebView.
+  var SITE_URL = 'https://jamesadmiraal-alt.github.io/desktop-tutorial/';
+  $('open-terms-btn').onclick = function () { openExternal(SITE_URL + 'terms.html'); };
+  $('open-privacy-btn').onclick = function () { openExternal(SITE_URL + 'privacy.html'); };
   function goUpgrade(plan) {
     var url = upgradeLink(plan);
     // On a real checkout link (Stripe Payment Link), identify the paying org
@@ -2026,17 +2207,53 @@
     $('acct-name-display-row').style.display = 'flex';
     $('acct-name-edit-row').style.display = 'none';
   }
+  // Reflects the stored value, never the last thing tapped: the checkbox is
+  // reset from currentUser on every render, so a refused or failed write can't
+  // leave the box showing a preference the server doesn't hold.
+  function renderMarketingPref() {
+    $('acct-marketing').checked = !!currentUser.marketingOptIn;
+  }
+  $('acct-marketing').onchange = function () {
+    var want = $('acct-marketing').checked;
+    $('acct-marketing').disabled = true;
+    sb.rpc('set_marketing_opt_in', { p_opt_in: want }).then(function (res) {
+      $('acct-marketing').disabled = false;
+      if (res.error) {
+        // Put the box back where the server still has it. Leaving it on the
+        // failed value would tell someone they had unsubscribed when they
+        // hadn't — the one error here that must not be quiet.
+        renderMarketingPref();
+        fail(res.error, 'Could not save your email preference');
+        return;
+      }
+      currentUser.marketingOptIn = res.data === true;
+      renderMarketingPref();
+      toast(currentUser.marketingOptIn ? 'You’ll get tips and updates' : 'Unsubscribed from tips and updates');
+    }, function (err) {
+      $('acct-marketing').disabled = false;
+      renderMarketingPref();
+      fail(err, 'Could not save your email preference');
+    });
+  };
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
     renderAccountName();
+    renderMarketingPref();
     renderOrgAccountInfo();
     renderPlan();
     renderUpgradePrices();
     showView('account');
-    // Refresh the org/plan from the server so a just-completed upgrade shows up
+    // Refresh the org/plan from the server so a just-completed upgrade shows up.
+    // renderPlan() belongs in here too, and its absence was a real gap: the
+    // first render above runs against whatever currentOrg held on arrival —
+    // which is null when Account is opened straight after create_organisation()
+    // (the skip-the-trial path), so the plan card would stay hidden until the
+    // view was left and re-entered.
     refreshOrgStatus(function () {
       renderAccountName();
+      renderMarketingPref();
       renderOrgAccountInfo();
+      renderPlan();
       renderUpgradePrices();
     });
   }
@@ -2165,10 +2382,11 @@
     $('team-add-member-intro').textContent = isMulti
       ? 'Creates their login directly — no join code needed. They can change this password later from this app.'
       : (isTrial
-        ? 'The trial is just you. Single-venue ($29/mo) is one venue, one user; Multi-venue ($59/mo) adds '
-          + 'several venues and a team, at $29/mo per extra concurrent user.'
-        : 'Single-venue ($29/mo) is just you — the owner. Upgrade to Multi-venue ($59/mo) to add the team. '
-          + 'Extra concurrent seats on Multi are $29/mo each.');
+        ? 'The trial is just you. Single-venue ($29/mo) is one venue, just you; Multi-venue ($59/mo) adds '
+          + 'several venues and lets you set up as many people as you like — $29/mo for each extra person '
+          + 'counting at the same time.'
+        : 'Single-venue ($29/mo) is just you — the owner. Multi-venue ($59/mo) lets you set up as many people '
+          + 'as you like, and costs $29/mo for each extra person counting at the same time.');
 
     loadTeamAuditLog();
     Promise.all([
@@ -4268,7 +4486,12 @@
         (function pollForUpgrade() {
           if (++upgradeChecks > 5) return;
           setTimeout(function () {
-            if (currentOrg && currentOrg.planTier !== 'pending') return;
+            // Stop once a PAID tier has landed — not merely once the tier is no
+            // longer 'pending'. Since the trial exists, most people arriving
+            // here are on 'trial', and the old test was already true on the
+            // first tick: the poll returned immediately, so the plan only
+            // caught up on the next refocus.
+            if (currentOrg && (currentOrg.planTier === 'single' || currentOrg.planTier === 'multi')) return;
             refreshOrgStatus();
             pollForUpgrade();
           }, upgradeChecks * 2000);
