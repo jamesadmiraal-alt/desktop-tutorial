@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#111827">
+<meta name="description" content="Gantry terms and conditions — plans, billing, the trial, cancellation and refunds.">
+<title>Terms &amp; Conditions — Gantry</title>
+<link rel="icon" type="image/svg+xml" href="icons/favicon.svg">
+<link rel="stylesheet" href="styles.css">
+<!-- Same small document stylesheet as privacy.html, kept in step by hand. Both
+     draw every colour from the shared tokens, so the palette and both themes
+     follow the rest of the site. -->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text-body); line-height: 1.65;
+  }
+  .doc { max-width: 68ch; margin: 0 auto; padding: 0 20px 72px; }
+
+  nav { display: flex; align-items: center; justify-content: space-between;
+        padding: 16px 20px; max-width: 68ch; margin: 0 auto; }
+  nav .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.02em;
+               display: inline-flex; align-items: center; color: var(--text); text-decoration: none; }
+  nav a.plain { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; padding: 8px 10px; }
+  nav a.plain:hover { color: var(--text); }
+  .brand-mark { flex: none; margin-right: 8px; vertical-align: -4px; }
+
+  h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.02em; color: var(--text);
+       margin: 24px 0 8px; text-wrap: balance; }
+  h2 { font-size: 1.15rem; color: var(--text); margin: 34px 0 10px; letter-spacing: -0.01em; }
+  h3 { font-size: 1rem; color: var(--text); margin: 22px 0 6px; }
+  p, li { margin-bottom: 12px; }
+  ul, ol { padding-left: 1.3em; }
+  a { color: var(--link); }
+  strong, b { color: var(--text); }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em;
+         background: var(--surface); padding: 1px 5px; border-radius: 5px; }
+
+  .updated { color: var(--text-faint); font-size: 0.9rem; margin-bottom: 24px; }
+  .draft { border: 1px solid var(--warning); border-radius: 12px;
+           padding: 14px 16px; margin: 20px 0 8px; background: var(--surface); }
+  .draft strong { color: var(--warning); }
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 12px; padding: 16px 18px; margin: 16px 0; }
+  .table-wrap { overflow-x: auto; margin: 16px 0; }
+  /* min-width is what makes .table-wrap actually do its job. Without it a
+     four-column table just squeezes to the viewport and each cell wraps to one
+     word per line — technically no page overflow, but unreadable on a phone.
+     With it the wrapper scrolls and the columns keep their shape.
+     privacy.html's table is two columns and needs no such floor. */
+  table { border-collapse: collapse; width: 100%; min-width: 32rem; font-size: 0.93rem; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text); font-weight: 600; }
+  /* Prices line up in a column, so they get tabular figures. */
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  footer { border-top: 1px solid var(--border); margin-top: 48px; padding: 24px 20px;
+           color: var(--text-faint); font-size: 0.9rem; text-align: center; }
+  footer a { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="brand" href="index.html">
+    <svg class="brand-mark" viewBox="0 0 40 40" width="20" height="20" aria-hidden="true">
+      <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+      <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+      <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+      <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+      <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+    </svg>
+    Gantry
+  </a>
+  <a class="plain" href="privacy.html">Privacy</a>
+</nav>
+
+<main class="doc">
+  <h1>Terms &amp; Conditions</h1>
+  <div class="updated">Last updated 1 September 2026</div>
+
+  <div class="draft">
+    <strong>Draft — not yet reviewed by a lawyer.</strong>
+    These terms describe how Gantry actually bills and behaves today. They have
+    not been checked by a legal professional and should be before they are
+    relied on.
+  </div>
+
+  <p>These terms apply when you use Gantry. If you are signing up on behalf of a
+  venue or company, you are agreeing to them for that business, and confirming
+  you are allowed to.</p>
+
+  <h2>1. What Gantry is</h2>
+  <p>Gantry turns a phone into a barcode scanner for stocktaking. You scan
+  products, enter quantities, and export the result as a CSV for your own books
+  or stock system.</p>
+  <p>Gantry records the counts you enter. It does not check them, value them, or
+  reconcile them against your POS. <b>The numbers are yours and you are
+  responsible for them</b> — including checking an export before you act on it.</p>
+
+  <h2>2. Accounts</h2>
+  <p>You need an email address and a password. Keep the password to yourself:
+  activity is attributed to the account that performed it, and that attribution
+  is the whole basis of the activity log.</p>
+  <p><b>One person per login.</b> Signing in on a new device signs the account
+  out of the previous one. Accounts are not for sharing — if two people need to
+  count, they need two logins.</p>
+  <p>An organisation has one owner, who controls billing, roles, and who can
+  count. Owners and managers can create logins for their staff.</p>
+
+  <h2>3. The trial</h2>
+  <p>New organisations start on a free trial. No card is required and nothing is
+  charged.</p>
+  <p>The trial allows <b>five products per stocktake</b>. You can create as many
+  stocktakes as you like, each with its own five, and exports are not limited.
+  Counting beyond five products in one stocktake requires a paid plan.</p>
+  <p>The trial has no time limit today. We may change or end it for new signups,
+  but we will not remove data you have already counted.</p>
+
+  <h2>4. Plans and prices</h2>
+  <p>Prices below are in Australian dollars and exclude any applicable taxes.
+  You are charged in the currency for the billing country you chose, and the
+  amount in your currency is shown at checkout before you pay.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Plan</th><th class="num">Monthly</th><th class="num">Yearly</th><th>Includes</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Single-venue</td>
+          <td class="num">$29</td>
+          <td class="num">$290</td>
+          <td>One venue and <b>one user — the owner</b>. Unlimited products and
+            stocktakes.</td>
+        </tr>
+        <tr>
+          <td>Multi-venue</td>
+          <td class="num">$59</td>
+          <td class="num">$590</td>
+          <td>Unlimited venues and locations. Set up as many people as you like
+            at no charge per person.</td>
+        </tr>
+        <tr>
+          <td>Extra person counting at the same time<br>
+            <span style="color:var(--text-faint);font-size:0.9em">(Multi-venue only)</span></td>
+          <td class="num">$29 each</td>
+          <td class="num">$290 each</td>
+          <td>The base Multi-venue plan covers the owner counting. Each
+            additional person counting <b>at the same moment</b> is charged.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>The distinction in that last row is the one to understand, because it is
+  what you are actually buying: <b>how many people you set up is unlimited and
+  free; how many can be counting simultaneously is what is billed.</b> Ten staff
+  with logins who never count at the same time cost the same as one.</p>
+
+  <h3>Changing how many can count at once</h3>
+  <p>You can increase it at any time and the change takes effect immediately.
+  <b>Each increase is billed for a minimum of one month</b>, so you cannot add
+  people for a busy weekend and remove them on the Monday. Adding more restarts
+  that month. Decreases take effect once the minimum period has passed.</p>
+
+  <h3>Billing country</h3>
+  <p>Your billing country sets your currency. It can be changed <b>once every 30
+  days</b>. That limit exists to stop the country being switched to a cheaper
+  currency immediately before checkout.</p>
+
+  <h2>5. Billing</h2>
+  <p>Payments are handled by Stripe. Subscriptions renew automatically —
+  monthly or yearly, depending on what you chose — until cancelled. Yearly plans
+  are charged in full up front.</p>
+  <p>If a payment fails, Stripe will retry. If it keeps failing the subscription
+  ends and section 6 applies.</p>
+  <p>Manage your payment method, billing address and invoices yourself through
+  the billing portal, reachable from Account in the app.</p>
+
+  <h2>6. Cancelling</h2>
+  <p>You can cancel at any time through the billing portal. There is no
+  cancellation fee and no notice period.</p>
+  <div class="card">
+    <p style="margin-bottom:0"><b>Read this before you cancel.</b> When a
+    subscription ends, the organisation is locked: your data is kept, but you
+    cannot open stocktakes or export them until you subscribe again.
+    <b>Export anything you still need before cancelling.</b> Resubscribing
+    restores access to the data as it was.</p>
+  </div>
+  <p>To remove the data as well, use Delete account in the app. That cancels the
+  subscription immediately and deletes the organisation's stocktakes. It cannot
+  be undone.</p>
+
+  <h2>7. Refunds</h2>
+  <p>We do not give refunds for part of a period you have already paid for, or
+  for time you did not use the service. The trial exists so you can find out
+  whether Gantry suits your venue before paying anything.</p>
+  <p>If something is genuinely broken, tell us — we would rather fix it or
+  refund it than argue. <b>Nothing in these terms excludes your rights under the
+  Australian Consumer Law</b>, which apply regardless of what this section
+  says.</p>
+
+  <h2>8. Acceptable use</h2>
+  <p>Don't share logins, try to reach another organisation's data, attack or
+  overload the service, or resell Gantry as your own product. We may suspend an
+  account that does.</p>
+
+  <h2>9. Availability</h2>
+  <p>We aim to keep Gantry available and working, but we do not promise
+  uninterrupted service. It depends on providers we do not control, and on your
+  device and internet connection. Scanning needs a working camera and a
+  connection to save.</p>
+  <p>We may change how features work. If a change materially reduces what you
+  are paying for, we will tell you.</p>
+
+  <h2>10. Your data</h2>
+  <p>Your stocktake data is yours. We do not sell it or use it for anything
+  other than providing the service. How it is handled is described in the
+  <a href="privacy.html">Privacy Policy</a>, which forms part of these terms.</p>
+  <p>Keep your own copies of anything that matters to you. CSV export exists
+  precisely so your records do not depend on us continuing to exist.</p>
+
+  <h2>11. Liability</h2>
+  <p>To the extent the law allows, Gantry is not liable for indirect or
+  consequential loss, or for losses arising from stock figures you entered,
+  exported or acted on. Where liability cannot be excluded, it is limited to the
+  amount you paid us in the previous 12 months.</p>
+  <p>Again: this does not limit rights that cannot be limited, including under
+  the Australian Consumer Law.</p>
+
+  <h2>12. Changes to these terms</h2>
+  <p>We may update these terms. The date at the top will change, and for
+  material changes we will tell you in the app or by email. Continuing to use
+  Gantry after a change means you accept it.</p>
+
+  <h2>13. Governing law</h2>
+  <p>These terms are governed by the law of Victoria, Australia, and its courts
+  have jurisdiction.</p>
+
+  <h2>14. Contact</h2>
+  <p><a href="mailto:support@gantrystocktake.com">support@gantrystocktake.com</a></p>
+</main>
+
+<footer>
+  Gantry — stocktaking for hospitality ·
+  <a href="index.html">Home</a> ·
+  <a href="privacy.html">Privacy Policy</a> ·
+  <a href="app.html">Open the app</a>
+</footer>
+
+</body>
+</html>

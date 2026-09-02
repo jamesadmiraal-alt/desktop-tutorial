@@ -66,6 +66,63 @@ one used in the plan copy and STRIPE-SETUP.md.
 
 ---
 
+## Ownership transfer, and the zero-owner hole
+
+**Designed 2026-08-24 while shipping venue/location archiving, not built.** Moved
+here from a plan file so it stops living somewhere temporary.
+
+Raised by a real event: an operator sold a venue. Archiving covered retiring the
+venue; handing the *business* over is still unbuilt.
+
+**What already exists, and is a latent bug.** The role dropdown in
+[admin.html](admin.html) already offers `owner`, so an owner can promote a
+co-owner today and that person can demote the original. Transfer is therefore
+*accidentally* possible but undesigned, unlogged as one event, and unguarded.
+
+The bug: `roleSelect.disabled = isSelf` is UI-only. The RLS policy
+`"owner update memberships"` ([schema.sql](schema.sql)) lets an owner update
+**any** row in their org including their own, so a direct API call can demote the
+last owner. The org is then permanently unmanageable — promoting anyone requires
+being an owner, and there is none. **Worth fixing whether or not transfer ships.**
+
+**Constraints found:**
+
+- `memberships.user_id` is **unique** — one org per user. The buyer must not
+  already belong to another Gantry org. Needs a clear error, not a constraint
+  violation.
+- The owner is **exempt from the concurrent-seat pool** (`claim_seat`), so a
+  window with two owners means two people counting free. Acceptable briefly; a
+  reason not to leave co-ownership as the permanent mechanism.
+- `delete-account` already blocks a sole owner from deleting while other members
+  exist, and the audit trail already survives the seller deleting their account
+  (`audit_log.actor_id` is `on delete set null` with `actor_label` snapshotted as
+  text). **No work needed there** — it already behaves correctly for a sale.
+
+**Proposed shape:**
+
+1. `transfer_ownership(p_new_owner_user_id uuid, p_outgoing_role text default 'manager')`
+   — `security definer`, owner-only, one transaction: promote the target, demote
+   the caller, write a single `organisation.ownership_transferred` audit row
+   naming both parties. One atomic event, not two role edits that can half-fail.
+2. `enforce_owner_exists` trigger on `memberships` (after update/delete,
+   statement-level): raise if the org is left with zero owners. Closes the hole
+   at the database, where the `isSelf` guard cannot reach.
+3. Admin UI: "Transfer ownership" in the Team tab, owner-only, typed confirmation
+   naming the incoming owner, plus a plain statement that billing does not move
+   automatically.
+4. A **manual** Stripe runbook in `STRIPE-SETUP.md`: update the Customer's email
+   to the buyer, buyer enters their own card via the Customer Portal, remove the
+   seller's card. Deliberately **not** automated — an edge function could change
+   the Customer's email but **cannot** move a payment method, so it would give a
+   false sense of completion while the seller's card was still on file and
+   chargeable.
+
+**Open question:** should the outgoing owner default to `manager` or be removed
+entirely? `manager` is safer (they can help during handover and can leave cleanly
+afterwards), but a clean sale may want them gone immediately.
+
+---
+
 ## Log exports
 
 **Raised 2026-08-19, while shipping the three-state workflow below.** Exports are

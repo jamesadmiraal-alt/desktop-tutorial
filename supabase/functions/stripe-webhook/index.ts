@@ -17,6 +17,13 @@
 //                            secrets are project-wide, so it's already
 //                            available here too, no new secret to add)
 // (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
+//
+// OPTIONAL: RESEND_API_KEY (or POSTMARK_SERVER_TOKEN) + MAIL_FROM enable the
+// "thanks for upgrading" email — see _shared/email.ts and EMAIL-SETUP.md.
+// Without them the checkout still completes exactly as before and the send is
+// skipped with a log line; email is never allowed to fail this webhook.
+
+import { mailFooter, sendEmail } from "../_shared/email.ts";
 
 const WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -56,6 +63,74 @@ const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
 };
 
 const encoder = new TextEncoder();
+
+const APP_URL = "https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html";
+
+// Says thank you, names what they just bought, and points at the two things
+// they will look for next (getting started, and where billing lives).
+//
+// Deliberately OUR email rather than relying on Stripe's receipt: the receipt
+// is a tax document and says nothing about the product. This is also the only
+// message that explains the one thing about Multi-venue people get wrong —
+// unlimited logins, paid concurrency — at the moment they have just paid for it.
+//
+// Fire-and-forget, exactly like notify-seat-denied: sendEmail() returns
+// { sent: false } instead of throwing when no provider secret is configured, so
+// this ships and does nothing until RESEND_API_KEY exists. It must never be
+// able to fail the webhook — Stripe retries a non-2xx, and retrying a payment
+// event because an email bounced would re-run the whole handler.
+async function sendUpgradeWelcome(tier: "single" | "multi", to: string | undefined, orgId: string) {
+  if (!to) {
+    console.log("upgrade welcome: no customer email on the session, skipping");
+    return;
+  }
+  const planLabel = tier === "multi" ? "Multi-venue" : "Single-venue";
+  // The ORGANISATION's name, not session.customer_details.name — the latter is
+  // whoever's card it was, and "Alex Taylor is now on Multi-venue" is not what
+  // the person who just bought a venue subscription expects to read. Best
+  // effort: a failed lookup falls back to "you're", never to a blank.
+  let orgName: string | undefined;
+  try {
+    const res = await db(`organisations?id=eq.${encodeURIComponent(orgId)}&select=name`);
+    if (res.ok) orgName = (await res.json())[0]?.name;
+  } catch (_) { /* name is a nicety; the email still goes without it */ }
+  const lines = [
+    `Thanks — ${orgName ? orgName + " is" : "you're"} now on Gantry ${planLabel}.`,
+    "",
+    tier === "multi"
+      ? [
+        "What you've got:",
+        "  · Unlimited venues and locations",
+        "  · Unlimited products in every stocktake",
+        "  · As many people set up as you like, at no charge per person",
+        "",
+        "One thing worth knowing: you pay for how many people can be COUNTING",
+        "AT THE SAME TIME, not for how many logins you create. Set everyone up.",
+        "Change how many can count at once any time from the admin console.",
+      ].join("\n")
+      : [
+        "What you've got:",
+        "  · Unlimited products in every stocktake",
+        "  · Unlimited stocktakes, and CSV export whenever you need it",
+        "",
+        "Single-venue covers one venue and one user — you. If you need staff",
+        "counting too, Multi-venue adds that; upgrade any time from Account.",
+      ].join("\n"),
+    "",
+    "Pick up where you left off:",
+    "  " + APP_URL,
+    "",
+    "Your invoices, card details and cancellation all live in the billing",
+    "portal — open it from Account in the app.",
+  ].join("\n");
+
+  const result = await sendEmail({
+    to,
+    subject: `You're on Gantry ${planLabel}`,
+    text: lines + mailFooter(),
+  });
+  if (!result.sent) console.log("upgrade welcome not sent:", result.provider, result.error ?? "");
+}
 
 async function verifyStripeSignature(payload: string, header: string): Promise<boolean> {
   // Stripe-Signature: t=<timestamp>,v1=<hmac>,...
@@ -235,6 +310,15 @@ Deno.serve(async (req) => {
         await setOrgPlan(orgId, tier, { customerId, subscriptionId, subscriptionItemId });
         const venueId = await ensureFirstVenue(orgId);
         await ensureFirstLocation(orgId, venueId);
+        // Last, and wrapped: everything above changes state that the customer
+        // has paid for, and none of it may be undone or retried because a mail
+        // provider had a bad minute. Stripe retries any non-2xx response, so a
+        // throw here would re-run the entire handler.
+        try {
+          await sendUpgradeWelcome(tier, session.customer_details?.email, orgId);
+        } catch (mailErr) {
+          console.error("upgrade welcome threw (ignored):", mailErr);
+        }
         break;
       }
       case "customer.subscription.deleted": {

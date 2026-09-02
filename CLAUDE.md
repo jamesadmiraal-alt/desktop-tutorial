@@ -6,15 +6,37 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 ## Architecture
 
 - **No build step.** Plain HTML/CSS/JS, libraries vendored into the repo (no CDNs).
-- `index.html` — marketing landing page (features, pricing: Free vs Pro $29/mo or $290/yr).
+- `index.html` — marketing landing page (features, POS interest form, pricing: Trial /
+  Single-venue $29/mo or $290/yr / Multi-venue $59/mo or $590/yr).
+- `privacy.html`, `terms.html` — static legal pages, linked from the site footer, the
+  signup form and Account. **Both are marked as drafts pending legal review** — say so
+  if asked, and don't quietly remove the banner.
 - `app.html` — the whole app: auth, stocktake list, scanner, account/subscription views.
   All views live in one file, toggled via `showView()`.
 - `config.js` — Supabase URL + anon key, Stripe Payment Link URLs (`upgradeUrls`, keyed by
   currency). The anon key and payment links are safe to commit. **Never commit `sk_` Stripe
   keys or `service_role` keys.**
-- `schema.sql` — idempotent; the whole DB: `profiles` (with `is_pro`, `stripe_customer_id`,
-  `country`), `stocktakes`, `stocktake_items`, triggers, RLS. The free-plan limit (3 distinct
-  products per stocktake) is enforced BOTH client-side and by the RLS insert policy.
+- `schema.sql` — idempotent; the whole DB: `organisations` (`plan_tier`,
+  `stripe_customer_id`, `country`, `concurrent_seats`), `profiles`, `memberships`,
+  `venues`, `locations`, `stocktakes`, `stocktake_items`, `audit_log`, triggers, RLS.
+  **NOTE: parts of the older text in this file predate the org model** — there is no
+  `is_pro` column and no free tier; billing is org-scoped, not per-user.
+- **Plan tiers** (`organisations.plan_tier`): `trial` → `single` / `multi`, plus
+  `pending`, which is now only a **lapsed** subscription or an org created before the
+  trial existed. `create_organisation()` starts a new org on `trial` *with* a venue and
+  a `Main` location — `pending` deliberately had neither, which is what made it a
+  paywall rather than a trial.
+- **The trial cap is 5 products per stocktake**, unlimited stocktakes, exports never
+  capped. Enforced by the `enforce_trial_scan_limit()` BEFORE INSERT trigger — a
+  trigger and NOT an RLS policy, because `add_stocktake_item()` is `security definer`
+  and bypasses policies, so a policy would miss the app's own scan path. The exception
+  message is prefixed `Trial limit reached`; `app.html` matches on that prefix to raise
+  the upgrade dialog instead of a red toast, so keep the prefix if you reword it.
+- **Marketing consent**: the signup box is **pre-ticked** (opt-out, by request).
+  `handle_new_user()` records what was actually submitted plus a timestamp.
+  `profiles.marketing_opt_in` is NOT in the client-writable column GRANT — the only way
+  to change it is `set_marketing_opt_in()`, which is self-only and is what the Account →
+  Email toggle calls. Don't "simplify" that by widening the GRANT.
 - Checkout currency: operators pick a country at signup, or change it later in 👤 Account via
   the "Change region" confirm dialog (not an always-open `<select>` — that's deliberate, see
   below). Stored as `profiles.country`. `app.html`'s `COUNTRY_CURRENCY` maps it to a currency,
@@ -87,16 +109,34 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 
 ## Conventions & gotchas
 
-- Pricing appears in FOUR places — landing page, account view, upgrade dialog, README —
-  keep them in sync (grep for `$29` / `$290`). This is reference-price *text* only; it's
-  not currency-aware — see STRIPE-SETUP.md for setting up the actual per-currency links.
+- Pricing appears in SIX places — landing page, account view (three plan cards), the
+  trial wall, the payment-pending screen, `terms.html`, and README — keep them in sync
+  (grep for `$29` / `$290` / `$59`). The in-app prices ARE re-rendered per currency by
+  `renderUpgradePrices()` from `config.js`; the static markup is the AUD fallback, and
+  the README/terms figures are reference text only.
 - Verify changes by driving the app headless with Playwright; the repo verify skill at
   `.claude/skills/verify/SKILL.md` documents the recipe, including how to fake a camera
   stream (y4m with a QR) to test real barcode decoding end to end.
 - `client_reference_id` + `prefilled_email` are appended to payment links by the app —
   the webhook depends on this to match the paying user.
-- Free-plan gate: `FREE_LIMIT` in app.html AND the `< 3` in schema.sql's insert policy.
-  Change both together.
+- **Users vs seats is the pricing model, and the words matter.** Two separate things,
+  and users conflated them until the copy was fixed on 2026-09-01: **how many people
+  you set up** is unlimited and free on Multi-venue, while **how many can be counting
+  at the same time** is what's billed ($29/mo each beyond the owner). Say "people" and
+  "at the same time" in anything user-facing; "concurrent user" and "seat" are the
+  billing terms and belong in Stripe and in code, not on screen. The column stays
+  `concurrent_seats` — this is a copy convention, not a rename.
+  One sentence lives in THREE places and schema.sql says so: `add_team_member()`'s
+  exception, `create-team-member`'s 403 body, and the Team view in app.html. Reword all
+  three together, and a schema reword needs a migration since the string is in the DB.
+- Password minimum is `PASSWORD_MIN` in app.html — used by signup, password reset AND
+  the hint on the form. Supabase Auth has its own minimum (Dashboard → Auth → Password
+  policy); raising one without the other means the server accepts what the app rejects.
+- Email: `supabase/functions/_shared/email.ts` is a provider-agnostic sender chosen by
+  which secret exists, and it returns `{sent:false}` rather than throwing when none is
+  configured — so callers must treat a failed send as non-fatal. Auth email (confirm
+  signup, password reset) is separate and comes from Supabase's own mailer. See
+  `EMAIL-SETUP.md`; **none of it delivers until Gantry has a verified sending domain.**
 - Export shape comes from `organisations.export_format`, set once per org by the owner in
   admin.html. `'standard'` is `barcode,count` with no header row and **no BOM** — verified
   against a real Bepoz importer after a trial where Gantry's own 5-column CSV matched no

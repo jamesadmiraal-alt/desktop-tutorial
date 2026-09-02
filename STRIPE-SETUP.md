@@ -77,6 +77,28 @@ toast or re-checks the plan, and they have to find their own way back to Gantry.
 The redirect is per-link, so a link added later can silently miss it while every
 other link works. Worth re-checking all 16 whenever checkout "feels" wrong.
 
+### Also turn on billing address collection
+
+On each link, under **Options → Collect customer addresses**, set **Billing
+address** to **Required**. Two reasons, and neither is optional in practice:
+
+- **A tax invoice needs the buyer's address.** Venues hand invoices to their
+  bookkeeper, and one without an address gets sent back. Stripe puts the
+  collected address on the invoice automatically.
+- **The country Gantry holds is not the country they trade in.** `profiles.country`
+  is whatever the operator picked to set their *currency*, and it can be changed.
+  It was never meant to be a billing address.
+
+The address lands on the Stripe Customer, so nothing changes in the app or the
+database, and customers can update it themselves in the Customer Portal
+(section 10). This is also per-link, so a link added later misses it — the same
+trap as the redirect above.
+
+**Stripe Tax is deliberately not enabled.** It would calculate and show GST/VAT
+correctly per country, which is the right end state, but it requires a tax
+registration in each jurisdiction you collect for. That's a business decision to
+make once EU/UK volume is real, not a setup step to tick now.
+
 ## 3. Put the links into the app
 
 In `config.js`'s `upgradeUrls`, keyed by currency → tier → period (leave a
