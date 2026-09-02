@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
       return jsonResponse(
         {
           error:
-            "Single-venue is just you — the owner. Upgrade to Multi-venue ($59/mo) to add team members. Extra concurrent seats on Multi are $29/mo each.",
+            "Single-venue is just you — the owner. Multi-venue ($59/mo) lets you set up as many people as you like, and costs $29/mo for each extra person counting at the same time.",
         },
         403,
       );

@@ -285,7 +285,7 @@
   <div class="tabs" role="tablist">
     <button role="tab" data-tab="venues" aria-selected="true">Venues</button>
     <button role="tab" data-tab="team" aria-selected="false">Team</button>
-    <button role="tab" data-tab="seats" aria-selected="false" id="tab-btn-seats" style="display:none">Seats</button>
+    <button role="tab" data-tab="seats" aria-selected="false" id="tab-btn-seats" style="display:none">Counting at once</button>
     <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
   </div>
 
@@ -316,8 +316,10 @@
       <b>Managers</b> do all of that, plus manage venues and locations, delete stocktakes, clear items,
       and see this console — including who's logged in and the activity log.<br>
       <b>Owner</b> — you — additionally controls the team itself (adding people, changing roles,
-      removing them) and everything billing: the plan, seats, region and codes. There's one owner.<br>
-      <span style="color:var(--text-dim)">Only the owner is free of a concurrent seat; managers and staff each use one while logged in.</span>
+      removing them) and everything billing: the plan, how many can count at once, region and codes.
+      There's one owner.<br>
+      <span style="color:var(--text-dim)">You can set up as many people as you like. Only <b>you</b> are
+      always included — every manager or staff member takes one of the paid slots while they're logged in.</span>
     </p>
     <div id="roster-list"></div>
   </div>
@@ -372,29 +374,34 @@
        showing an empty pane (see checkAccessAndEnter). -->
   <div class="tab-pane" data-pane="seats" hidden>
   <div class="card" id="seats-card">
-    <h2>Concurrent seats</h2>
+    <!-- Named for what it controls, not for the billing term. "Concurrent
+         seats" is what Stripe charges for; "how many people can count at once"
+         is what the owner is actually deciding. -->
+    <h2>How many can count at once</h2>
     <!-- Owner-only controls are wrapped so a manager still gets the useful
          read-only half of this card ("who's logged in right now", which
          list_active_sessions permits for owner/manager) without being shown a
          seat-count box that set-seat-count would reject with a 403. -->
     <div id="seats-owner-controls">
-      <p class="hint">Venues and locations are unlimited and free on Multi-venue — what's billed is how many people can be logged in at the same moment. You're always free; each extra seat is $29/mo.</p>
-      <label for="seat-count-input">Extra seats purchased</label>
-      <p class="hint" style="margin-top:2px">Added seats are billed for a minimum of one month, so you can't reduce below a
-        level you've just bought up to until that month is up. Adding more restarts the month.</p>
+      <p class="hint">Set up as many people as you like — there's no charge per person, and venues and
+        locations are unlimited on Multi-venue. What's billed is how many can be <b>counting at the
+        same time</b>. You're always included; each extra person counting at once is $29/mo.</p>
+      <label for="seat-count-input">Extra people counting at once</label>
+      <p class="hint" style="margin-top:2px">Beyond you. Each one is billed for a minimum of one month, so you
+        can't reduce below a level you've just bought up to until that month is up. Adding more restarts the month.</p>
       <div style="display:flex;gap:8px">
         <input id="seat-count-input" type="text" inputmode="numeric" placeholder="0">
         <button id="seat-count-save" class="primary">Update</button>
       </div>
       <p class="hint" id="seat-term-hint" style="display:none;margin-top:6px;color:var(--warning)"></p>
       <label for="heartbeat-interval-input" style="margin-top:16px">Check-in frequency (seconds)</label>
-      <p class="hint" style="margin-top:2px">How often devices check in, and how quickly a forced log-out or a crashed session actually frees its seat. Lower = faster, more requests.</p>
+      <p class="hint" style="margin-top:2px">How often devices check in, and how quickly a forced log-out or a crashed session actually frees up a slot for the next person. Lower = faster, more requests.</p>
       <div style="display:flex;gap:8px">
         <input id="heartbeat-interval-input" type="text" inputmode="numeric" placeholder="60">
         <button id="heartbeat-interval-save" class="primary">Save</button>
       </div>
     </div>
-    <p class="hint" id="seats-manager-note" style="display:none">Seats and billing are managed by the organisation's owner.</p>
+    <p class="hint" id="seats-manager-note" style="display:none">How many people can count at once, and billing, are managed by the organisation's owner.</p>
     <label style="margin-top:16px">Currently active</label>
     <div id="active-sessions-list"></div>
   </div>
@@ -1176,16 +1183,16 @@
     var hint = $('seat-term-hint');
     if (!currentOrg || seatDecreaseEligible()) { hint.style.display = 'none'; return; }
     hint.style.display = '';
-    hint.textContent = 'Minimum term: you can reduce below ' + currentOrg.concurrentSeats
-      + ' seat' + (currentOrg.concurrentSeats === 1 ? '' : 's')
+    hint.textContent = 'Minimum term: you can go below ' + currentOrg.concurrentSeats
+      + ' extra ' + (currentOrg.concurrentSeats === 1 ? 'person' : 'people')
       + ' from ' + nextSeatDecreaseDate().toLocaleDateString() + '.';
   }
 
   $('seat-count-save').onclick = function () {
     var seats = parseInt($('seat-count-input').value, 10);
-    if (!Number.isInteger(seats) || seats < 0) { toast('Enter a whole number of seats (0 or more)', '#b91c1c'); return; }
+    if (!Number.isInteger(seats) || seats < 0) { toast('Enter a whole number of people (0 or more)', '#b91c1c'); return; }
     if (seats < currentOrg.concurrentSeats && !seatDecreaseEligible()) {
-      toast('Added seats are billed for a month — you can reduce below ' + currentOrg.concurrentSeats
+      toast('Each extra person is billed for a month — you can go below ' + currentOrg.concurrentSeats
             + ' on ' + nextSeatDecreaseDate().toLocaleDateString(), '#b91c1c');
       $('seat-count-input').value = currentOrg.concurrentSeats;
       return;
@@ -1194,7 +1201,7 @@
     sb.functions.invoke('set-seat-count', { body: { seats: seats } }).then(function (res) {
       $('seat-count-save').disabled = false;
       if (res.error || (res.data && res.data.error)) {
-        failFn(res, 'Could not update seat count');
+        failFn(res, 'Could not update how many can count at once');
         // Put the field back to the stored value so it can't sit there showing a
         // number that was never actually purchased.
         $('seat-count-input').value = currentOrg.concurrentSeats;
@@ -1208,7 +1215,7 @@
         currentOrg.seatsIncreasedAt = res.data.seatsIncreasedAt;
       }
       renderSeatTermHint();
-      toast('Seat count updated');
+      toast('Updated — ' + (seats + 1) + ' can now count at once');
     });
   };
 

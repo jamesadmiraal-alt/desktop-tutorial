@@ -228,8 +228,12 @@
 </section>
 
 <section class="wrap" style="padding: 8px 20px 40px" id="pos-interest">
-  <h2 class="section">Using a POS we don't list yet?</h2>
-  <p class="section-sub">Tell us your system and we'll build the export mapping for you.</p>
+  <!-- Asks the question the reader is actually holding. The old heading
+       ("Using a POS we don't list yet?") answered itself in the negative before
+       they had looked, and someone whose POS *is* on the list read it as "not
+       for me" and scrolled past. -->
+  <h2 class="section">Is your POS supported? Get in touch today!</h2>
+  <p class="section-sub">Tell us your system and we'll build the export mapping for you — whether or not it's in the list below.</p>
   <div class="card">
     <div class="pos-form">
       <form id="pos-form" novalidate>
@@ -357,13 +361,21 @@
       <div class="tag">Multiple venues</div>
       <h3>Multi-venue</h3>
       <div class="price">$59</div>
-      <div class="per">per month, plus $29/mo per extra concurrent user</div>
+      <!-- "Concurrent user" was doing too much work here: it is the billing
+           term, not something a publican says. The two ideas have to be
+           separated — how many people you set up (any number) versus how many
+           can count at the same time (what you pay for).
+           The base plan is the OWNER counting: concurrent_seats defaults to 0
+           and the owner is exempt from the pool (schema.sql, claim_seat), so
+           every additional simultaneous counter is a purchased seat. -->
+      <div class="per">per month, for you counting</div>
       <div class="annual-offer">or <b>$590/year</b> — 12 months for the price of 10 <span class="offer-tag">2 months free</span></div>
       <ul>
         <li>Unlimited venues and locations</li>
+        <li>Set up as many people as you like — no charge per person</li>
+        <li>$29/mo for each extra person counting <b>at the same time</b></li>
         <li>All venues' stocktakes centralised at head office</li>
         <li>Export ready to import into your stock management system</li>
-        <li>Pay only for how many people are logged in at once</li>
       </ul>
       <a class="btn success" href="app.html">Get started</a>
     </div>
@@ -378,7 +390,8 @@
     <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
     <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
   </svg>
-  Gantry — stocktaking for hospitality · <a href="app.html">Open the app</a>
+  Gantry — stocktaking for hospitality · <a href="app.html">Open the app</a><br>
+  <a href="privacy.html">Privacy Policy</a> · <a href="terms.html">Terms &amp; Conditions</a>
 </footer>
 
 <!-- Same file app.html loads, same variable names (window.BARSCAN_CONFIG with
@@ -503,10 +516,11 @@
         '<p>We\'ll come back to you about getting your POS export mapped.</p>' +
         '<p>One thing that speeds this up a lot: if your POS supplier can send you a ' +
         '<b>sample import file</b> — or the spec for one — forward it to ' +
-        // TODO: replace with the real support address. index.html has no contact
-        // address anywhere (the footer is just the wordmark and an app link), so
-        // there was nothing to reuse and guessing one would send people nowhere.
-        '<a href="mailto:TODO-SUPPORT-ADDRESS@example.com">TODO-SUPPORT-ADDRESS@example.com</a>. ' +
+        // The same address privacy.html and terms.html use. It is on
+        // gantrystocktake.com, which is the domain the mail provider is
+        // verified against — see EMAIL-SETUP.md. Nothing sends here until that
+        // is set up, so an early reply may need chasing manually.
+        '<a href="mailto:support@gantrystocktake.com">support@gantrystocktake.com</a>. ' +
         'That one file is usually the difference between a week and an afternoon.</p>' +
       '</div>';
     wrap.querySelector('h3').setAttribute('tabindex', '-1');
