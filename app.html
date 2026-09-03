@@ -377,6 +377,14 @@
   #name-input { margin: 12px 0 14px; }
   .dialog-actions { display: flex; gap: 8px; }
   .action-sheet { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  /* The status-changing half of the actions sheet, held away from Export CSV by
+     a rule and a wide gap. A tap that misses "Export CSV" downward must land in
+     dead space, not on "Mark ready for export" — that adjacency is what walked
+     ST5 through two status changes nobody asked for. 22px is more than a
+     thumb's worth of slop at the ~48px button height used here. */
+  .action-sheet-state {
+    margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border);
+  }
 
   /* ---- Team view (single-venue only — see #team-view) ---- */
   .code-box { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
@@ -931,8 +939,13 @@
   <!-- Shown only for a completed count. Without it the scan view looks entirely
        normal while every write is refused by the database, which reads as the
        app being broken rather than the count being finished. -->
+  <!-- Says what is true and nothing more. It used to assert "It has been
+       exported", which stopped being the reason a count is completed the moment
+       exporting stopped completing it — and asserting an export that may never
+       have happened is how an operator concludes the app is confused about their
+       count rather than that someone closed it. -->
   <div id="readonly-note" style="display:none">
-    <b>This count is completed.</b> It has been exported, so it can’t be changed.
+    <b>This count is completed.</b> It can’t be changed.
     Ask a manager to reopen it from ⋯ on the stocktake list.
   </div>
   <div id="reader-wrap">
@@ -963,17 +976,33 @@
 <div id="take-actions-overlay" class="overlay">
   <div class="dialog">
     <div class="title" id="take-actions-title">Stocktake</div>
+    <!-- Two groups, deliberately separated: things that only READ the count, and
+         things that CHANGE it. They used to be one undifferentiated stack with
+         "Mark ready for export" sitting directly above "Export CSV", and a
+         miss-tap between the two walked ST5 from In Progress to Ready to
+         Completed without anyone choosing any of it. The gap between the groups
+         is the fix for the hit-area, not decoration. -->
     <div class="action-sheet">
+      <!-- No ▾ any more: it used to open a format picker (Gantry CSV / MYOB /
+           Lightspeed). One format now, so this exports directly. Export EXPORTS
+           — it no longer changes the stocktake's status. See doExport(). -->
+      <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export CSV</button>
+      <button id="take-share">Share</button>
+    </div>
+    <div class="action-sheet action-sheet-state">
       <!-- One button, three meanings — label and target status are set by
            openTakeActions() from the stocktake's current status. See
            set_stocktake_status() in schema.sql for the transitions. -->
       <button id="take-status"></button>
-      <!-- No ▾ any more: it used to open a format picker (Gantry CSV / MYOB /
-           Lightspeed). One format now, so this exports directly. -->
-      <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export CSV</button>
-      <button id="take-share">Share</button>
+      <!-- Completing a count is its own decision and its own button. Exporting
+           used to do it as a side effect, which is how a downloaded copy of the
+           numbers could lock a venue out of a count they were still working on.
+           Only offered from Ready for export. -->
+      <button id="take-complete" style="display:none">Mark completed</button>
       <button id="take-clear" class="danger">Clear items</button>
-      <button id="take-actions-cancel">Cancel</button>
+    </div>
+    <div class="dialog-actions" style="margin-top:12px">
+      <button id="take-actions-cancel" class="flex">Cancel</button>
     </div>
   </div>
 </div>
@@ -1382,6 +1411,16 @@
   function shieldGhostClicks() { ghostClickUntil = Date.now() + 350; }
   document.addEventListener('click', function (e) {
     if (Date.now() >= ghostClickUntil) return;
+    // Only ever swallow a click the BROWSER synthesized from a touch. A ghost
+    // click is trusted (the platform made it); a click this app dispatches
+    // itself is not.
+    //
+    // Without this test the shield eats our own programmatic clicks, and the
+    // one that matters is downloadCsv()'s `a.click()` on an <a download>:
+    // closing the actions sheet arms the shield, deliver() fires ~1ms later,
+    // preventDefault() lands on the anchor, and the export silently produces no
+    // file. Found by the export test after the sheet was moved onto the shield.
+    if (!e.isTrusted) return;
     ghostClickUntil = 0;   // one shot: swallow the stray, not the next real tap
     e.preventDefault();
     e.stopPropagation();
@@ -1721,7 +1760,8 @@
   function finishLogin() {
     refreshOrgStatus(function () {
       loadLocations();
-      loadTakes();
+      // navigate: true — arriving in the app after login belongs on Home.
+      loadTakes(true);
     });
   }
 
@@ -2040,12 +2080,33 @@
     $('auth-submit').style.display = 'none';
     $('takeover-row').style.display = '';
     showView('auth');
+    // Whose login this screen is about. ST5 reported Continue landing in a
+    // different, leftover account in the same browser profile — a stale session
+    // from an earlier test signup. Continue means "move MY login to this
+    // device"; it must never mean "adopt whoever the browser happens to be
+    // holding". So the identity is pinned when the prompt is shown and checked
+    // against the live session before anything is claimed.
+    var promptedUserId = currentUser ? currentUser.id : null;
     $('takeover-continue').onclick = function () {
       $('takeover-continue').disabled = true;
-      claimSeat(true, onGranted, function () {
+      sb.auth.getSession().then(function (res) {
+        var live = res && res.data && res.data.session ? res.data.session.user : null;
+        if (!live || !promptedUserId || live.id !== promptedUserId) {
+          // The session under this screen is not the one it was drawn for.
+          // Refuse and start clean rather than taking over a seat for an
+          // account the operator never chose.
+          $('takeover-continue').disabled = false;
+          doLogout('That session had changed underneath — log in again to continue.');
+          return;
+        }
+        claimSeat(true, onGranted, function () {
+          $('takeover-continue').disabled = false;
+          $('takeover-row').style.display = 'none';
+          if (cb) cb();
+        });
+      }, function () {
         $('takeover-continue').disabled = false;
-        $('takeover-row').style.display = 'none';
-        if (cb) cb();
+        toast('Could not check this login — try again', '#b91c1c');
       });
     };
   }
@@ -2070,7 +2131,10 @@
           // saying "an admin logged you out" to someone whose colleague just
           // signed in on the shared iPad would send them to the wrong person.
           toast('Signed out — this login is now in use elsewhere', '#b91c1c');
-          doLogout();
+          // The reason goes on the login screen too. Anything already scanned
+          // is on the server, and saying so is the difference between "I lost
+          // my shift's work" and "I have to log back in".
+          doLogout('This login was taken over on another device. Your scans are saved — log in to carry on.');
         }
       });
     }, (currentOrg.heartbeatIntervalSeconds || 60) * 1000);
@@ -2089,7 +2153,8 @@
       // instead, on first login, rather than back at signup.
       if (!currentOrg) { showOrgSetupPrompt(); return; }
       loadLocations();
-      loadTakes();
+      // navigate: true — entering the app belongs on Home.
+      loadTakes(true);
     });
   }
 
@@ -2340,7 +2405,8 @@
     $('acct-plan-multi').style.display = tier === 'multi' ? '' : 'none';
   }
   $('account-btn').onclick = function () { if (currentUser) openAccount(); };
-  $('acct-back').onclick = function () { loadTakes(); };
+  // navigate: true — Back from Account is a request for Home.
+  $('acct-back').onclick = function () { loadTakes(true); };
   $('open-team-btn').onclick = function () { openTeam(); };
   $('team-back').onclick = function () { openAccount(); };
   // Points at the checkout that already exists rather than inventing a second
@@ -2743,7 +2809,12 @@
     setOrgSignupMode('create');
     setOrgRowsVisible(false);
   }
-  function doLogout() {
+  // `reason` is shown on the login screen the operator lands on. A forced
+  // logout mid-count is the one case where the destination needs explaining:
+  // without it, being dropped onto a login form is indistinguishable from the
+  // app having crashed or bounced Home, which is how ST5 read it. A toast alone
+  // is not enough — it fades, and the screen it fades on says nothing.
+  function doLogout(reason) {
     stopSeatHeartbeat();
     // best-effort — frees the seat immediately rather than waiting out the
     // staleness timeout. supabase-js query builders are lazy thenables:
@@ -2754,6 +2825,7 @@
       currentUser = null; currentOrg = null; currentTake = null; items = []; locations = [];
       resetAuthUiState();
       setAuthMode('login');
+      if (reason) $('auth-sub').textContent = reason;
       showView('auth');
     });
   }
@@ -2762,16 +2834,24 @@
   // org-setup/payment-pending/seats-full screens (see showOrgSetupPrompt()'s
   // comment) — and on org-setup specifically it can silently discard a
   // typed org name, so it gets a confirmation the plain logout doesn't need.
+  //
+  // ONLY the org-setup case asks first, and only because a typed organisation
+  // name is about to be discarded. Every other screen this button appears on —
+  // device conflict, seats full, payment pending — has nothing to lose by
+  // logging out, and confirming there was a trap rather than a safeguard:
+  // ST5 found that dismissing the confirm on "Already signed in elsewhere" left
+  // the operator with no way off the screen except Continue, i.e. taking over a
+  // device they had just decided not to take over. A Log out button that only
+  // sometimes logs out is worse than no button.
   $('org-setup-logout').onclick = function () {
+    if (needsOrgSetup) {
+      if (!confirm("Log out? You'll need to set up your organisation again.")) return;
+      doLogout();
+      return;
+    }
     var onTakeover = $('takeover-row').style.display !== 'none';
-    var msg = needsOrgSetup
-      ? "Log out? You'll need to set up your organisation again."
-      : onTakeover
-      ? 'Log out? The other device keeps the login.'
-      : seatsFull
-      ? 'Log out? You can try again for a seat next time you log in.'
-      : 'Log out? You can pick a plan again next time you log in.';
-    if (confirm(msg)) doLogout();
+    if (onTakeover) toast('Logged out here — your other device keeps the login');
+    doLogout();
   };
   $('seats-full-retry').onclick = function () { refreshOrgStatus(); };
 
@@ -2860,8 +2940,17 @@
   // way to tell. So: keep the rows and the scroll position, and swap the content
   // only once the new data is actually here. "Loading…" is only for a genuinely
   // empty list, where there is nothing to preserve and nothing to mis-tap.
-  function loadTakes() {
-    showView('home');
+  // `navigate` — go to Home as well as reloading it. Only the paths where the
+  // operator actually asked to be on Home pass true: ‹ Back, the header lockup,
+  // Back from Account, and the post-login boot.
+  //
+  // It used to call showView('home') unconditionally, and that was the
+  // spontaneous "bounce to Home" in ST5. showView() closes the quantity dialog,
+  // so any background caller — a focus event, a stale-row refresh — could yank
+  // someone out of an open take and discard the number they were typing. Worse,
+  // it made the bounce look like the pad had crashed.
+  function loadTakes(navigate) {
+    if (navigate || currentView === 'home') showView('home');
     var scroller = $('home-view');
     var keepScroll = scroller.scrollTop;
     if (!document.querySelector('#home-view .stocktake')) {
@@ -3287,6 +3376,45 @@
     return !!(currentTake && currentTake.status === 'completed');
   }
 
+  // Reads the open take's REAL status from SQL and applies it, without touching
+  // the lines. Two things go wrong without this:
+  //
+  //   * a write refused with "this stocktake is completed" while the Home card
+  //     still reads In Progress — the client believes the wrong thing and keeps
+  //     inviting counts into a closed take;
+  //   * a status flipped on another device (or by an export) turning the open
+  //     view into "0/0 · No scans yet". A completed take still HAS its lines,
+  //     and blanking them tells the operator their shift's work is gone. The
+  //     status changes; the rows are refetched, never emptied.
+  // `quiet` suppresses the toast. Passed by the failed-save path, which has
+  // already said something more specific ("<barcode> was NOT saved…") — and a
+  // second toast two seconds later just overwrites the one that named the
+  // barcode, which is the message the operator actually needs.
+  function refreshTakeStatus(quiet) {
+    if (!currentTake) return;
+    var id = currentTake.id;
+    sb.from('stocktakes').select('id,status').eq('id', id).then(function (res) {
+      if (res.error || !res.data || !res.data.length) return;
+      if (!currentTake || currentTake.id !== id) return;   // they moved on
+      var status = res.data[0].status;
+      if (currentTake.status === status) return;
+      currentTake.status = status;
+      // Keep the Home row for the same take in step, so Back doesn't show a
+      // card contradicting the header that was just corrected.
+      for (var i = 0; i < takes.length; i++) {
+        if (takes[i].id === id) { takes[i].status = status; break; }
+      }
+      applyTakeReadOnly();
+      // Refetch rather than trust what is on screen: whatever changed the
+      // status may have changed the lines too, and this is the moment the
+      // operator is looking for the truth.
+      loadItems(null, true);
+      if (status === 'completed' && !quiet) {
+        toast('This count has been completed — it is now read-only', '#b45309');
+      }
+    });
+  }
+
   function applyTakeReadOnly() {
     var ro = takeIsReadOnly();
     $('readonly-note').style.display = ro ? '' : 'none';
@@ -3435,12 +3563,36 @@
     itemsRequestToken++;
     itemsLoading = false;
     itemsLoadFailed = false;
+    // Hand the header's numbers to the Home card BEFORE tearing them down.
+    //
+    // ST5 reported a card reading 0/0 — or "No stocktakes yet" — straight after
+    // Back, while the header it had just left said 7·90. Home's totals come from
+    // an aggregate embedded whenever the list last loaded, so the card was
+    // showing a snapshot from before the shift while the header showed SQL.
+    // `items` here IS what the server returned for this take, so seeding the
+    // snapshot from it makes the two agree the instant Back is tapped rather
+    // than a round trip later. loadTakes(true) below then confirms it.
+    if (currentTake) syncTakeSnapshot(currentTake, items);
+    var leavingTakeId = currentTake ? currentTake.id : null;
     currentTake = null; items = []; filterQuery = '';
-    // loadTakes() runs showView('home'), which closes the quantity, name and
-    // actions dialogs — so leaving mid-entry can't strand an overlay over the
-    // list. The header lockup calls closeTransientOverlays() itself before
-    // delegating here, because it has to be tappable in the first place.
-    loadTakes();
+    // navigate: true — ‹ Back is the operator asking for Home, so this is one of
+    // the few callers that should move the view. showView('home') then closes
+    // the quantity, name and actions dialogs, so leaving mid-entry can't strand
+    // an overlay over the list. The header lockup calls
+    // closeTransientOverlays() itself before delegating here, because it has to
+    // be tappable in the first place.
+    //
+    // Home is shown FIRST and the fetch repaints it when it lands, so Back is
+    // never waiting on the network. ST5 reported ‹ Back unresponsive once,
+    // needing a URL reload; a Back that depends on a request completing is
+    // exactly how that happens.
+    showView('home');
+    // Paint the seeded snapshot immediately, so the card is right on arrival
+    // instead of after the fetch. Skipped when there is nothing to paint yet —
+    // renderHome() on an empty `takes` would assert "No stocktakes yet", which
+    // is the false claim being fixed.
+    if (leavingTakeId && takes.length) renderHome();
+    loadTakes(true);
   };
 
   // ---- Items in current stocktake ----
@@ -3661,6 +3813,13 @@
     }
     $('qty-overlay').dataset.mode = isEdit ? 'edit' : 'scan';
     $('qty-input').value = isEdit && existing ? qtyText(existing.qty) : '';
+    // Editing shows the current quantity, and the first key must REPLACE it, not
+    // append to it. On desktop select() did that; on touch there is no select(),
+    // so editing a line at 8 and tapping 1 produced 81. Consumed by the first
+    // key only — typing 12 after that is still 1 then 2.
+    qtyReplaceOnNextKey = !!(isEdit && existing);
+    // When the pad opened, for the Enter guard below.
+    qtyOpenedAt = Date.now();
     $('qty-overlay').classList.add('open');
     // On a touch device the in-app keypad IS the input method, so don't focus the
     // field: focusing it would either do nothing (iOS refuses to raise its
@@ -3740,9 +3899,23 @@
     handlePadEvent(e);
   });
 
+  // Set when the pad opens on an existing quantity in EDIT mode; the first key
+  // then starts a fresh number instead of appending to what is shown.
+  var qtyReplaceOnNextKey = false;
+  // When the pad last opened. See the Enter handler.
+  var qtyOpenedAt = 0;
+
   function applyPadKey(key) {
     var el = $('qty-input');
     var v = el.value;
+
+    // A digit or a point on a freshly opened edit starts over. Backspace and
+    // Clear are edits to the shown number, so they act on it as-is — and both
+    // consume the flag, since after either one the operator is plainly working
+    // with what is in the field.
+    var replacing = qtyReplaceOnNextKey;
+    qtyReplaceOnNextKey = false;
+    if (replacing && key !== 'back' && key !== 'clear') v = '';
 
     if (key === 'clear') {
       v = '';
@@ -3883,7 +4056,69 @@
     if (wasOpen && currentView === 'scan' && currentTake) loadItems(null, true);
   }
 
+  // ---- Commit guards ----
+  //
+  // ST5 produced counts that climbed on their own: a typed 2 landing as 4→8, a
+  // line saved ×2 drifting to ×4 then ×8 with nobody touching it. Every one of
+  // those is add_stocktake_item() being called more than once for a single
+  // decision by the operator, and `#qty-ok.disabled` was never able to stop it:
+  //
+  //   * it is not checked by the Enter handler, so a wedge scanner's trailing
+  //     Enter fired a second write straight through it;
+  //   * closeQtyDialog() re-enables it, and the success handler closes the
+  //     dialog — so the window between the two is wide open;
+  //   * a ghost click arriving after the dialog closed still reached commitQty.
+  //
+  // So the lock is a variable, not a DOM property, and it is released only when
+  // the request settles. A second attempt while one is in flight is refused OUT
+  // LOUD — silence here is indistinguishable from the dead Save button that got
+  // reported as "qty 12 Save did nothing".
+  var commitInFlight = false;
+  var commitWatchdog = null;
+  // A request that never settles must not wedge Save forever. 20s is far longer
+  // than any real round trip on venue wifi, so reaching this means the request
+  // is gone, not slow.
+  var COMMIT_TIMEOUT_MS = 20000;
+
+  function beginCommit() {
+    commitInFlight = true;
+    $('qty-ok').disabled = true;
+    if (commitWatchdog) clearTimeout(commitWatchdog);
+    commitWatchdog = setTimeout(function () {
+      if (!commitInFlight) return;
+      endCommit();
+      fail({ message: 'That save did not come back. Nothing was recorded — check the count and try again.' }, '');
+    }, COMMIT_TIMEOUT_MS);
+  }
+  function endCommit() {
+    commitInFlight = false;
+    if (commitWatchdog) { clearTimeout(commitWatchdog); commitWatchdog = null; }
+    $('qty-ok').disabled = false;
+  }
+
+  // A barcode long enough to be two barcodes is not a barcode. ST5 stored a
+  // 26-digit line (9351142000085 + 9342007000890 glued together) with qty 2,
+  // because a second scan landed on top of a field that still held the first.
+  //
+  // 18 characters is the ceiling: the longest retail GTIN is 14 digits, and
+  // nothing this app scans legitimately exceeds that by much. Rejected at every
+  // entry point rather than only at the write, so the pad never opens on one.
+  var BARCODE_MAX_LEN = 18;
+  function isPlausibleBarcode(code) {
+    var t = String(code || '').trim();
+    if (!t) return false;
+    if (t.length > BARCODE_MAX_LEN) return false;
+    return true;
+  }
+
   function commitQty() {
+    // The dialog must actually be open, on a real code, in a real take. This is
+    // what makes a ghost click harmless: after Cancel or a successful save,
+    // pendingCode is null and the overlay is closed, so a synthesized click
+    // landing on Save writes nothing instead of re-applying the last quantity.
+    // It is also why Cancel-with-a-qty can no longer save the line.
+    if (!$('qty-overlay').classList.contains('open') || !pendingCode || !currentTake) return;
+    if (commitInFlight) { toast('Still saving that one…', '#b45309'); return; }
     var raw = $('qty-input').value;
     // parseFloat, and an explicit emptiness test rather than the old `!qty` —
     // `!0` is true, so the previous check made zero unenterable. Zero is now a
@@ -3923,11 +4158,18 @@
     var known = items.find(function (it) { return it.barcode === code; });
     if (known) beforeQty = qtyNum(known.qty);
 
-    $('qty-ok').disabled = true;
-    // Re-enabled on EVERY outcome, including a rejected promise. Previously this
-    // only ran inside the success handler, so a network drop left the operator
-    // looking at a permanently greyed Save with no explanation.
-    var done = function () { $('qty-ok').disabled = false; };
+    // Refuse a code that is two codes. Checked here as well as at every entry
+    // point: this is the last thing standing between a glued scan and an
+    // INSERT that puts a 26-digit "barcode" into the count.
+    if (!isPlausibleBarcode(code)) {
+      closeQtyDialog();
+      toast('That scan looks like two barcodes joined — scan it again', '#b91c1c');
+      return;
+    }
+
+    beginCommit();
+    // Released on EVERY outcome, including a rejected promise and the watchdog.
+    var done = function () { endCommit(); };
 
     sb.rpc(rpc, { p_stocktake_id: currentTake.id, p_barcode: code, p_qty: qty }).then(
       function (res) {
@@ -3940,7 +4182,16 @@
         // product asks to be bought. Show the plans instead of a red toast, and
         // close the keypad so the dialog isn't stacked behind it.
         if (res.error && isTrialLimit(res.error)) { closeQtyDialog(); showTrialLimit(); return; }
-        if (res.error) { fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
+        if (res.error) {
+          fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, '');
+          // "This stocktake is completed" while the Home card still said In
+          // Progress is what ST5 reported, and the operator has no way to tell
+          // which of the two is lying. The server is, by definition, right —
+          // so go and read the real status instead of leaving a stale card
+          // inviting them to keep counting into a closed take.
+          if (/completed/i.test((res.error && res.error.message) || '')) refreshTakeStatus(true);
+          return;
+        }
         var row = Array.isArray(res.data) ? res.data[0] : res.data;
         if (!row) { fail({ message: code + ' was NOT saved. The server did not confirm the write.' }, ''); return; }
         mergeItem(row);
@@ -3979,7 +4230,15 @@
   }
 
   $('qty-ok').onclick = commitQty;
-  $('qty-cancel').onclick = function () { closeQtyDialog(); };
+  // Cancel clears the field BEFORE closing, so there is nothing left for a stray
+  // click to send. ST5 reported Cancel-with-a-quantity still saving the line
+  // (and Cancel with an empty field not doing so), which is exactly that shape.
+  // commitQty's open-and-pendingCode check is the real boundary; this is the
+  // belt to its braces.
+  $('qty-cancel').onclick = function () {
+    $('qty-input').value = '';
+    closeQtyDialog();
+  };
 
   // Enter commits ONLY when a person is genuinely typing in this field.
   //
@@ -3991,11 +4250,21 @@
   // readOnly is the tell: on a touch device the in-app keypad is the input
   // method and the field is readOnly and never focused, so an Enter arriving
   // there is a scanner, not a thumb.
+  //
+  // The grace period is the part that matters, and it is what stopped the ST5
+  // auto-commits. A wedge scanner ends its burst with Enter, and if the camera
+  // opened the pad part-way through that burst (see onScan) the remaining digits
+  // AND the Enter land in this field milliseconds later — which is how
+  // "935114200 in the barcode, Qty 85" committed itself with nobody touching
+  // Save. No person opens a keypad and presses Enter inside half a second; a
+  // scanner always does.
+  var QTY_ENTER_GRACE_MS = 500;
   $('qty-input').addEventListener('keydown', function (e) {
     if (e.key !== 'Enter') return;
     e.preventDefault();
     var el = $('qty-input');
     if (el.readOnly || document.activeElement !== el) return;
+    if (Date.now() - qtyOpenedAt < QTY_ENTER_GRACE_MS) return;
     commitQty();
   });
 
@@ -4009,13 +4278,34 @@
   });
 
   // ---- Scanning ----
+  // True while a barcode is being entered by hand or by a keyboard-wedge scanner
+  // into #manual-input. A camera decode must not open the pad during that: the
+  // pad steals focus, and the rest of the wedge's keystrokes then land in the
+  // QUANTITY field. ST5 recorded the result exactly — barcode 935114200, qty 85,
+  // one code split across two fields — and the wedge's trailing Enter then
+  // committed it without anyone tapping Save.
+  function manualEntryInProgress() {
+    var el = $('manual-input');
+    if (!el) return false;
+    return document.activeElement === el || el.value.trim() !== '';
+  }
+
   function onScan(decodedText) {
     if (dialogOpen) return; // ignore scans while entering a qty
+    if (manualEntryInProgress()) return;
+    var code = String(decodedText || '').trim();
+    // A decode long enough to be two barcodes is a misread, not a product. Beep
+    // and say so rather than opening a pad on it — the alternative is what put a
+    // 26-digit line into ST5.
+    if (!isPlausibleBarcode(code)) {
+      toast('That scan came through as two codes joined — try again', '#b91c1c');
+      return;
+    }
     var now = Date.now();
-    if (decodedText === lastScan.code && now - lastScan.at < 2500) return; // debounce repeats
-    lastScan = { code: decodedText, at: now };
+    if (code === lastScan.code && now - lastScan.at < 2500) return; // debounce repeats
+    lastScan = { code: code, at: now };
     beep();
-    openQtyDialog(decodedText, false);
+    openQtyDialog(code, false);
   }
 
   // Uses the platform's native BarcodeDetector where available (hardware
@@ -4161,12 +4451,23 @@
     // dead button, which is how "typed barcode + Add: no qty dialog" gets
     // reported.
     if (!v) { toast('Type a barcode first', '#b91c1c'); return; }
+    // Two codes concatenated in this field is the reported Cellar case: the
+    // field kept its previous contents and the next scan appended to them.
+    // Clear it either way, so the next scan can never inherit this one.
+    if (!isPlausibleBarcode(v)) {
+      $('manual-input').value = '';
+      toast('That looks like two barcodes joined — scan or type one', '#b91c1c');
+      return;
+    }
     $('manual-input').value = '';
     openQtyDialog(v, false);
   }
   $('manual-add').onclick = manualAdd;
+  // The pad opens on Enter or Add, never while the barcode is still arriving —
+  // a wedge scanner's digits reach `keydown` one at a time and only its final
+  // Enter means "that's the whole code".
   $('manual-input').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') manualAdd();
+    if (e.key === 'Enter') { e.preventDefault(); manualAdd(); }
   });
 
   // ---- Filter list by barcode ----
@@ -4309,6 +4610,18 @@
   function syncTakeSnapshot(take, takeItems) {
     if (!take) return;
     take.stocktake_items = takeItems.map(function (it) { return { qty: it.qty }; });
+    // Also update the row in `takes`, which is what renderHome() actually reads.
+    // `take` is usually the same object, but not always: actionsTake and
+    // currentTake can be pointers into a list that a background refresh has
+    // since replaced, and then the card kept rendering the old aggregate.
+    if (take.id) {
+      for (var i = 0; i < takes.length; i++) {
+        if (takes[i].id === take.id && takes[i] !== take) {
+          takes[i].stocktake_items = take.stocktake_items;
+          break;
+        }
+      }
+    }
     if (currentView === 'home') renderHome();
   }
 
@@ -4362,6 +4675,20 @@
       btn.onclick = function () { setTakeStatus(t, act.status, 'manual'); };
     }
 
+    // Completing is only meaningful from Ready for export, and it is now the
+    // ONLY way to reach 'completed' — exporting no longer does it. Confirmed,
+    // because it makes the count read-only for everyone: ST5 had a count
+    // completed under someone who was still scanning into it, and the first
+    // they knew was the pad refusing to save.
+    var completeBtn = $('take-complete');
+    completeBtn.style.display = t.status === 'ready_for_export' ? '' : 'none';
+    completeBtn.onclick = function () {
+      if (!confirm('Mark "' + t.name + '" completed?\n\n'
+                   + 'It becomes read-only for everyone — anyone still counting will '
+                   + 'not be able to save. A manager can reopen it afterwards.')) return;
+      setTakeStatus(t, 'completed', 'manual');
+    };
+
     // Name the shape on the button. Which file you get is an org setting in
     // Admin, invisible from here, and the two are not interchangeable — a
     // headerless barcode,qty pair for a POS import versus a five-column file
@@ -4372,7 +4699,21 @@
 
     $('take-actions-overlay').classList.add('open');
   }
-  $('take-actions-cancel').onclick = function () { $('take-actions-overlay').classList.remove('open'); };
+  // Every path that closes this sheet goes through here, and the ghost-click
+  // shield is the reason. ST5 reported "⋯ Cancel opened Account", and then Back
+  // from Account logging the device out — that is one tap producing three
+  // effects. Closing the sheet on `pointerup`/`click` leaves the synthesized
+  // compatibility click to land on whatever is now underneath, which at the top
+  // of the screen is the account chip. Same fix as the quantity dialog.
+  function closeTakeActions() {
+    var wasOpen = $('take-actions-overlay').classList.contains('open');
+    $('take-actions-overlay').classList.remove('open');
+    if (wasOpen) shieldGhostClicks();
+  }
+  $('take-actions-cancel').onclick = closeTakeActions;
+  // Taps on the scrim and in the gaps between buttons die here rather than
+  // bubbling to the list behind — a miss inside this sheet must cost nothing.
+  $('take-actions-overlay').addEventListener('click', function (e) { e.stopPropagation(); });
 
   // Every status change goes through the RPC — client UPDATE on stocktakes is
   // revoked (schema.sql), which is what makes the transition impossible to make
@@ -4389,10 +4730,19 @@
         fail(res.error, 'Could not update stocktake');
       } else {
         t.status = status;
-        $('take-actions-overlay').classList.remove('open');
+        closeTakeActions();
+        // If this is the take currently open on this device, its header and its
+        // controls have to follow — otherwise the scan view keeps offering a pad
+        // for a count that is now read-only.
+        if (currentTake && currentTake.id === t.id) {
+          currentTake.status = status;
+          applyTakeReadOnly();
+        }
         renderHome();
         if (reason === 'manual') {
-          toast(status === 'ready_for_export' ? 'Marked ready for export' : 'Back to in progress');
+          toast(status === 'ready_for_export' ? 'Marked ready for export'
+              : status === 'completed' ? 'Marked completed — this count is now read-only'
+              : 'Back to in progress');
         }
       }
       if (onDone) onDone();
@@ -4423,6 +4773,44 @@
       toast('Mark this stocktake ready for export first', '#b91c1c');
       return;
     }
+    // Is anyone still counting this take right now? A file handed over while
+    // lines are still being written is a file that was wrong before it
+    // downloaded — and ST5 did exactly that, exporting 8·104 while Floor was
+    // mid-count and then marking the take Completed underneath them.
+    //
+    // "Ready for export" is a claim by whoever set it, not a lock, so it is not
+    // enough on its own. This asks the database instead: has anything been
+    // written in the last two minutes?
+    guardAgainstLiveCount(actionsTake, function () { doExport(); });
+  }
+
+  // How recently a line has to have been touched for the count to be treated as
+  // still in progress. Two minutes is comfortably longer than the gap between
+  // scans in a real count and short enough that a finished one exports without
+  // an argument.
+  var LIVE_COUNT_WINDOW_MS = 2 * 60 * 1000;
+
+  function guardAgainstLiveCount(take, proceed) {
+    sb.from('stocktake_items').select('last_scanned')
+      .eq('stocktake_id', take.id)
+      .order('last_scanned', { ascending: false }).limit(1)
+      .then(function (res) {
+        // A failed check must not block an export the operator is entitled to;
+        // it also must not silently pretend the count is quiet. Say so and go.
+        if (res.error) { proceed(); return; }
+        var rows = res.data || [];
+        var last = rows.length && rows[0].last_scanned ? new Date(rows[0].last_scanned).getTime() : 0;
+        var age = Date.now() - last;
+        if (last && age < LIVE_COUNT_WINDOW_MS) {
+          toast('Someone is still counting this stocktake — exporting now would hand over '
+              + 'a half-finished file. Try again in a couple of minutes.', '#b91c1c');
+          return;
+        }
+        proceed();
+      }, function () { proceed(); });
+  }
+
+  function doExport() {
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
       // Snapshot everything up front: the overlay closes below and actionsTake can
@@ -4433,7 +4821,7 @@
       var name = fileName(take, fmt.suffix);
       // The card behind this dialog must agree with the file being handed over.
       syncTakeSnapshot(take, takeItems);
-      $('take-actions-overlay').classList.remove('open');
+      closeTakeActions();
 
       function deliver() {
         downloadCsv(csv, name, fmt.bom);
@@ -4443,24 +4831,25 @@
         toast(fmt.label + ' export downloaded');
       }
 
-      // Status FIRST, download second — the order is load-bearing, not tidiness.
-      // downloadCsv() clicks an <a download> on a blob URL, and iOS Safari (plus
-      // native WebViews) treat that as a navigation, which CANCELS in-flight
-      // fetches and can unload the page. Doing the download first meant the
-      // status RPC was killed before it reached Postgres: on iPhone the CSV
-      // arrived, the stocktake stayed in Ready for export, no audit row was
-      // written, and no error was visible because the page had already gone.
-      // Desktop Chrome happened to survive it, which is what made this look like
-      // it worked. Firing the RPC first and delivering the file from its
-      // completion handler removes the race on every platform.
+      // EXPORT EXPORTS. It does not change the stocktake's status.
       //
-      // A successful export marks the count Completed — the END of the workflow
-      // now rather than the only way into it: a venue marks it 'ready_for_export'
-      // first, which is what tells head office there's anything to export.
-      // Via the RPC because client UPDATE on stocktakes is revoked, and because
-      // this transition belongs in the activity log like every other.
-      if (take.status === 'completed') { deliver(); return; }
-      setTakeStatus(take, 'completed', 'export', deliver);
+      // It used to call setTakeStatus(take, 'completed', 'export'), and that is
+      // the ST5 defect: one tap on Export CSV downloaded a file AND declared the
+      // count finished. Combined with a miss-tap onto the adjacent status button
+      // it took ST5 from In Progress to Ready to Completed without anyone
+      // choosing any of it, and flipped another device mid-count to
+      // "completed / exported".
+      //
+      // Completing a count is a decision about the count, so it belongs to the
+      // button that says so. Downloading a copy of the numbers is not that
+      // decision — head office re-exporting a file they mislaid must not mutate
+      // anything, and a venue exporting to check the figures must not be locked
+      // out of their own count as a result.
+      //
+      // The iOS ordering problem the old comment described is gone with the RPC:
+      // there is no in-flight request left for the download's navigation to
+      // cancel, because there is no request.
+      deliver();
     });
   }
 
