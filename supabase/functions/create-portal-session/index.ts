@@ -20,9 +20,15 @@ const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
-const RETURN_URL = "https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html?billing_updated=1";
+// Where Stripe sends the customer after they close the billing portal. Also
+// customer-facing, so it uses the domain rather than the github.io build host —
+// the same reason as _shared/email.ts's SITE and app.html's SITE_URL.
+//
+// NOTE: the Payment Links' own after-payment redirect is Stripe Dashboard
+// config, not code, and is still pointed at github.io — see STRIPE-SETUP.md §2.
+const RETURN_URL = "https://gantrystocktake.com/app.html?billing_updated=1";
 
-// The app (github.io, or a native WebView origin) calls this cross-origin,
+// The app (a browser origin, or a native WebView origin) calls this cross-origin,
 // so the browser sends a preflight OPTIONS request before the real POST —
 // without these headers it never even reaches the code below.
 const CORS_HEADERS = {

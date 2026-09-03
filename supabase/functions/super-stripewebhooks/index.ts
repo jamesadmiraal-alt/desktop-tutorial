@@ -23,7 +23,7 @@
 // Without them the checkout still completes exactly as before and the send is
 // skipped with a log line; email is never allowed to fail this webhook.
 
-import { mailFooter, sendEmail } from "../_shared/email.ts";
+import { APP_URL, brandedHtml, mailFooter, sendEmail } from "../_shared/email.ts";
 
 const WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -64,70 +64,43 @@ const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
 
 const encoder = new TextEncoder();
 
-const APP_URL = "https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html";
-
-// Says thank you, names what they just bought, and points at the two things
-// they will look for next (getting started, and where billing lives).
+// Says what they just bought and what to do next, in that order and in as few
+// words as possible. Deliberately OUR email rather than relying on Stripe's
+// receipt: the receipt is a tax document and says nothing about the product.
 //
-// Deliberately OUR email rather than relying on Stripe's receipt: the receipt
-// is a tax document and says nothing about the product. This is also the only
-// message that explains the one thing about Multi-venue people get wrong —
-// unlimited logins, paid concurrency — at the moment they have just paid for it.
+// The copy names no price. The customer has just been shown the amount on
+// Stripe's checkout and will get the receipt separately, so repeating a figure
+// here can only ever contradict what they actually paid — currency, period and
+// any purchased extras all differ per customer.
 //
 // Fire-and-forget, exactly like notify-seat-denied: sendEmail() returns
 // { sent: false } instead of throwing when no provider secret is configured, so
 // this ships and does nothing until RESEND_API_KEY exists. It must never be
 // able to fail the webhook — Stripe retries a non-2xx, and retrying a payment
 // event because an email bounced would re-run the whole handler.
-async function sendUpgradeWelcome(tier: "single" | "multi", to: string | undefined, orgId: string) {
+async function sendUpgradeWelcome(tier: "single" | "multi", to: string | undefined) {
   if (!to) {
     console.log("upgrade welcome: no customer email on the session, skipping");
     return;
   }
   const planLabel = tier === "multi" ? "Multi-venue" : "Single-venue";
-  // The ORGANISATION's name, not session.customer_details.name — the latter is
-  // whoever's card it was, and "Alex Taylor is now on Multi-venue" is not what
-  // the person who just bought a venue subscription expects to read. Best
-  // effort: a failed lookup falls back to "you're", never to a blank.
-  let orgName: string | undefined;
-  try {
-    const res = await db(`organisations?id=eq.${encodeURIComponent(orgId)}&select=name`);
-    if (res.ok) orgName = (await res.json())[0]?.name;
-  } catch (_) { /* name is a nicety; the email still goes without it */ }
-  const lines = [
-    `Thanks — ${orgName ? orgName + " is" : "you're"} now on Gantry ${planLabel}.`,
-    "",
-    tier === "multi"
-      ? [
-        "What you've got:",
-        "  · Unlimited venues and locations",
-        "  · Unlimited products in every stocktake",
-        "  · As many people set up as you like, at no charge per person",
-        "",
-        "One thing worth knowing: you pay for how many people can be COUNTING",
-        "AT THE SAME TIME, not for how many logins you create. Set everyone up.",
-        "Change how many can count at once any time from the admin console.",
-      ].join("\n")
-      : [
-        "What you've got:",
-        "  · Unlimited products in every stocktake",
-        "  · Unlimited stocktakes, and CSV export whenever you need it",
-        "",
-        "Single-venue covers one venue and one user — you. If you need staff",
-        "counting too, Multi-venue adds that; upgrade any time from Account.",
-      ].join("\n"),
-    "",
-    "Pick up where you left off:",
-    "  " + APP_URL,
-    "",
-    "Your invoices, card details and cancellation all live in the billing",
-    "portal — open it from Account in the app.",
-  ].join("\n");
+  const title = `You're on Gantry ${planLabel}.`;
+  const paragraphs = [
+    "Scan a barcode, type the qty, export CSV into the stocktake import you already use.",
+  ];
+  // Multi's one extra line, and the only difference between the two mails.
+  if (tier === "multi") paragraphs.push("Your team can count at once.");
+
+  // The plain-text half carries the URL as text, since there is no anchor to
+  // put a label on. Always sent alongside the HTML: some clients prefer it,
+  // and it is the accessible fallback.
+  const text = [title, "", ...paragraphs, "", `Open ${APP_URL}`].join("\n");
 
   const result = await sendEmail({
     to,
     subject: `You're on Gantry ${planLabel}`,
-    text: lines + mailFooter(),
+    text: text + mailFooter(),
+    html: brandedHtml({ title, paragraphs, ctaLabel: "Open Gantry", ctaHref: APP_URL }),
   });
   if (!result.sent) console.log("upgrade welcome not sent:", result.provider, result.error ?? "");
 }
@@ -315,7 +288,7 @@ Deno.serve(async (req) => {
         // provider had a bad minute. Stripe retries any non-2xx response, so a
         // throw here would re-run the entire handler.
         try {
-          await sendUpgradeWelcome(tier, session.customer_details?.email, orgId);
+          await sendUpgradeWelcome(tier, session.customer_details?.email);
         } catch (mailErr) {
           console.error("upgrade welcome threw (ignored):", mailErr);
         }

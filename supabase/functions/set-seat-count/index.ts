@@ -26,14 +26,12 @@
 // (SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { mailFooter, sendEmail } from "../_shared/email.ts";
+import { ADMIN_URL, brandedHtml, mailFooter, sendEmail } from "../_shared/email.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
-
-const ADMIN_URL = "https://jamesadmiraal-alt.github.io/desktop-tutorial/admin.html";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -315,11 +313,12 @@ Deno.serve(async (req) => {
         : null;
 
       const lines = [
-        `${added ? "Added" : "Removed"} ${Math.abs(seats - currentSeats)} concurrent `
-          + `seat${Math.abs(seats - currentSeats) === 1 ? "" : "s"} for ${org.name ?? "your organisation"}.`,
+        `${added ? "Added" : "Removed"} ${Math.abs(seats - currentSeats)} `
+          + `${Math.abs(seats - currentSeats) === 1 ? "person" : "people"} for `
+          + `${org.name ?? "your organisation"}.`,
         "",
-        `Extra seats: ${currentSeats} → ${seats}`,
-        "Your own login stays free — seats cover everyone else logged in at the same time.",
+        `Extra people counting at once: ${currentSeats} → ${seats}`,
+        "Your own login is always included — this covers everyone else counting at the same time.",
         "",
       ];
       if (invoiceLine) lines.push(invoiceLine, "");
@@ -333,12 +332,34 @@ Deno.serve(async (req) => {
           "",
         );
       }
-      lines.push("Manage seats in the admin console: " + ADMIN_URL);
+      lines.push("Manage " + ADMIN_URL);
+
+      // The HTML half says the same things in fewer words. The plain-text body
+      // above keeps the fuller detail (invoice line, term end) because it is
+      // also the archive copy someone forwards to a bookkeeper.
+      const htmlParagraphs = [
+        `${added ? "Added" : "Removed"} ${Math.abs(seats - currentSeats)} `
+          + `${Math.abs(seats - currentSeats) === 1 ? "person" : "people"} for `
+          + `${org.name ?? "your organisation"}. Extra people counting at once: ${currentSeats} → ${seats}.`,
+        "Your own login is always included — this covers everyone else counting at the same time.",
+      ];
+      if (invoiceLine) htmlParagraphs.push(invoiceLine);
+      if (added && termEnd) {
+        htmlParagraphs.push(
+          `Each added person is billed for a minimum of one month, so this level is held until ${termEnd}.`,
+        );
+      }
 
       const result = await sendEmail({
         to: user.email ?? "",
-        subject: `${org.name ?? "Your organisation"}: concurrent seats updated (${currentSeats} → ${seats})`,
+        subject: "Concurrent seats updated",
         text: lines.join("\n") + mailFooter(),
+        html: brandedHtml({
+          title: "Concurrent seats updated",
+          paragraphs: htmlParagraphs,
+          ctaLabel: "Open the admin console",
+          ctaHref: ADMIN_URL,
+        }),
       });
       if (!result.sent) {
         console.error("set-seat-count: confirmation email not sent:", result.provider, result.error);

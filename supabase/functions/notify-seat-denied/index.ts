@@ -28,13 +28,11 @@
 // (SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { mailFooter, sendEmail } from "../_shared/email.ts";
+import { ADMIN_URL, APP_URL, brandedHtml, mailFooter, sendEmail } from "../_shared/email.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-
-const APP_URL = "https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -103,31 +101,54 @@ Deno.serve(async (req) => {
     // "0 of 0 seats in use", which reads like a bug. A multi-venue org that
     // never bought seats blocks EVERY non-owner, and an owner who has just
     // upgraded has no reason to expect that.
+    // Card name kept in step with admin.html, which now calls it "How many can
+    // count at once" rather than "Concurrent seats" — sending someone to look
+    // for a heading that no longer exists is worse than not naming it.
     const body = purchased === 0
       ? [
-          `${blocked} couldn't log in to Gantry: ${orgName} has no extra concurrent seats.`,
+          `${blocked} couldn't start a count on ${orgName}: there are no extra concurrent seats.`,
           "",
-          "On the Multi-venue plan your own login is always free, but each additional",
-          "person who needs to be logged in at the same time needs a seat.",
+          "Your own login is always included. Each additional person who needs to be",
+          "counting at the same time needs a seat.",
           "",
-          "Add seats in the admin console under Concurrent seats.",
+          'Set it in the admin console under "How many can count at once".',
         ].join("\n")
       : [
-          `${blocked} couldn't log in to Gantry: all of ${orgName}'s concurrent seats are in use.`,
+          `${blocked} couldn't start a count on ${orgName}: all concurrent seats are in use.`,
           "",
-          `Seats purchased: ${purchased}`,
+          `Seats: ${purchased}`,
           `In use right now: ${occupied}`,
           "",
-          "Either ask someone to log out, or add another seat in the admin console",
-          "under Concurrent seats. You can see who's currently logged in there too.",
+          "Either ask someone to log out, or allow one more in the admin console",
+          'under "How many can count at once". You can see who is logged in there too.',
         ].join("\n");
+
+    const ownerTitle = purchased === 0
+      ? `${blocked} can't start a count`
+      : `All concurrent seats are in use`;
+    const ownerParagraphs = purchased === 0
+      ? [
+        `${blocked} couldn't log in to ${orgName}: there are no extra concurrent seats.`,
+        "Your own login is always included. Each additional person who needs to be counting at the same time needs a seat.",
+      ]
+      : [
+        `${blocked} couldn't log in to ${orgName}: all concurrent seats are in use.`,
+        `Seats: ${purchased}. In use right now: ${occupied}.`,
+        "Either ask someone to log out, or allow one more. You can see who is logged in right now in the admin console.",
+      ];
 
     const result = await sendEmail({
       to: ownerEmail,
       subject: purchased === 0
-        ? `${orgName}: a team member can't log in — no seats purchased`
+        ? `${orgName}: a team member can't start a count`
         : `${orgName}: all concurrent seats are in use`,
-      text: body + "\n\n" + APP_URL + mailFooter(),
+      text: body + "\n\n" + `Manage ${ADMIN_URL}` + mailFooter(),
+      html: brandedHtml({
+        title: ownerTitle,
+        paragraphs: ownerParagraphs,
+        ctaLabel: "Open the admin console",
+        ctaHref: ADMIN_URL,
+      }),
     });
 
     // A send failure is NOT an error for this request: the denial has already
@@ -136,6 +157,42 @@ Deno.serve(async (req) => {
     // the client think something it can't fix went wrong.
     if (!result.sent) {
       console.error("notify-seat-denied: email not sent:", result.provider, result.error);
+    }
+
+    // The blocked person gets told too. Previously only the owner was emailed,
+    // which left the person actually standing in the cellar with a screen full
+    // of copy and no record of it — and no way to know whether anyone had been
+    // told. This is their own address from their own session, so no lookup and
+    // no way to aim it at anyone else.
+    //
+    // Throttled by the same record_seat_denial() verdict as the owner mail, so
+    // a venue at its limit does not generate one of these per attempt. Wrapped
+    // separately: this must not be able to stop the owner's notification having
+    // counted, nor turn a courtesy call into a 500.
+    if (user.email) {
+      try {
+        const staffTitle = "All concurrent seats are in use";
+        const staffParagraphs = [
+          `You can't start a count on ${orgName} right now — all the concurrent seats are in use.`,
+          "Ask the owner to free one up, or to allow one more person to count at the same time.",
+        ];
+        const staffResult = await sendEmail({
+          to: user.email,
+          subject: "All concurrent seats are in use",
+          text: [staffTitle, "", ...staffParagraphs, "", `Open ${APP_URL}`].join("\n") + mailFooter(),
+          html: brandedHtml({
+            title: staffTitle,
+            paragraphs: staffParagraphs,
+            ctaLabel: "Open Gantry",
+            ctaHref: APP_URL,
+          }),
+        });
+        if (!staffResult.sent) {
+          console.log("notify-seat-denied: staff copy not sent:", staffResult.provider, staffResult.error ?? "");
+        }
+      } catch (staffErr) {
+        console.error("notify-seat-denied: staff copy threw (ignored):", staffErr);
+      }
     }
     return jsonResponse({ notified: result.sent, provider: result.provider, reason: result.error });
   } catch (err) {

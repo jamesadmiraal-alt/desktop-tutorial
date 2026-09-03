@@ -142,9 +142,23 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   policy); raising one without the other means the server accepts what the app rejects.
 - Email: `supabase/functions/_shared/email.ts` is a provider-agnostic sender chosen by
   which secret exists, and it returns `{sent:false}` rather than throwing when none is
-  configured — so callers must treat a failed send as non-fatal. Auth email (confirm
-  signup, password reset) is separate and comes from Supabase's own mailer. See
-  `EMAIL-SETUP.md`; **none of it delivers until Gantry has a verified sending domain.**
+  configured — so **every caller must treat a failed send as non-fatal**, and all five
+  do (the Stripe webhook especially: Stripe retries a non-2xx, so a bounced email must
+  never re-run a payment handler). The same module owns `brandedHtml()` and the
+  customer-facing URLs (`SITE`/`APP_URL`/`ADMIN_URL`) — import them, don't re-declare a
+  URL in a function. Auth email (confirm signup, password reset) is separate and comes
+  from Supabase's own mailer. See `EMAIL-SETUP.md`; **none of it delivers until
+  gantrystocktake.com is verified with a provider.**
+- **Customer-facing links use `gantrystocktake.com`, never `jamesadmiraal-alt.github.io`.**
+  Both hosts serve the same files; the github.io one is where the site is *built* and
+  should never be what a customer is shown. That means email bodies, `app.html`'s
+  `SITE_URL`/`ADMIN_URL`, and `create-portal-session`'s `RETURN_URL`. Still on github.io
+  and needing a Stripe Dashboard edit: the 10 Payment Links' after-payment redirect.
+- Email HTML is table-based with inline styles — no flexbox, no grid, no `<style>` block,
+  no classes, and no `var()`. Outlook's Word engine ignores modern CSS and Gmail strips
+  `<style>`. The header mark is a PNG (`icons/email-mark.png`, generated from
+  `icons/gantry-mark.svg`) because email clients don't render SVG, and it is written to
+  degrade gracefully because most clients block remote images by default.
 - Export shape comes from `organisations.export_format`, set once per org by the owner in
   admin.html. `'standard'` is `barcode,count` with no header row and **no BOM** — verified
   against a real Bepoz importer after a trial where Gantry's own 5-column CSV matched no

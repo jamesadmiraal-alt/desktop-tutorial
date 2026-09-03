@@ -64,8 +64,14 @@ For **each** price: **Payment links** → **+ New** → pick the price, then und
 URL to:
 
 ```
-https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html?upgraded=1
+https://gantrystocktake.com/app.html?upgraded=1
 ```
+
+**The existing 10 links still point at `jamesadmiraal-alt.github.io`.** Both
+hosts serve the same files, so checkout still works — but this is the URL a
+customer watches their browser land on straight after paying, and it should be
+the brand rather than the build host. Updating it is a per-link Dashboard edit
+with no code change; `?upgraded=1` is handled identically on either host.
 
 Copy each resulting link (`https://buy.stripe.com/test_...`). Keep track of which
 is which (currency/tier/period) — you'll need that mapping for both steps below.

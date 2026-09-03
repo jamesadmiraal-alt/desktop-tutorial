@@ -117,12 +117,133 @@ async function viaPostmark(token: string, from: string, args: SendArgs): Promise
   }
 }
 
-/** Shared plain-text signature so both notifications end the same way. */
+/** The customer-facing home. Every link in an email points here — never at the
+ *  github.io deploy, which is the build host and not the brand. */
+export const SITE = "https://gantrystocktake.com";
+export const APP_URL = `${SITE}/app.html`;
+export const ADMIN_URL = `${SITE}/admin.html`;
+
+/** Shared plain-text signature so every notification ends the same way. */
 export function mailFooter(): string {
   return [
     "",
     "—",
-    "Gantry · https://jamesadmiraal-alt.github.io/desktop-tutorial/",
-    "You're receiving this because you're the owner of this organisation.",
+    `Gantry · ${SITE}`,
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Branded HTML shell.
+//
+// Table-based with inline styles, because that is the only thing that renders
+// consistently: Outlook's Word engine ignores most modern CSS, and Gmail strips
+// <style> blocks entirely on some clients. So no flexbox, no classes, no
+// external stylesheet — everything on the element.
+//
+// The mark is a PNG, not the SVG used everywhere else on the site: Gmail,
+// Outlook and Apple Mail all refuse to render SVG in mail. It is generated from
+// icons/gantry-mark.svg at 128px and displayed at 40px, which covers 2x and 3x
+// screens. Absolutely referenced, since an email has no origin to be relative
+// to.
+//
+// Colours are literals rather than the site's CSS custom properties for the
+// same reason: var() does not resolve in an email.
+// ---------------------------------------------------------------------------
+
+const PAGE_BG = "#f3f4f6";
+const BODY = "#111827";
+const MUTED = "#6b7280";
+const AMBER = "#fbbf24";
+const CARD_BG = "#ffffff";
+const MARK_URL = `${SITE}/icons/email-mark.png`;
+
+/** Escapes text for HTML. Every value below is ours today, but an org name or a
+ *  venue name will end up in one of these eventually and a stray `<` must not
+ *  be able to break the markup. */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+export type BrandedHtmlArgs = {
+  title: string;
+  /** One <p> each, in order. Plain text — escaped, so no markup. */
+  paragraphs: string[];
+  ctaLabel?: string;
+  ctaHref?: string;
+};
+
+export function brandedHtml(args: BrandedHtmlArgs): string {
+  const paras = args.paragraphs.map((p) =>
+    `<p style="margin:0 0 14px;font-size:16px;line-height:1.55;color:${BODY}">${esc(p)}</p>`
+  ).join("\n            ");
+
+  const cta = args.ctaLabel && args.ctaHref
+    ? `
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:22px 0 6px">
+              <tr><td style="border-radius:10px;background:${BODY}">
+                <a href="${esc(args.ctaHref)}"
+                   style="display:inline-block;padding:12px 22px;font-size:16px;font-weight:600;
+                          color:#ffffff;text-decoration:none;border-radius:10px">${esc(args.ctaLabel)}</a>
+              </td></tr>
+            </table>`
+    : "";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(args.title)}</title>
+</head>
+<body style="margin:0;padding:0;background:${PAGE_BG};
+             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+         style="background:${PAGE_BG}">
+    <tr>
+      <td align="center" style="padding:24px 12px">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
+               style="width:100%;max-width:600px;background:${CARD_BG};border-radius:14px;overflow:hidden">
+          <tr>
+            <td style="padding:22px 28px 16px">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="padding-right:10px" valign="middle">
+                    <!-- alt="" on purpose, and it matters more here than usual.
+                         Most email clients block remote images by default, so
+                         this often does not load at all — with alt text it
+                         renders as a broken-image box with "Gantry" crammed
+                         into 40px, which looks worse than nothing. The wordmark
+                         beside it already says Gantry, so the image is
+                         decorative: empty alt also stops a screen reader
+                         announcing the name twice. -->
+                    <img src="${MARK_URL}" width="40" height="40" alt=""
+                         style="display:block;width:40px;height:40px;border:0">
+                  </td>
+                  <td valign="middle" style="font-size:22px;font-weight:700;letter-spacing:-0.02em;color:${BODY}">
+                    Gantry
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr><td style="padding:0"><div style="height:4px;background:${AMBER};line-height:4px;font-size:0">&nbsp;</div></td></tr>
+          <tr>
+            <td style="padding:24px 28px 26px">
+            <h1 style="margin:0 0 14px;font-size:21px;line-height:1.3;font-weight:700;color:${BODY}">${esc(args.title)}</h1>
+            ${paras}${cta}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 28px 24px;font-size:13px;line-height:1.5;color:${MUTED}">
+              gantrystocktake.com · @gantrystocktake
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 }

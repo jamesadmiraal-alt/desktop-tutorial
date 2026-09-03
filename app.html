@@ -1673,7 +1673,8 @@
     $('skip-trial-btn').disabled = true;
     var toPlans = skipTrialToPlans;
     skipTrialToPlans = false;
-    var rpcCall = orgSignupMode === 'create'
+    var creating = orgSignupMode === 'create';
+    var rpcCall = creating
       ? sb.rpc('create_organisation', { org_name: $('org-name').value.trim(), org_country: $('org-country').value })
       : sb.rpc('join_organisation', { p_join_code: $('org-join-code').value.trim(), p_daily_code: $('org-daily-code').value.trim() });
     rpcCall.then(function (res) {
@@ -1682,6 +1683,23 @@
       if (res.error) { fail(res.error, 'Could not set up organisation'); return; }
       needsOrgSetup = false;
       toast('Account created — welcome!');
+      // Trial welcome, on the CREATE path only. Joining an existing org is not
+      // a new trial, and the paid welcome comes from the Stripe webhook — a
+      // "here's your trial" arriving after someone has paid reads as a billing
+      // error. The skip-the-trial path still gets it, correctly: the org really
+      // is created on 'trial' and stays there until checkout completes.
+      //
+      // Fire-and-forget, and nothing below it depends on the result: the
+      // organisation already exists by this point, so a mail failure must not
+      // turn a successful signup into a visible error. The function takes no
+      // arguments — it emails the caller's own address from their own session.
+      if (creating) {
+        sb.functions.invoke('send-trial-welcome').then(function (r) {
+          if (r && r.error) console.error('send-trial-welcome failed', r.error);
+        }, function (e) {
+          console.error('send-trial-welcome threw', e);
+        });
+      }
       if (toPlans) {
         // openAccount() runs its own refreshOrgStatus(), so the plan card and
         // the prices are correct for the org that was just created. Home's
@@ -2147,17 +2165,18 @@
     if (isNative) Capacitor.Plugins.Browser.open({ url: url });
     else window.open(url, '_blank');
   }
-  // admin.html isn't shipped into the native app (prepare-native.js's file
-  // whitelist doesn't include it, deliberately — see the org-model planning
-  // doc), so a relative link would 404 inside the native WebView. Always use
-  // the deployed absolute URL through openExternal() instead, same as the
-  // Stripe checkout/billing-portal links above.
-  var ADMIN_URL = 'https://jamesadmiraal-alt.github.io/desktop-tutorial/admin.html';
+  // gantrystocktake.com, not the github.io deploy: that host is where the site
+  // is BUILT, and it should never be what a customer is sent to or sees in a
+  // link. Both hosts serve the same files, so this is purely about which one
+  // people are shown.
+  //
+  // Absolute rather than relative because admin.html, terms.html and
+  // privacy.html aren't shipped into the native app (prepare-native.js copies
+  // only a whitelist), so a relative link would 404 inside the WebView. Always
+  // via openExternal(), same as the Stripe checkout/billing-portal links above.
+  var SITE_URL = 'https://gantrystocktake.com/';
+  var ADMIN_URL = SITE_URL + 'admin.html';
   $('open-admin-btn').onclick = function () { openExternal(ADMIN_URL); };
-  // Absolute for the same reason as ADMIN_URL: prepare-native.js copies only a
-  // whitelist of files into the native bundle, and these documents aren't in
-  // it, so a relative href would 404 inside the WebView.
-  var SITE_URL = 'https://jamesadmiraal-alt.github.io/desktop-tutorial/';
   $('open-terms-btn').onclick = function () { openExternal(SITE_URL + 'terms.html'); };
   $('open-privacy-btn').onclick = function () { openExternal(SITE_URL + 'privacy.html'); };
   function goUpgrade(plan) {

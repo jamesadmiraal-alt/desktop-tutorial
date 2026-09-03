@@ -6,9 +6,46 @@ break in different ways. Knowing which is which saves an afternoon:
 | Kind | Sent by | Examples | Fails as |
 |---|---|---|---|
 | **Auth** | Supabase Auth's mailer | Confirm your signup, reset your password | Rate-limited, or in spam |
-| **App** | Our Edge Functions, via `_shared/email.ts` | Thanks for upgrading, all seats in use | Silently not sent |
+| **App** | Our Edge Functions, via `_shared/email.ts` | Welcome, seats in use | Silently not sent |
 
 Both are currently limited by the same missing piece.
+
+## The five app emails
+
+Every one sends **plain text and HTML**, the HTML built by `brandedHtml()` in
+[`_shared/email.ts`](supabase/functions/_shared/email.ts). Every one is
+**fire-and-forget**: a send that fails is logged and the operation it describes
+still stands.
+
+| Email | Function | Trigger |
+|---|---|---|
+| You're on Gantry. Five products per count. | `send-trial-welcome` | `create_organisation()` succeeds — the create path only |
+| You're on Gantry Single-venue / Multi-venue | `super-stripewebhooks` | `checkout.session.completed` |
+| Concurrent seats updated | `set-seat-count` | the owner changes how many can count at once |
+| A team member can't start a count | `notify-seat-denied` | to the **owner**, when someone is turned away |
+| All concurrent seats are in use | `notify-seat-denied` | to the **blocked person**, same event |
+
+`send-trial-welcome` is new and **must be deployed** before the trial mail can
+send at all:
+
+```sh
+supabase functions deploy send-trial-welcome --use-api --project-ref vfixdchbkmqryfhirphx
+```
+
+JWT verification stays **ON** — it emails the caller's own address, from the
+caller's own session, and takes no arguments.
+
+### The header image
+
+`brandedHtml()` points at `https://gantrystocktake.com/icons/email-mark.png`,
+committed at [`icons/email-mark.png`](icons/email-mark.png). It is a PNG and not
+the SVG used on the site because Gmail, Outlook and Apple Mail all refuse to
+render SVG in mail. Regenerate it from `icons/gantry-mark.svg` rather than
+editing it by hand.
+
+**Assume it will often not load.** Most clients block remote images by default,
+which is why the header also carries the wordmark as text and the `<img>` has an
+empty `alt` — a blocked image degrades to a bold "Gantry", not to a broken box.
 
 ---
 
@@ -122,13 +159,19 @@ instead — which looks exactly like the app ignoring the setting.
 
 Supabase Dashboard → **Authentication → URL Configuration**:
 
-- **Site URL**: `https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html`
+- **Site URL**: `https://gantrystocktake.com/app.html`
 - **Redirect URLs**, add both:
-  - `https://jamesadmiraal-alt.github.io/desktop-tutorial/app.html`
+  - `https://gantrystocktake.com/app.html`
   - `http://127.0.0.1:8899/app.html` (local testing only — remove before live)
 
 The app handles the arrival by itself: supabase-js reads the session out of the
 URL, and `app.html` boots straight into org setup. No landing page is needed.
+
+**Use the custom domain, not the github.io URL.** Both hosts serve the same
+files, so either would technically work — but the address in a confirmation
+email is the first thing a new customer sees of the brand, and
+`jamesadmiraal-alt.github.io` reads like a link someone sent by mistake. The
+github.io host is where the site is built; it is not where people are sent.
 
 ---
 
