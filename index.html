@@ -175,7 +175,11 @@
      Scan bottles, cans and kegs, punch in the count, and export a clean CSV —
      no hardware, nothing to install.</p>
   <div class="cta-row">
-    <a class="btn success" href="app.html">Start free trial</a>
+    <!-- #signup, not bare app.html: the app opens on the Log in tab, so every
+         acquisition CTA was landing new visitors on a form for an account they
+         don't have yet. Relative href so it works on both gantrystocktake.com
+         and the github.io deploy. See the hash handling in app.html. -->
+    <a class="btn success" href="app.html#signup">Start free trial</a>
     <a class="btn" href="#pricing">See pricing</a>
   </div>
   <!-- The cap is stated here rather than left to be discovered at the fifth
@@ -355,7 +359,7 @@
         <li>CSV export &amp; share</li>
         <li>Cloud sync across devices</li>
       </ul>
-      <a class="btn" href="app.html">Get started</a>
+      <a class="btn" href="app.html#signup">Get started</a>
     </div>
     <div class="plan pro">
       <div class="tag">Multiple venues</div>
@@ -377,7 +381,7 @@
         <li>All venues' stocktakes centralised at head office</li>
         <li>Export ready to import into your stock management system</li>
       </ul>
-      <a class="btn success" href="app.html">Get started</a>
+      <a class="btn success" href="app.html#signup">Get started</a>
     </div>
   </div>
 </section>

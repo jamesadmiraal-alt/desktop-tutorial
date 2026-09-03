@@ -1504,6 +1504,28 @@
   $('tab-login').onclick = function () { setAuthMode('login'); };
   $('tab-signup').onclick = function () { setAuthMode('signup'); };
 
+  // The landing page's acquisition CTAs ("Start free trial", both pricing
+  // "Get started") link to app.html#signup, because the app opens on Log in —
+  // so every new visitor was being shown a form for an account they don't have
+  // yet. "Log in" in the nav deliberately stays on the bare URL.
+  //
+  // Applied on boot AND on hashchange: on boot for the arrival, on hashchange
+  // because navigating from #signup back to no-hash within the same document
+  // fires no reload, so a bookmarked or back-buttoned #signup would otherwise
+  // stick or fail to apply.
+  //
+  // Only ever switches TO signup, never back to login. Someone who followed a
+  // signup link, then tapped Log in because they realised they already have an
+  // account, must not be dragged back to Sign up by a stale hash. Also
+  // deliberately silent once signed in: showOrgSetupPrompt() and friends reuse
+  // this same view for a different purpose, and setAuthMode() there would put
+  // the credentials fields back on screen.
+  function applyAuthHash() {
+    if (currentUser) return;
+    if (/^#\/?signup$/.test(location.hash)) setAuthMode('signup');
+  }
+  window.addEventListener('hashchange', applyAuthHash);
+
   function validateOrgFields() {
     if (orgSignupMode === 'create') {
       if (!$('org-name').value.trim()) return 'Enter your organisation name';
@@ -4469,6 +4491,9 @@
     var session = res.data ? res.data.session : null;
     if (session) enterApp(session.user);
     else showView('auth');
+    // After the session check, not before: applyAuthHash() no-ops for a
+    // signed-in user, and currentUser is only set by the two branches above.
+    applyAuthHash();
     // Returning from Stripe checkout (Payment Link after-payment redirect).
     // The webhook that actually flips plan_tier races this redirect and often
     // hasn't landed yet, so the first refreshOrgStatus() in enterApp() can
