@@ -378,12 +378,25 @@
   .dialog-actions { display: flex; gap: 8px; }
   .action-sheet { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
   /* The status-changing half of the actions sheet, held away from Export CSV by
-     a rule and a wide gap. A tap that misses "Export CSV" downward must land in
-     dead space, not on "Mark ready for export" — that adjacency is what walked
-     ST5 through two status changes nobody asked for. 22px is more than a
-     thumb's worth of slop at the ~48px button height used here. */
+     a labelled divider and a wide band of dead space. A tap that misses
+     "Export CSV" downward must land in nothing, not on "Mark ready for export".
+     ST5 gave this 22+16px and ST6 still walked a take to Ready, so it is wider
+     now AND carries a heading — the label is doing real work, because the two
+     halves of this sheet were previously indistinguishable at a glance.
+     28+20px puts ~48px of dead space between the last read-only button and the
+     first state-changing one, which is a full button height of slop. */
   .action-sheet-state {
-    margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border);
+    margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border-strong);
+  }
+  .action-sheet-label {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-faint);
+    margin: 28px 0 -6px; padding-top: 20px; border-top: 1px solid var(--border-strong);
+  }
+  /* When the label is present it owns the divider, so the group below it must
+     not draw a second one. */
+  .action-sheet-label + .action-sheet-state {
+    margin-top: 10px; padding-top: 0; border-top: 0;
   }
 
   /* ---- Team view (single-venue only — see #team-view) ---- */
@@ -679,6 +692,31 @@
       <span>Tips and updates about Gantry</span>
     </label>
     <div class="plan-desc" style="margin-top:4px">Turning this off doesn't affect emails about your account or subscription.</div>
+  </div>
+  <!-- ===== Scanning =====
+       A wine bottle usually carries a marketing QR on the back label as well as
+       its retail barcode. Both are in frame and both decode, and the QR tends to
+       win — it is bigger and higher contrast — so the camera counts the wrong
+       thing and the operator has no way to say "not that one". These two
+       switches are that way.
+
+       Org-wide, not per device: the bottles are the same bottles whoever is
+       holding the phone, and a setting that has to be found and flipped on every
+       device is a setting that will be wrong on one of them. Written by
+       set_scan_prefs() (schema.sql), owner or manager. -->
+  <div class="acct-card" id="acct-scanning-card">
+    <h3>Scanning</h3>
+    <label class="checkbox-row">
+      <input type="checkbox" id="scan-barcodes">
+      <span>Barcode scanning <small style="color:var(--text-dim)">(retail barcodes / GTIN)</small></span>
+    </label>
+    <label class="checkbox-row" style="margin-top:10px">
+      <input type="checkbox" id="scan-qr">
+      <span>QR scanning</span>
+    </label>
+    <div class="plan-desc" style="margin-top:4px">Off by default. Wine bottles often have a QR — leave this off so
+      the camera grabs the barcode. Turn QR on only if you need it.</div>
+    <div class="plan-desc" id="scan-prefs-note" style="margin-top:8px;display:none">Only an owner or manager can change this.</div>
   </div>
   <div class="acct-card">
     <h3>Organisation</h3>
@@ -989,6 +1027,12 @@
       <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export CSV</button>
       <button id="take-share">Share</button>
     </div>
+    <!-- The heading is not decoration. Before it, both halves of this sheet were
+         an identical stack of buttons, so "Export CSV" and "Mark ready for
+         export" read as the same kind of thing — and their labels even share a
+         word. Naming the second group is what makes a miss-tap look wrong
+         before it happens. -->
+    <div class="action-sheet-label">Change this stocktake</div>
     <div class="action-sheet action-sheet-state">
       <!-- One button, three meanings — label and target status are set by
            openTakeActions() from the stocktake's current status. See
@@ -1408,7 +1452,36 @@
   // phase. 350ms covers the synthesized event without being long enough to eat a
   // deliberate second tap.
   var ghostClickUntil = 0;
-  function shieldGhostClicks() { ghostClickUntil = Date.now() + 350; }
+  var ghostOrigin = { x: -1e6, y: -1e6 };
+  function shieldGhostClicks() {
+    ghostClickUntil = Date.now() + 350;
+    // Pin WHERE the closing tap was, at the moment of closing. Comparing a
+    // later click against the most recent pointerdown instead would match
+    // everything: a deliberate new tap sets its own pointerdown, so the click
+    // that follows is always zero pixels from it. That mistake swallowed every
+    // tap inside the window — including the ⋯ that was meant to reopen the
+    // sheet.
+    ghostOrigin = { x: lastPointerAt.x, y: lastPointerAt.y };
+  }
+
+  // Where the finger last went down. A ghost click is the browser replaying the
+  // SAME touch, so it arrives at the same coordinates as the tap that closed the
+  // dialog. A deliberate second tap is somewhere else — that is the whole
+  // difference, and matching on it is what stops this shield eating real taps.
+  //
+  // ST6 found the cost of not doing this: the shield is armed by any dialog
+  // closing, so "Export (refused, sheet closes) → ⋯ → Export" had its ⋯ tap
+  // swallowed, the sheet never reopened, and the next tap went nowhere. From the
+  // operator's side that is a button that does nothing.
+  //
+  // 44px ≈ one thumb. Captured on pointerdown so it is recorded before any
+  // handler can close anything.
+  var GHOST_RADIUS = 44;
+  var lastPointerAt = { x: -1e6, y: -1e6 };
+  document.addEventListener('pointerdown', function (e) {
+    lastPointerAt = { x: e.clientX, y: e.clientY };
+  }, true);
+
   document.addEventListener('click', function (e) {
     if (Date.now() >= ghostClickUntil) return;
     // Only ever swallow a click the BROWSER synthesized from a touch. A ghost
@@ -1421,6 +1494,21 @@
     // preventDefault() lands on the anchor, and the export silently produces no
     // file. Found by the export test after the sheet was moved onto the shield.
     if (!e.isTrusted) return;
+    // Never swallow a tap inside an overlay that is CURRENTLY OPEN.
+    //
+    // The shield exists to protect what sits BEHIND a dialog that just closed.
+    // A tap landing inside a dialog that is open right now is, by definition,
+    // aimed at that dialog — and eating it produced ST6's silent no-op: the
+    // sequence was Export (which closed the sheet and armed this), then ⋯
+    // again, then Export again within 350ms. The second Export tap was
+    // swallowed here, so there was no download AND no refuse toast, which is
+    // indistinguishable from a dead button.
+    if (e.target && e.target.closest && e.target.closest('.overlay.open')) return;
+    // Only the replay of the tap that armed this, judged by position against
+    // where that tap was. A click somewhere else is a decision, not an echo.
+    var dx = Math.abs(e.clientX - ghostOrigin.x);
+    var dy = Math.abs(e.clientY - ghostOrigin.y);
+    if (dx > GHOST_RADIUS || dy > GHOST_RADIUS) return;
     ghostClickUntil = 0;   // one shot: swallow the stray, not the next real tap
     e.preventDefault();
     e.stopPropagation();
@@ -1918,7 +2006,7 @@
     Promise.all([
       sb.from('profiles').select('full_name, marketing_opt_in').eq('id', currentUser.id).maybeSingle(),
       sb.from('memberships')
-        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, heartbeat_interval_seconds)')
+        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, heartbeat_interval_seconds, scan_barcodes, scan_qr)')
         .eq('user_id', currentUser.id).maybeSingle()
     ]).then(function (results) {
       var profileRes = results[0], memberRes = results[1];
@@ -1933,7 +2021,13 @@
           planTier: org.plan_tier, country: org.country || '',
           countryChangedAt: org.country_changed_at || null,
           exportFormat: org.export_format,
-          heartbeatIntervalSeconds: org.heartbeat_interval_seconds
+          heartbeatIntervalSeconds: org.heartbeat_interval_seconds,
+          // A MISSING value must not read as "on". The columns are NOT NULL
+          // DEFAULT server-side, so this only matters for a client talking to a
+          // database where the migration has not run yet — and there, defaulting
+          // QR on would reintroduce the exact bug the setting exists to fix.
+          scanBarcodes: org.scan_barcodes !== false,
+          scanQr: org.scan_qr === true
         };
       } else if (memberRes.error && currentOrg) {
         // A FAILED request is not an answer. This branch used to treat a dropped
@@ -2341,10 +2435,64 @@
       fail(err, 'Could not save your email preference');
     });
   };
+  // Reflects what the SERVER holds, never the last thing tapped — same rule as
+  // the marketing toggle, and for the same reason: a refused or failed write
+  // must not leave a switch claiming a setting that isn't stored.
+  function renderScanPrefs() {
+    var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
+    $('scan-barcodes').checked = !currentOrg || currentOrg.scanBarcodes !== false;
+    $('scan-qr').checked = !!(currentOrg && currentOrg.scanQr);
+    // Staff see the setting — it explains why their camera ignores a QR — but
+    // cannot change it. Disabled rather than hidden: hiding it would make the
+    // behaviour look like a fault rather than a decision someone made.
+    $('scan-barcodes').disabled = !canManage;
+    $('scan-qr').disabled = !canManage;
+    $('scan-prefs-note').style.display = canManage ? 'none' : '';
+  }
+
+  function saveScanPrefs() {
+    var wantBarcodes = $('scan-barcodes').checked;
+    var wantQr = $('scan-qr').checked;
+    // Both off leaves a camera that can read nothing. Refuse before the request
+    // — set_scan_prefs() refuses it too, but saying so here means the operator
+    // finds out from the switch they just moved rather than from a red toast.
+    if (!wantBarcodes && !wantQr) {
+      renderScanPrefs();
+      toast('Leave at least one of barcode or QR scanning on', '#b91c1c');
+      return;
+    }
+    $('scan-barcodes').disabled = true;
+    $('scan-qr').disabled = true;
+    sb.rpc('set_scan_prefs', { p_barcodes: wantBarcodes, p_qr: wantQr }).then(function (res) {
+      if (res.error) {
+        renderScanPrefs();
+        fail(res.error, 'Could not save the scanning setting');
+        return;
+      }
+      var row = Array.isArray(res.data) ? res.data[0] : res.data;
+      if (row) {
+        currentOrg.scanBarcodes = row.scan_barcodes !== false;
+        currentOrg.scanQr = row.scan_qr === true;
+      }
+      renderScanPrefs();
+      // A live camera session is holding a detector built from the OLD list, so
+      // it would keep reading whatever was just turned off. Rebuild it now
+      // rather than at the next Scan tap.
+      if (scanning) restartScannerForFormats();
+      toast(currentOrg.scanQr ? 'QR scanning on' : 'QR scanning off — the camera will look for barcodes');
+    }, function (err) {
+      renderScanPrefs();
+      fail(err, 'Could not save the scanning setting');
+    });
+  }
+  $('scan-barcodes').onchange = saveScanPrefs;
+  $('scan-qr').onchange = saveScanPrefs;
+
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
     renderAccountName();
     renderMarketingPref();
+    renderScanPrefs();
     renderOrgAccountInfo();
     renderPlan();
     renderUpgradePrices();
@@ -2358,6 +2506,7 @@
     refreshOrgStatus(function () {
       renderAccountName();
       renderMarketingPref();
+      renderScanPrefs();
       renderOrgAccountInfo();
       renderPlan();
       renderUpgradePrices();
@@ -4103,11 +4252,25 @@
   // 18 characters is the ceiling: the longest retail GTIN is 14 digits, and
   // nothing this app scans legitimately exceeds that by much. Rejected at every
   // entry point rather than only at the write, so the pad never opens on one.
-  var BARCODE_MAX_LEN = 18;
+  // UPDATED 2026-09-05: the test is DIGITS-only over 18, and the digits part is
+  // load-bearing. A plain length cap broke QR scanning the moment that shipped —
+  // a bottle's QR payload is normally a URL, so every QR decode was thrown away
+  // here as "two codes joined". The glued case this defends against is numeric
+  // (two GTINs); a legitimate QR or an alphanumeric Code 128 is not.
+  //
+  // The outer cap catches a decode that is not a product code at all rather than
+  // a joined pair, which is why it gets a different message.
+  var BARCODE_MAX_DIGITS = 18;
+  var BARCODE_MAX_LEN = 128;
+  function looksGlued(code) {
+    var t = String(code || '').trim();
+    return /^[0-9]+$/.test(t) && t.length > BARCODE_MAX_DIGITS;
+  }
   function isPlausibleBarcode(code) {
     var t = String(code || '').trim();
     if (!t) return false;
     if (t.length > BARCODE_MAX_LEN) return false;
+    if (looksGlued(t)) return false;
     return true;
   }
 
@@ -4311,8 +4474,30 @@
   // Uses the platform's native BarcodeDetector where available (hardware
   // accelerated on Android Chrome); otherwise falls back to the vendored
   // zxing-wasm ponyfill (fast C++ decoder compiled to WebAssembly).
-  var FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39',
-                 'code_93', 'itf', 'qr_code', 'data_matrix'];
+  // Split by dimension, because that is the distinction the operator is making
+  // in Account. 1D is what a retail product carries; 2D is the marketing QR on
+  // the back of a wine bottle that kept winning the frame.
+  //
+  // data_matrix travels with qr_code: it is the other 2D format, it appears on
+  // exactly the same kind of promotional label, and nobody counting bottles
+  // asks for one without the other.
+  var FORMATS_1D = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39',
+                    'code_93', 'itf'];
+  var FORMATS_2D = ['qr_code', 'data_matrix'];
+
+  // The formats this organisation currently allows. Read at detector-build time,
+  // never cached in a variable — the toggles can change under a live camera.
+  //
+  // Defaults when there is no org yet (or a database without the migration):
+  // barcodes on, QR off. Never both on by omission; that is the reported bug.
+  function activeFormats() {
+    var barcodes = !currentOrg || currentOrg.scanBarcodes !== false;
+    var qr = !!(currentOrg && currentOrg.scanQr);
+    var list = [];
+    if (barcodes) list = list.concat(FORMATS_1D);
+    if (qr) list = list.concat(FORMATS_2D);
+    return list;
+  }
   var stream = null, video = null, detector = null, scanTimer = null;
   var camTrack = null, torchOn = false, detectBusy = false;
   var camGen = 0; // bumped on every start/stop so a stop cancels an in-flight start
@@ -4329,15 +4514,24 @@
   }
 
   function makeDetector() {
+    // wanted is resolved HERE rather than at module load, so a detector built
+    // after the toggles change gets the new list. This is the enforcement: a
+    // format that is not in the list is never decoded, so a disabled QR cannot
+    // reach onScan() at all.
+    var wanted = activeFormats();
     function create(D) {
       return D.getSupportedFormats().then(function (sup) {
-        return new D({ formats: FORMATS.filter(function (f) { return sup.indexOf(f) !== -1; }) });
+        return new D({ formats: wanted.filter(function (f) { return sup.indexOf(f) !== -1; }) });
       });
     }
     var Native = window.BarcodeDetector;
     var Pony = ponyfillDetector();
     if (Native && Native !== Pony) {
-      // Only trust the native detector if it can read retail (EAN) codes
+      // Only trust the native detector if it can read retail (EAN) codes.
+      // Skipped when 1D scanning is off: the native detector's EAN support is
+      // irrelevant to a QR-only session, and demanding it would push a
+      // perfectly good native decoder onto the WASM fallback.
+      if (wanted.indexOf('ean_13') === -1) return create(Native).catch(function () { return create(Pony); });
       return Native.getSupportedFormats().then(function (sup) {
         return sup.indexOf('ean_13') !== -1 ? create(Native) : create(Pony);
       }).catch(function () { return create(Pony); });
@@ -4382,11 +4576,30 @@
     if (camTrack) camTrack.applyConstraints({ advanced: [{ zoom: parseFloat(this.value) }] }).catch(function () {});
   };
 
+  // The default "camera is off" copy, captured before anything can replace it.
+  // The both-off branch below swaps this panel's contents, and without the
+  // original held somewhere the placeholder would stay wrong for the rest of the
+  // session once the setting was fixed.
+  var SCANNER_OFF_HTML = $('scanner-off').innerHTML;
+
   function startScanner() {
     if (!window.BarcodeDetectionAPI) {
       toast('Scanner library failed to load — check your connection', '#b91c1c');
       return;
     }
+    // Nothing to look for means don't open the camera at all. Starting it would
+    // give a live preview that silently never decodes, which reads as a broken
+    // scanner rather than as a setting. set_scan_prefs() refuses both-off, so
+    // this is only reachable on a database without the migration — but a black
+    // viewport is the worst possible way to find that out.
+    if (!activeFormats().length) {
+      $('scanner-off').innerHTML = 'Scanning is turned off in <b>Account → Scanning</b>.<br>'
+        + '<small>Turn on barcode or QR scanning to use the camera.</small>';
+      $('scanner-off').style.display = 'block';
+      toast('Scanning is turned off in Account', '#b91c1c');
+      return;
+    }
+    $('scanner-off').innerHTML = SCANNER_OFF_HTML;
     var gen = ++camGen;
     navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -4443,6 +4656,20 @@
   }
 
   $('toggle-cam').onclick = function () { scanning ? stopScanner() : startScanner(); };
+
+  // Rebuild a LIVE camera session's detector after the formats change. The
+  // detector is constructed once with a fixed format list, so a session started
+  // before the toggle would go on reading exactly what was just turned off.
+  //
+  // Stop then start, rather than swapping the detector in place: the camera
+  // stream is unaffected by the format list, but stopScanner() is the one path
+  // that reliably clears the decode timer and the busy flag, and reusing it
+  // means there is one teardown to be correct rather than two.
+  function restartScannerForFormats() {
+    if (!scanning) return;
+    stopScanner();
+    if (activeFormats().length) startScanner();
+  }
 
   // ---- Manual entry ----
   function manualAdd() {
@@ -4655,8 +4882,31 @@
     return { status: 'ready_for_export', label: 'Mark ready for export', cls: 'success' };
   }
 
+  // When the actions sheet last opened. The status-changing controls inside it
+  // are inert for a moment afterwards.
+  //
+  // This is the other half of the ST6 hit-area report, and the half a gap cannot
+  // fix. The sheet is opened by a tap on a Home row's ⋯, which sits mid-screen —
+  // and the sheet then draws itself centred, putting "Mark ready for export"
+  // roughly where the finger already is. Any stray click from that same tap
+  // (a touch sequence's synthesized click, a double-fire) lands on a button that
+  // did not exist when the finger came down. Widening the gap between Export and
+  // Mark ready does nothing about that, because the tap was never aimed at
+  // Export in the first place.
+  //
+  // 350ms: long enough to cover the synthesized event, far short of the time it
+  // takes to read a sheet and choose. Only the state-changing controls are held
+  // back — Export, Share and Cancel are safe to hit immediately and holding
+  // those would just feel broken.
+  var STATE_ARM_MS = 350;
+  var actionsOpenedAt = 0;
+  function stateControlsArmed() {
+    return Date.now() - actionsOpenedAt >= STATE_ARM_MS;
+  }
+
   function openTakeActions(t) {
     actionsTake = t;
+    actionsOpenedAt = Date.now();
     $('take-actions-title').textContent = t.name;
     var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
     // Clearing every item is owner/manager only — enforced by
@@ -4672,7 +4922,10 @@
     if (act) {
       btn.textContent = act.label;
       btn.className = act.cls;
-      btn.onclick = function () { setTakeStatus(t, act.status, 'manual'); };
+      btn.onclick = function () {
+        if (!stateControlsArmed()) return;
+        setTakeStatus(t, act.status, 'manual');
+      };
     }
 
     // Completing is only meaningful from Ready for export, and it is now the
@@ -4683,6 +4936,7 @@
     var completeBtn = $('take-complete');
     completeBtn.style.display = t.status === 'ready_for_export' ? '' : 'none';
     completeBtn.onclick = function () {
+      if (!stateControlsArmed()) return;
       if (!confirm('Mark "' + t.name + '" completed?\n\n'
                    + 'It becomes read-only for everyone — anyone still counting will '
                    + 'not be able to save. A manager can reopen it afterwards.')) return;
@@ -4759,16 +5013,26 @@
   $('take-export').onclick = function () { exportStocktake(); };
 
   function exportStocktake() {
-    // An in-progress count is not finished, and exporting used to mark it
-    // Completed regardless — jumping straight past Ready for export, which is
-    // the state that tells head office a count is done. So one tap on a take
-    // someone was still counting both handed out a half-finished file and
-    // declared the count over, with nothing said either way.
+    // EVERY path out of this function says something. ST6 reported an Export tap
+    // that produced no download and no refuse toast, which is indistinguishable
+    // from a dead button — and a silent Export is worse than a refused one,
+    // because the operator's next move is to tap the buttons around it.
     //
-    // Checked before fetching anything: refusing after a round-trip would make
-    // the file look like it was on its way. A re-export of an already-completed
-    // take is still allowed — head office losing the file is not a reason to
-    // recount.
+    // (The tap itself was being eaten by the ghost-click shield; that is fixed
+    // at the shield. This is the belt to those braces: a missing actionsTake can
+    // no longer throw on `.status` and vanish.)
+    if (!actionsTake) {
+      toast('Open the stocktake’s ⋯ menu again', '#b91c1c');
+      return;
+    }
+    // An in-progress count is not finished. Refusing here — before fetching
+    // anything — is deliberate: refusing after a round-trip would make the file
+    // look like it was on its way. A re-export of an already-completed take is
+    // still allowed; head office losing the file is not a reason to recount.
+    //
+    // What this must NEVER do is change the status. Export used to call
+    // setTakeStatus('completed') as part of downloading, and that is the ST5
+    // defect: one tap handed over a file AND closed the count.
     if (actionsTake.status !== 'ready_for_export' && actionsTake.status !== 'completed') {
       toast('Mark this stocktake ready for export first', '#b91c1c');
       return;
@@ -4881,12 +5145,16 @@
   };
 
   $('take-clear').onclick = function () {
+    // Same arming delay as the status controls — this is the most destructive
+    // button in the sheet and it sits in the same group.
+    if (!stateControlsArmed()) return;
+    if (!actionsTake) { toast('Open the stocktake’s ⋯ menu again', '#b91c1c'); return; }
     fetchTakeItems(actionsTake.id, function (takeItems) {
-      if (!takeItems.length) { toast('Nothing to clear', '#b91c1c'); $('take-actions-overlay').classList.remove('open'); return; }
+      if (!takeItems.length) { toast('Nothing to clear', '#b91c1c'); closeTakeActions(); return; }
       if (!confirm('Delete all ' + takeItems.length + ' scanned items in "' + actionsTake.name + '"? Export first if you need the data.')) return;
       sb.rpc('clear_stocktake_items', { p_stocktake_id: actionsTake.id }).then(function (res) {
         if (res.error) { fail(res.error, 'Clear failed'); return; }
-        $('take-actions-overlay').classList.remove('open');
+        closeTakeActions();
         actionsTake.stocktake_items = [];
         actionsTake.updated_at = new Date().toISOString();
         renderHome();

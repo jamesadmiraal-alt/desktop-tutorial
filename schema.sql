@@ -256,6 +256,23 @@ create table public.organisations (
   heartbeat_interval_seconds integer not null default 60
     check (heartbeat_interval_seconds >= 10),
 
+  -- Which code types the camera may read. A tester scanned a wine bottle and
+  -- the camera kept locking onto the marketing QR on the back label instead of
+  -- the retail barcode: both are in frame, both decode, and the QR tends to win
+  -- because it is bigger and higher contrast.
+  --
+  -- The defaults are deliberately NOT both on. A bottle QR is almost never the
+  -- thing being counted, so QR is opt-in — and because these are NOT NULL
+  -- DEFAULT, an organisation with no stated preference gets barcodes-only
+  -- rather than the both-on state that caused the problem.
+  --
+  -- Written ONLY by set_scan_prefs() (owner or manager) — deliberately absent
+  -- from the client-writable GRANT below, because the "owner update org" policy
+  -- is owner-only and widening it to managers would also hand them `country`,
+  -- which sets the billing currency.
+  scan_barcodes boolean not null default true,
+  scan_qr boolean not null default false,
+
   created_at timestamptz not null default now()
 );
 
@@ -1888,6 +1905,53 @@ begin
 end $$;
 
 grant execute on function public.set_marketing_opt_in(boolean) to authenticated;
+
+-- ==========================================================================
+-- Which code types the camera may read (see organisations.scan_barcodes /
+-- scan_qr above).
+--
+-- An RPC rather than two more columns on the client-writable GRANT, for a
+-- permission reason: "owner update org" is owner-only, but a venue manager is
+-- exactly who should be able to say "stop reading the QR on these bottles".
+-- Widening that policy would also hand managers `country` (the billing
+-- currency), `join_code` and `export_format`. This grants one narrow capability
+-- to owner AND manager instead, and the columns stay off the GRANT so nothing
+-- else can write them.
+--
+-- Refuses both-off: a camera that can read nothing is a state the operator did
+-- not ask for, and the database should not be able to hold it.
+-- ==========================================================================
+create or replace function public.set_scan_prefs(p_barcodes boolean, p_qr boolean)
+returns table (scan_barcodes boolean, scan_qr boolean)
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_role text := public.my_role();
+begin
+  if v_org is null then
+    raise exception 'You do not belong to an organisation.';
+  end if;
+  -- `not in` with an explicit null test rather than `<>`: my_role() is NULL for
+  -- a caller with no membership, and a NULL comparison is NULL, which plpgsql
+  -- treats as false — the bypass this file has been bitten by before.
+  if v_role is null or v_role not in ('owner', 'manager') then
+    raise exception 'Only an owner or manager can change scanning settings.';
+  end if;
+
+  if coalesce(p_barcodes, false) = false and coalesce(p_qr, false) = false then
+    raise exception 'Leave at least one of barcode or QR scanning on.';
+  end if;
+
+  update public.organisations
+     set scan_barcodes = coalesce(p_barcodes, true),
+         scan_qr = coalesce(p_qr, false)
+   where id = v_org;
+
+  return query
+    select o.scan_barcodes, o.scan_qr from public.organisations o where o.id = v_org;
+end $$;
+
+grant execute on function public.set_scan_prefs(boolean, boolean) to authenticated;
 
 -- ==========================================================================
 -- One OPEN stocktake per name per org.

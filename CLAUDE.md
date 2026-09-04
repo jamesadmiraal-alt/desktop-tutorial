@@ -74,6 +74,15 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - Barcode scanning: native `BarcodeDetector` when available (Android Chrome), else the
   vendored zxing-wasm ponyfill (`barcode-detector.iife.js` + `zxing_reader.wasm`).
   Do not reintroduce a `qrbox`-style scan region — it silently breaks QR decoding.
+  **Which formats are decoded is an org setting**, not a constant: `activeFormats()`
+  builds the list from `organisations.scan_barcodes` / `scan_qr` at detector-build time,
+  and `makeDetector()` must keep reading it there so a live camera picks up a change.
+  Defaults are **barcodes on, QR off** — a wine bottle's marketing QR otherwise wins the
+  frame over its retail barcode. A missing value must never be read as "both on".
+- `isPlausibleBarcode()` rejects a glued pair of scans, and its test is **digits-only**
+  over 18 characters. A plain length cap looks equivalent and is not: a QR payload is
+  usually a URL, so a length cap silently throws away every QR decode. That interaction
+  shipped once already.
 - Light/dark mode (`app.html` only — `index.html` doesn't have a toggle): every themed
   color is a CSS custom property on `:root`, overridden under `:root[data-theme="light"]`
   (dark is the default/original palette). New UI must use `var(--token)`, never a raw hex,
