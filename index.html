@@ -22,9 +22,26 @@
     padding: 16px 20px; max-width: 960px; margin: 0 auto;
   }
   nav .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; }
-  nav .links { display: flex; gap: 10px; align-items: center; }
-  nav a.plain { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; padding: 8px 10px; }
+  nav .links { display: flex; gap: 8px; align-items: center; }
+  nav a.plain { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; padding: 8px 6px; }
   nav a.plain:hover { color: var(--text); }
+  /* Nav buttons are smaller than the page's, and never wrap. Three controls plus
+     the wordmark have to fit across a 390px phone, and at the default .btn size
+     "Sign up" and "Log in" each broke onto two lines — which turned the nav into
+     two rows of ragged text. nowrap is the part that must not be removed: without
+     it this degrades silently as soon as a label gets any longer. */
+  nav .links .btn { font-size: 0.92rem; padding: 10px 14px; white-space: nowrap; }
+  /* A third control costs about 90px, and at 320px — still a live viewport on
+     older phones — that was enough to push the nav 11px past the edge and give
+     the whole page a horizontal scrollbar. Measured before and after: without
+     this the overflow is 11px, with it there is none. Trimming padding rather
+     than hiding "Pricing", because a link that disappears on small screens is
+     harder to find than a slightly tighter one. */
+  @media (max-width: 400px) {
+    nav { padding-left: 14px; padding-right: 14px; }
+    nav .links .btn { padding-left: 11px; padding-right: 11px; }
+    nav a.plain { padding-left: 4px; padding-right: 4px; }
+  }
   /* Gantry mark — see icons/gantry-mark.svg. Inline (not the .ico mask
      system every other icon uses) since it needs the amber accent bottle
      alongside currentColor rails, which a single-color mask can't do. No
@@ -41,6 +58,16 @@
   .btn:active { opacity: 0.85; }
   .btn.primary { background: var(--accent); }
   .btn.success { background: var(--success); }
+  /* Outline, for a secondary action sitting beside a filled one. Two filled
+     buttons in the nav would read as two equally-weighted choices, and the hero
+     already owns the green CTA — a third filled colour up here would be
+     competing with it as well. Slightly tighter padding because the nav is the
+     one place three controls have to fit across a phone. */
+  .btn.outline {
+    background: transparent; color: var(--text);
+    border: 1px solid var(--border-strong); padding: 11px 16px;
+  }
+  .btn.outline:hover { border-color: var(--text-dim); }
 
   .hero { text-align: center; padding: 64px 20px 48px; }
   .hero h1 { font-size: clamp(2rem, 6vw, 3.2rem); line-height: 1.15; margin: 16px 0 12px; }
@@ -154,8 +181,16 @@
     </svg>
     Gantry
   </div>
+  <!-- Sign up before Log in, weakest to strongest left-to-right, which is the
+       normal reading order for a button group. #signup rather than bare
+       app.html: the app opens on the Log in tab, so a "Sign up" link without
+       the hash would land a new visitor on a form for an account they do not
+       have — the same defect the hero and pricing CTAs were fixed for.
+       "Log in" keeps the filled primary and the footer's "Open the app" stays
+       on the bare URL; both are for people who already have an account. -->
   <div class="links">
     <a class="plain" href="#pricing">Pricing</a>
+    <a class="btn outline" href="app.html#signup">Sign up</a>
     <a class="btn primary" href="app.html">Log in</a>
   </div>
 </nav>
