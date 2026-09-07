@@ -428,19 +428,10 @@
        doesn't participate in hit-testing, so nothing outside the ring is
        clickable and nothing under the ring can ever receive the tap. */
     cursor: pointer;
-    /* The glow visibly GLIDES from one control to the next rather than
-       snapping — this is what makes it read as "look here now" instead of a
-       flashcard deck. Every geometry property that positionTutorial() sets
-       is listed so a step-to-step move animates as one continuous motion —
-       but ONLY within the same screen/sheet. positionTutorial() disables
-       this transition for one frame whenever the step crosses to a
-       different view or sheet, so the glow SNAPS there instead of sweeping
-       across unrelated controls it has no business highlighting (the
-       7 Sep walkthrough caught it flashing over the camera status line en
-       route to Scan, and over Share en route to Mark ready). */
-    transition: top 0.28s cubic-bezier(.4,0,.2,1), left 0.28s cubic-bezier(.4,0,.2,1),
-      width 0.28s cubic-bezier(.4,0,.2,1), height 0.28s cubic-bezier(.4,0,.2,1),
-      border-radius 0.28s ease;
+    /* No geometry transition: live walkthroughs found gliding between tips
+       reads as erratic (sweep over wrong controls, Mark ready to Export slide).
+       Spotlight always snaps; renderTutorialStep hides it for one frame
+       while repositioning so the move is never visible. */
   }
   .tutorial-spot.is-hidden { display: none; }
   /* Once per step, never looping (animation-iteration-count defaults to 1,
@@ -5383,7 +5374,7 @@
   // steps for the person it's written for. The nil UUID keeps every read
   // (loadItems, etc.) a valid, empty, error-free query instead of a
   // PostgREST "invalid uuid" toast during what's supposed to be the pitch.
-  var TUTORIAL_VERSION = 4;
+  var TUTORIAL_VERSION = 5;
   // Bumped (not just re-shown from Account) so a free-trial operator who
   // already skipped an older pitch still sees the improved one once,
   // without needing to find Replay themselves. The version lives IN the
@@ -5422,11 +5413,9 @@
         body: "We'll walk through counting stock on your phone, then getting those numbers into your usual stock system. The highlighted button is what each tip is about.",
         enter: function () { showView('home'); }
       },
-      // ctx marks which underlying screen/sheet a step's target lives on —
-      // renderTutorialStep() compares it against the previous step's ctx to
-      // decide whether the glow may glide (same ctx) or must snap instantly
-      // (different ctx), so it never sweeps across an unrelated control on
-      // the way to the right one. 'home' isn't reused here on purpose: the
+      // ctx documents which screen/sheet a step's target lives on (home / scan /
+      // sheet). Spotlight always snaps now; ctx is kept for clarity and any
+      // future per-surface logic. 'home' isn't reused on purpose: the
       // "Your stocktakes" step was cut (redundant with Start), so nothing
       // else on Home needs a glow.
       {
@@ -5530,23 +5519,25 @@
       $('tutorial-card').classList.add('is-centered');
       return;
     }
-    $('tutorial-spot').classList.remove('is-hidden');
+    $('tutorial-spot').classList.add('is-hidden');
     $('tutorial-overlay').classList.remove('full-dim');
     $('tutorial-card').classList.remove('is-centered');
     var target = step.target();
-    // Defensive only — every real-target step should always resolve (⋯
-    // sheet and Scan/Take-actions all draw against TUTORIAL_PREVIEW_TAKE,
-    // never real data that could be missing), but skip forward rather than
-    // show an empty spotlight if a future markup change ever breaks one.
+    // Defensive only - every real-target step should always resolve
+    // (sheet and Scan/Take-actions all draw against TUTORIAL_PREVIEW_TAKE),
+    // but skip forward rather than show an empty spotlight if markup breaks.
     if (!target) { tutorialNext(); return; }
-    // Same screen/sheet as the step we just left → glide (the transition
-    // CSS handles it). Different one → snap, so the glow never sweeps
-    // across whatever happens to sit between the old and new rects.
-    var snap = !step.ctx || step.ctx !== prevCtx;
-    target.scrollIntoView({ block: 'center', inline: 'nearest' });
+    // Always snap. Hide the spot while measuring so the operator never sees
+    // travel between tips (glide looked erratic in live walkthroughs).
+    // Instant scroll + double rAF lets enter() layout (openTake / sheet) settle.
+    target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
     requestAnimationFrame(function () {
-      positionTutorial(target, snap, step.avoidBelow ? step.avoidBelow() : null);
-      setTimeout(pulseSpotlight, snap ? 30 : 300);
+      requestAnimationFrame(function () {
+        if (!tutorialActive) return;
+        positionTutorial(target, true, step.avoidBelow ? step.avoidBelow() : null);
+        $('tutorial-spot').classList.remove('is-hidden');
+        setTimeout(pulseSpotlight, 40);
+      });
     });
   }
 
