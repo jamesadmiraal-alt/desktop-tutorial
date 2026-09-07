@@ -409,24 +409,53 @@
      Next/Back/Skip, never the real control underneath. */
   .tutorial-overlay { position: fixed; inset: 0; z-index: 500; display: none; }
   .tutorial-overlay.open { display: block; }
+  /* The closer step (no real control to point at) dims the whole screen
+     directly instead of relying on the spotlight cutout — see .is-hidden
+     on .tutorial-spot, toggled together with this in renderTutorialStep(). */
+  .tutorial-overlay.full-dim { background: var(--scrim); }
   .tutorial-spot {
-    position: fixed; box-shadow: 0 0 0 9999px var(--scrim);
+    position: fixed;
+    /* Cutout, then a soft amber halo just outside the ring — "spotlight",
+       not a hard box. Two shadows in one property: the huge one *is* the
+       dim-everything-else trick, the small one is pure polish. */
+    box-shadow: 0 0 0 9999px var(--scrim), 0 0 0 6px rgba(245, 158, 11, 0.25);
     border: 2px solid var(--warning); border-radius: 12px;
     pointer-events: none;
-    transition: top 0.2s ease, left 0.2s ease, width 0.2s ease, height 0.2s ease;
+    /* The glow visibly GLIDES from one control to the next rather than
+       snapping — this is what makes it read as "look here now" instead of a
+       flashcard deck. Every geometry property that positionTutorial() sets
+       is listed so a step-to-step move (including across a view swap, where
+       the page underneath changes instantly but the glow itself doesn't)
+       animates as one continuous motion. */
+    transition: top 0.28s cubic-bezier(.4,0,.2,1), left 0.28s cubic-bezier(.4,0,.2,1),
+      width 0.28s cubic-bezier(.4,0,.2,1), height 0.28s cubic-bezier(.4,0,.2,1),
+      border-radius 0.28s ease;
   }
+  .tutorial-spot.is-hidden { display: none; }
   .tutorial-card {
     position: fixed; left: 50%; transform: translateX(-50%);
     width: calc(100% - 32px); max-width: 400px;
-    background: var(--surface); border-radius: 16px; padding: 16px;
+    background: var(--surface); border-radius: 16px; padding: 24px 20px 20px;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
   }
+  /* The closer only — centred like a confirm dialog rather than pinned
+     beside a target. translate() (not translateX) overrides the base rule's
+     horizontal-only transform, since .tutorial-card.is-centered is the more
+     specific selector and wins the cascade on both properties. */
+  .tutorial-card.is-centered { top: 50%; transform: translate(-50%, -50%); }
+  .tutorial-skip-btn {
+    position: absolute; top: 14px; right: 14px;
+    background: none; border: 0; padding: 6px 4px;
+    font-size: 0.78rem; font-weight: 600; color: var(--text-faint);
+  }
+  .tutorial-skip-btn:active { color: var(--text-dim); }
   .tutorial-step-count {
     font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--text-faint); margin-bottom: 4px;
+    text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px;
+    padding-right: 40px;   /* clears the Skip button in the corner above it */
   }
-  .tutorial-title { font-weight: 700; font-size: 1.05rem; margin-bottom: 6px; }
-  .tutorial-body { color: var(--text-body); font-size: 0.9rem; line-height: 1.5; margin-bottom: 14px; }
+  .tutorial-title { font-weight: 700; font-size: 1.1rem; margin-bottom: 8px; padding-right: 40px; }
+  .tutorial-body { color: var(--text-body); font-size: 0.92rem; line-height: 1.55; margin-bottom: 18px; }
 
   /* ---- Team view (single-venue only — see #team-view) ---- */
   .code-box { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
@@ -1211,12 +1240,12 @@
 <div id="tutorial-overlay" class="tutorial-overlay">
   <div id="tutorial-spot" class="tutorial-spot"></div>
   <div id="tutorial-card" class="tutorial-card">
+    <button id="tutorial-skip" class="tutorial-skip-btn" type="button">Skip</button>
     <div class="tutorial-step-count" id="tutorial-step-count"></div>
     <div class="tutorial-title" id="tutorial-title"></div>
     <div class="tutorial-body" id="tutorial-body"></div>
     <div class="dialog-actions">
       <button id="tutorial-back" class="flex" style="display:none">Back</button>
-      <button id="tutorial-skip" class="flex">Skip</button>
       <button id="tutorial-next" class="primary flex">Next</button>
     </div>
   </div>
@@ -5316,15 +5345,31 @@
   }
 
   // ---- In-app tutorial (coach marks) ----
-  // First-run walkthrough drawn over the REAL app chrome — there is no
-  // separate mock UI to keep in sync with app.html as it changes. Every step
-  // is purely explanatory: #tutorial-overlay is a full-viewport layer above
-  // even the header (z-index 500 vs the header's 60) that swallows every tap
+  // A calm product PITCH for free-trial operators, not a feature tour: scan
+  // with the phone camera, mark the count ready, export a CSV, import it into
+  // whatever stock system already runs the venue. Gantry feeds that system —
+  // it doesn't replace it, and the tour says so on its last step.
+  //
+  // Drawn over the REAL app chrome, no separate mock UI. Every step is
+  // purely explanatory: #tutorial-overlay is a full-viewport layer above even
+  // the header (z-index 500 vs the header's 60) that swallows every tap
   // except Next/Back/Skip, so nothing gets scanned, saved, exported or
-  // deleted by the tour itself. That's what makes it safe to open a genuine
-  // in-progress stocktake for the Scan/Qty pad/List/⋯ steps — the operator
-  // can look but not touch until they dismiss the tour.
-  var TUTORIAL_VERSION = 1;
+  // deleted by the tour itself.
+  //
+  // Steps 3-5 (Scan / Mark ready / Export) point at real controls but never
+  // at a real stocktake — TUTORIAL_PREVIEW_TAKE below is a fake, never-
+  // persisted stand-in. A real-take version was tried first and rejected: the
+  // audience for this pitch is exactly the free-trial operator who hasn't
+  // created a stocktake yet, so gating on one would collapse the tour to two
+  // steps for the person it's written for. The nil UUID keeps every read
+  // (loadItems, etc.) a valid, empty, error-free query instead of a
+  // PostgREST "invalid uuid" toast during what's supposed to be the pitch.
+  var TUTORIAL_VERSION = 2;
+  // Bumped (not just re-shown from Account) so a free-trial operator who
+  // already skipped v1's feature-dump tour still sees this pitch once,
+  // without needing to find Replay themselves — see BACKLOG-style note in
+  // the polish request this shipped from. The version lives IN the storage
+  // key, so old v1 state is simply orphaned, never migrated or read.
   function tutorialStorageKey(orgId) { return 'gantry.tutorial.v' + TUTORIAL_VERSION + '.' + orgId; }
   function readTutorialState() {
     if (!currentOrg) return null;
@@ -5341,79 +5386,53 @@
     } catch (e) {}
   }
 
-  // The one real stocktake used for the Scan/Qty pad/List/⋯ steps, so they
-  // point at genuine controls instead of a mocked-up screen. Never a
-  // completed one — that's read-only (takeIsReadOnly()), which would make
-  // the very screens being demonstrated behave differently than normal.
-  function pickTutorialTake() {
-    var t = takes.find(function (x) { return x.status === 'in_progress'; });
-    if (t) return t;
-    return takes.find(function (x) { return x.status === 'ready_for_export'; }) || null;
-  }
-
-  // A distinctive placeholder barcode for the Qty pad preview — chosen so it
-  // can never collide with a real scanned line (which would show a wrong
-  // "already scanned" hint). openQtyDialog()/closeQtyDialog() are the same
-  // functions a real scan uses and fully reset pendingCode either way, so a
-  // real scan straight after this tour overwrites every trace of it safely.
-  var TUTORIAL_DEMO_CODE = 'TUTORIAL-EXAMPLE';
+  var TUTORIAL_PREVIEW_TAKE = { id: '00000000-0000-0000-0000-000000000000', name: 'Example count', status: 'in_progress' };
 
   function tutorialStepDefs() {
     return [
+      // Consent/orientation gate, not a numbered step — see isIntro handling
+      // in renderTutorialStep(). Explains the ONE thing a first-time viewer
+      // can't be assumed to already know: what the glow means. Shown before
+      // both an auto-start and a manual Replay.
       {
-        id: 'home-list', needsTake: false,
-        title: 'Your stocktakes',
-        body: "This is where your counts live. Tap one to keep counting, or start a new one below.",
+        id: 'intro', noTarget: true, isIntro: true, title: 'Quick tour?',
+        body: "We'll walk through counting stock with your phone, then getting the numbers into your system. Wherever you see this glow, that's what we're talking about.",
+        enter: function () { showView('home'); }
+      },
+      {
+        id: 'home', title: 'Your stocktakes',
+        body: "This is where your counts live — open one to keep counting, or start a new one below.",
         target: function () { return document.querySelector('.take-group[data-group="inprogress"]'); },
         enter: function () { showView('home'); }
       },
       {
-        id: 'new-take', needsTake: false,
-        title: 'Start a stocktake',
-        body: "Tap here to start a count for one location — a stocktake is one counting session. You don't need to tap this now.",
+        id: 'start', title: 'Start a count',
+        body: "Create a stocktake, name it — like Cellar or Main Bar — and pick the location. That's your session for this count. You don't need to tap this now.",
         target: function () { return $('new-stocktake'); },
         enter: function () { showView('home'); }
       },
       {
-        id: 'scan', needsTake: true,
-        title: 'Scan',
-        body: "Tap Scan to turn on the camera and start reading barcodes — or QR codes, if your organisation has that turned on (Account → Scanning).",
+        id: 'scan', title: 'Scan products',
+        body: "Open the camera, scan the retail barcode, then enter the quantity. Scan again to add more.",
         target: function () { return $('toggle-cam'); },
-        enter: function () { openTake(tutorialTake); }
+        enter: function () { openTake(TUTORIAL_PREVIEW_TAKE); }
       },
       {
-        id: 'qty', needsTake: true,
-        title: 'Enter a quantity',
-        body: "After each scan, this keypad appears so you can say how many you counted, then Save & continue. You don't need to enter anything now.",
-        target: function () { return $('qty-pad'); },
-        enter: function () {
-          openTake(tutorialTake);
-          openQtyDialog(TUTORIAL_DEMO_CODE, false);
-          $('qty-input').value = '1';
-        },
-        exit: function () { closeQtyDialog(); }
+        id: 'mark-ready', title: 'Mark ready for export',
+        body: "Once you're done counting, mark the stocktake ready. This doesn't change your stock system yet — it just means the count is finished and ready to export.",
+        target: function () { return document.querySelector('#take-actions-overlay .action-sheet-state'); },
+        enter: function () { showView('home'); openTakeActions(TUTORIAL_PREVIEW_TAKE); }
       },
       {
-        id: 'list', needsTake: true,
-        title: 'Review your scans',
-        body: "Everything counted this session shows up here. Tap a line any time to fix a quantity.",
-        target: function () { return $('list'); },
-        enter: function () { openTake(tutorialTake); }
+        id: 'export', title: 'Export or share the CSV',
+        body: "Download the CSV, or share it — including straight to your email. Each line is a barcode and its quantity.",
+        target: function () { return document.querySelector('#take-actions-overlay .action-sheet:not(.action-sheet-state)'); },
+        enter: function () { showView('home'); openTakeActions(TUTORIAL_PREVIEW_TAKE); }
       },
       {
-        id: 'take-actions', needsTake: true,
-        title: 'Finishing up',
-        body: "Export CSV any time — it never finishes the count by itself. Mark ready for export once you're done counting; that's the signal head office watches for.",
-        target: function () { return document.querySelector('#take-actions-overlay .dialog'); },
-        enter: function () { showView('home'); openTakeActions(tutorialTake); },
-        exit: function () { closeTakeActions(); }
-      },
-      {
-        id: 'account', needsTake: false,
-        title: 'Account',
-        body: "Your team, scanning preferences and plan all live here — and you can replay this tour any time from Help, below.",
-        target: function () { return $('acct-scanning-card'); },
-        enter: function () { openAccount(); }
+        id: 'import', title: 'Import into your stock system', noTarget: true,
+        body: "Open your stock system and import that file to update it with the barcode and quantity for every line. Gantry feeds your system — it doesn't replace it.",
+        enter: function () { showView('home'); }
       }
     ];
   }
@@ -5421,15 +5440,10 @@
   var tutorialActive = false;
   var tutorialSteps = [];
   var tutorialStepIndex = -1;
-  var tutorialTake = null;
 
   function startTutorial() {
     if (!currentOrg || !currentUser || tutorialActive) return;
-    tutorialTake = pickTutorialTake();
-    // needsTake steps drop out entirely on a brand-new org with nothing to
-    // open yet — not shown as broken, just not offered this run. Replaying
-    // after the first real stocktake exists shows the full seven steps.
-    tutorialSteps = tutorialStepDefs().filter(function (s) { return !s.needsTake || !!tutorialTake; });
+    tutorialSteps = tutorialStepDefs();
     tutorialStepIndex = -1;
     tutorialActive = true;
     $('tutorial-overlay').classList.add('open');
@@ -5458,14 +5472,37 @@
   }
 
   function renderTutorialStep(step) {
-    $('tutorial-step-count').textContent = 'Step ' + (tutorialStepIndex + 1) + ' of ' + tutorialSteps.length;
+    // The intro (index 0) isn't one of the numbered steps — "Step 1 of 6"
+    // starts counting from the first real content step, so the gate reads as
+    // a question ("Quick tour?") rather than as step 0 of something.
+    if (step.isIntro) {
+      $('tutorial-step-count').textContent = '';
+    } else {
+      $('tutorial-step-count').textContent = 'Step ' + tutorialStepIndex + ' of ' + (tutorialSteps.length - 1);
+    }
     $('tutorial-title').textContent = step.title;
     $('tutorial-body').textContent = step.body;
     $('tutorial-back').style.display = tutorialStepIndex > 0 ? '' : 'none';
-    $('tutorial-next').textContent = tutorialStepIndex === tutorialSteps.length - 1 ? 'Done' : 'Next';
+    $('tutorial-next').textContent = step.isIntro ? 'OK, show me'
+      : (tutorialStepIndex === tutorialSteps.length - 1 ? 'Done' : 'Next');
+
+    // The closer (Import) names no Gantry control — it's the pitch's last
+    // beat, not a step. Full soft dim, no cutout, card centred like any
+    // other confirm dialog rather than pinned beside a target.
+    if (step.noTarget) {
+      $('tutorial-spot').classList.add('is-hidden');
+      $('tutorial-overlay').classList.add('full-dim');
+      $('tutorial-card').classList.add('is-centered');
+      return;
+    }
+    $('tutorial-spot').classList.remove('is-hidden');
+    $('tutorial-overlay').classList.remove('full-dim');
+    $('tutorial-card').classList.remove('is-centered');
     var target = step.target();
-    // Defensive only — every step's viability is actually decided up front by
-    // the needsTake filter in startTutorial(), so this should be unreachable.
+    // Defensive only — every real-target step should always resolve (Home,
+    // ⋯ sheet and Scan/Take-actions all draw against TUTORIAL_PREVIEW_TAKE,
+    // never real data that could be missing), but skip forward rather than
+    // show an empty spotlight if a future markup change ever breaks one.
     if (!target) { tutorialNext(); return; }
     target.scrollIntoView({ block: 'center', inline: 'nearest' });
     requestAnimationFrame(function () { positionTutorial(target); });
@@ -5502,7 +5539,8 @@
   function tutorialReposition() {
     if (!tutorialActive) return;
     var step = tutorialSteps[tutorialStepIndex];
-    var target = step && step.target();
+    if (!step || step.noTarget) return;   // centred by CSS — nothing to recompute
+    var target = step.target();
     if (target) positionTutorial(target);
   }
 
@@ -5512,8 +5550,10 @@
     tutorialActive = false;
     tutorialSteps = [];
     tutorialStepIndex = -1;
-    tutorialTake = null;
     $('tutorial-overlay').classList.remove('open');
+    $('tutorial-spot').classList.remove('is-hidden');
+    $('tutorial-overlay').classList.remove('full-dim');
+    $('tutorial-card').classList.remove('is-centered');
     document.removeEventListener('keydown', tutorialOnKeydown);
     window.removeEventListener('resize', tutorialReposition);
   }
@@ -5521,17 +5561,17 @@
     if (!tutorialActive) return;
     tutorialTeardown();
     writeTutorialState('skipped');
-    // Skip always lands back on Home — the tour can leave the operator inside
-    // a real stocktake (Scan/Qty pad/List) or over the ⋯ sheet, and neither
-    // is where "get me out of this" should leave them.
+    // Skip always lands back on Home — the tour can leave the operator over
+    // the real ⋯ sheet (Mark ready/Export steps), and that's not where
+    // "get me out of this" should leave them.
     loadTakes(true);
   }
   function completeTutorial() {
     if (!tutorialActive) return;
     tutorialTeardown();
     writeTutorialState('completed');
-    // Natural completion happens on the Account step (Done) — leave them
-    // there rather than bouncing them elsewhere right after finishing.
+    // Natural completion happens on the Import closer, already over Home —
+    // nothing to navigate, they're exactly where they should be.
   }
 
   // Called after every loadTakes() resolves, not only the post-login one —
