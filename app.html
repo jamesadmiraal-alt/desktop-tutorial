@@ -448,8 +448,8 @@
      rather than leaving it running) — a soft "look here" ping, not a throb
      that would nag for the whole step. */
   @keyframes tutorial-pulse {
-    0%   { box-shadow: 0 0 0 9999px var(--scrim), 0 0 0 6px rgba(245, 158, 11, 0.25), 0 0 0 6px rgba(245, 158, 11, 0.55); }
-    100% { box-shadow: 0 0 0 9999px var(--scrim), 0 0 0 6px rgba(245, 158, 11, 0.25), 0 0 0 22px rgba(245, 158, 11, 0); }
+    0%   { box-shadow: 0 0 0 9999px var(--scrim), 0 0 0 4px rgba(245, 158, 11, 0.18), 0 0 0 4px rgba(245, 158, 11, 0.35); }
+    100% { box-shadow: 0 0 0 9999px var(--scrim), 0 0 0 4px rgba(245, 158, 11, 0.18), 0 0 0 14px rgba(245, 158, 11, 0); }
   }
   .tutorial-spot.pulse { animation: tutorial-pulse 0.7s ease-out 1; }
   .tutorial-card {
@@ -5383,7 +5383,7 @@
   // steps for the person it's written for. The nil UUID keeps every read
   // (loadItems, etc.) a valid, empty, error-free query instead of a
   // PostgREST "invalid uuid" toast during what's supposed to be the pitch.
-  var TUTORIAL_VERSION = 3;
+  var TUTORIAL_VERSION = 4;
   // Bumped (not just re-shown from Account) so a free-trial operator who
   // already skipped an older pitch still sees the improved one once,
   // without needing to find Replay themselves. The version lives IN the
@@ -5419,7 +5419,7 @@
       // both an auto-start and a manual Replay.
       {
         id: 'intro', noTarget: true, isIntro: true, title: 'Quick tour?',
-        body: "We'll walk through counting stock with your phone, then getting the numbers into your system. Wherever you see this glow, that's what we're talking about.",
+        body: "We'll walk through counting stock on your phone, then getting those numbers into your usual stock system. The highlighted button is what each tip is about.",
         enter: function () { showView('home'); }
       },
       // ctx marks which underlying screen/sheet a step's target lives on —
@@ -5430,14 +5430,14 @@
       // "Your stocktakes" step was cut (redundant with Start), so nothing
       // else on Home needs a glow.
       {
-        id: 'start', ctx: 'home', title: 'Start a stocktake',
-        body: "Start a stocktake for this shop — that's your count session.",
+        id: 'start', ctx: 'home', title: 'Start a count',
+        body: "Tap New stocktake to open a count for this shop.",
         target: function () { return $('new-stocktake'); },
         enter: function () { showView('home'); }
       },
       {
         id: 'scan', ctx: 'scan', title: 'Scan',
-        body: "Scan the retail barcode, then enter the quantity.",
+        body: "Point at the retail barcode on the bottle or pack, then type how many you have.",
         target: function () { return $('toggle-cam'); },
         // The barcode/filter/manual-add rows sit directly below the Scan
         // button and are teaching content in their own right — the glow's
@@ -5448,7 +5448,7 @@
       },
       {
         id: 'mark-ready', ctx: 'sheet', title: 'Mark ready',
-        body: "Mark ready when the shelf's done. You can come back later.",
+        body: "When that shelf or area is done, mark it ready for export. You can come back later.",
         // #take-status only — not the broader .action-sheet-state wrapper,
         // which also contains Mark completed and reads as "this whole area"
         // rather than the one button being taught.
@@ -5457,7 +5457,7 @@
       },
       {
         id: 'export', ctx: 'sheet', title: 'Export CSV',
-        body: "Export or share the CSV — barcodes you already sell on.",
+        body: "Download or share a CSV file — each line is a barcode and how many you counted.",
         // #take-export only — Share can stay in the copy, but the spotlight
         // must land on Export, not sweep the whole read-only button group.
         target: function () { return $('take-export'); },
@@ -5465,7 +5465,7 @@
       },
       {
         id: 'import', title: 'Into your stock system', noTarget: true,
-        body: "Open your usual stock import. Barcode + qty. Gantry doesn't touch the till.",
+        body: "Open the stock import in your normal system and load that file. Gantry doesn't replace your stock system and doesn't touch the till.",
         enter: function () { showView('home'); }
       }
     ];
