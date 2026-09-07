@@ -443,6 +443,16 @@
     100% { box-shadow: 0 0 0 9999px var(--scrim), 0 0 0 4px rgba(245, 158, 11, 0.18), 0 0 0 14px rgba(245, 158, 11, 0); }
   }
   .tutorial-spot.pulse { animation: tutorial-pulse 0.7s ease-out 1; }
+  /* Guide cursor animates between tip targets; spotlight snaps after it arrives. */
+  .tutorial-cursor {
+    position: fixed; z-index: 520; width: 28px; height: 28px;
+    margin-left: -4px; margin-top: -2px;
+    pointer-events: none; display: none;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45));
+    transition: top 0.45s cubic-bezier(.4,0,.2,1), left 0.45s cubic-bezier(.4,0,.2,1);
+  }
+  .tutorial-cursor.visible { display: block; }
+  .tutorial-cursor.no-motion { transition: none; }
   .tutorial-card {
     position: fixed; left: 50%; transform: translateX(-50%);
     width: calc(100% - 32px); max-width: 400px;
@@ -1249,6 +1259,11 @@
 <!-- ===== In-app tutorial (coach marks) — see startTutorial() ===== -->
 <div id="tutorial-overlay" class="tutorial-overlay">
   <div id="tutorial-spot" class="tutorial-spot"></div>
+  <div id="tutorial-cursor" class="tutorial-cursor" aria-hidden="true">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M5.5 3.5L5.5 18.5L9.2 14.9L12.1 21.2L14.4 20.2L11.5 13.8L16.5 13.8L5.5 3.5Z" fill="#111" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/>
+    </svg>
+  </div>
   <div id="tutorial-card" class="tutorial-card">
     <div class="tutorial-step-count" id="tutorial-step-count"></div>
     <div class="tutorial-title" id="tutorial-title"></div>
@@ -5374,7 +5389,7 @@
   // steps for the person it's written for. The nil UUID keeps every read
   // (loadItems, etc.) a valid, empty, error-free query instead of a
   // PostgREST "invalid uuid" toast during what's supposed to be the pitch.
-  var TUTORIAL_VERSION = 5;
+  var TUTORIAL_VERSION = 6;
   // Bumped (not just re-shown from Account) so a free-trial operator who
   // already skipped an older pitch still sees the improved one once,
   // without needing to find Replay themselves. The version lives IN the
@@ -5463,12 +5478,16 @@
   var tutorialActive = false;
   var tutorialSteps = [];
   var tutorialStepIndex = -1;
+  var tutorialCursorFrom = null;
+  var tutorialCursorTimer = null;
 
   function startTutorial() {
     if (!currentOrg || !currentUser || tutorialActive) return;
     tutorialSteps = tutorialStepDefs();
     tutorialStepIndex = -1;
     tutorialActive = true;
+    tutorialCursorFrom = null;
+    if (tutorialCursorTimer) { clearTimeout(tutorialCursorTimer); tutorialCursorTimer = null; }
     $('tutorial-overlay').classList.add('open');
     document.addEventListener('keydown', tutorialOnKeydown);
     window.addEventListener('resize', tutorialReposition);
@@ -5515,6 +5534,7 @@
     // other confirm dialog rather than pinned beside a target.
     if (step.noTarget) {
       $('tutorial-spot').classList.add('is-hidden');
+      $('tutorial-cursor').classList.remove('visible');
       $('tutorial-overlay').classList.add('full-dim');
       $('tutorial-card').classList.add('is-centered');
       return;
@@ -5535,8 +5555,11 @@
       requestAnimationFrame(function () {
         if (!tutorialActive) return;
         positionTutorial(target, true, step.avoidBelow ? step.avoidBelow() : null);
-        $('tutorial-spot').classList.remove('is-hidden');
-        setTimeout(pulseSpotlight, 40);
+        guideTutorialCursor(target, function () {
+          if (!tutorialActive) return;
+          $('tutorial-spot').classList.remove('is-hidden');
+          setTimeout(pulseSpotlight, 40);
+        });
       });
     });
   }
@@ -5564,6 +5587,38 @@
   // a lower floor for "is there room below" instead of the raw viewport
   // edge, so a technically-fits-on-screen placement that would visually
   // overlap that content falls back to above-the-target instead.
+
+  function guideTutorialCursor(target, callback) {
+    var rect = target.getBoundingClientRect();
+    var toX = rect.left + rect.width / 2;
+    var toY = rect.top + rect.height / 2;
+    var cur = $('tutorial-cursor');
+    if (tutorialCursorTimer) { clearTimeout(tutorialCursorTimer); tutorialCursorTimer = null; }
+    var from = tutorialCursorFrom;
+    tutorialCursorFrom = { x: toX, y: toY };
+    if (!from) {
+      cur.classList.add('no-motion');
+      cur.style.left = toX + 'px';
+      cur.style.top = toY + 'px';
+      cur.classList.add('visible');
+      void cur.offsetWidth;
+      cur.classList.remove('no-motion');
+      if (callback) callback();
+      return;
+    }
+    cur.classList.add('no-motion');
+    cur.style.left = from.x + 'px';
+    cur.style.top = from.y + 'px';
+    cur.classList.add('visible');
+    void cur.offsetWidth;
+    cur.classList.remove('no-motion');
+    cur.style.left = toX + 'px';
+    cur.style.top = toY + 'px';
+    tutorialCursorTimer = setTimeout(function () {
+      tutorialCursorTimer = null;
+      if (callback) callback();
+    }, 480);
+  }
   function positionTutorial(target, snap, avoidBelowEl) {
     if (!tutorialActive) return;
     var rect = target.getBoundingClientRect();
@@ -5617,6 +5672,9 @@
     tutorialStepIndex = -1;
     $('tutorial-overlay').classList.remove('open');
     $('tutorial-spot').classList.remove('is-hidden', 'pulse');
+    $('tutorial-cursor').classList.remove('visible', 'no-motion');
+    if (tutorialCursorTimer) { clearTimeout(tutorialCursorTimer); tutorialCursorTimer = null; }
+    tutorialCursorFrom = null;
     $('tutorial-overlay').classList.remove('full-dim');
     $('tutorial-card').classList.remove('is-centered');
     document.removeEventListener('keydown', tutorialOnKeydown);
