@@ -449,7 +449,7 @@
     margin-left: -4px; margin-top: -2px;
     pointer-events: none; display: none;
     filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45));
-    transition: top 0.45s cubic-bezier(.4,0,.2,1), left 0.45s cubic-bezier(.4,0,.2,1);
+    transition: top 0.75s cubic-bezier(.4,0,.2,1), left 0.75s cubic-bezier(.4,0,.2,1);
   }
   .tutorial-cursor.visible { display: block; }
   .tutorial-cursor.no-motion { transition: none; }
@@ -5389,7 +5389,7 @@
   // steps for the person it's written for. The nil UUID keeps every read
   // (loadItems, etc.) a valid, empty, error-free query instead of a
   // PostgREST "invalid uuid" toast during what's supposed to be the pitch.
-  var TUTORIAL_VERSION = 6;
+  var TUTORIAL_VERSION = 7;
   // Bumped (not just re-shown from Account) so a free-trial operator who
   // already skipped an older pitch still sees the improved one once,
   // without needing to find Replay themselves. The version lives IN the
@@ -5617,7 +5617,7 @@
     tutorialCursorTimer = setTimeout(function () {
       tutorialCursorTimer = null;
       if (callback) callback();
-    }, 480);
+    }, 800);
   }
   function positionTutorial(target, snap, avoidBelowEl) {
     if (!tutorialActive) return;
