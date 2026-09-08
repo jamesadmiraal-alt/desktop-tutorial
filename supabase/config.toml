@@ -1,0 +1,4 @@
+# Minimal config so `submit-contact` can be called from the public landing page
+# without a signed-in JWT. Other functions keep the platform default (JWT on).
+[functions.submit-contact]
+verify_jwt = false

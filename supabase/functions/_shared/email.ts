@@ -37,6 +37,8 @@ export type SendArgs = {
   text: string;
   /** Optional HTML body. */
   html?: string;
+  /** Optional Reply-To (e.g. Contact us submitter). */
+  replyTo?: string;
 };
 
 const DEFAULT_FROM = "Gantry <onboarding@resend.dev>";
@@ -73,6 +75,7 @@ async function viaResend(apiKey: string, from: string, args: SendArgs): Promise<
         subject: args.subject,
         text: args.text,
         ...(args.html ? { html: args.html } : {}),
+        ...(args.replyTo ? { reply_to: args.replyTo } : {}),
       }),
     });
     if (!res.ok) {
@@ -102,6 +105,7 @@ async function viaPostmark(token: string, from: string, args: SendArgs): Promise
         Subject: args.subject,
         TextBody: args.text,
         ...(args.html ? { HtmlBody: args.html } : {}),
+        ...(args.replyTo ? { ReplyTo: args.replyTo } : {}),
         MessageStream: Deno.env.get("POSTMARK_MESSAGE_STREAM") ?? "outbound",
       }),
     });
