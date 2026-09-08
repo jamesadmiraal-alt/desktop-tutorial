@@ -273,6 +273,14 @@ create table public.organisations (
   scan_barcodes boolean not null default true,
   scan_qr boolean not null default false,
 
+  -- 'continuous' (every decode adds a line — the original behaviour) or 'tap'
+  -- (preview stays live, only the decode at the moment Capture is tapped is
+  -- accepted). See the TAP-TO-CAPTURE section at the end of this file for the
+  -- full reasoning, the matching `add column if not exists` that migrates a
+  -- live database, and set_scan_mode(), which is the only writer.
+  scan_mode text not null default 'continuous'
+    check (scan_mode in ('continuous', 'tap')),
+
   created_at timestamptz not null default now()
 );
 
@@ -2768,3 +2776,165 @@ grant execute on function public.list_active_sessions() to authenticated;
 --   )
 --   insert into public.locations (org_id, venue_id, name)
 --   select org_id, id, 'Main' from v;
+
+-- ==========================================================================
+-- TAP-TO-CAPTURE SCANNING  +  ORG BARCODE DIRECTORY
+--
+-- Both came out of live venue use:
+--
+--   1. Walking the phone along a shelf, the camera decodes whatever passes
+--      through the frame — so a neighbouring product lands in the count with
+--      nobody choosing it. Tap-to-capture keeps the preview live but only
+--      accepts the decode at the moment the operator taps Capture.
+--   2. When the venue's own stock system later rejects a line as "barcode not
+--      found", Gantry only had the raw digits. No human name means no way to
+--      work out what the line actually was. org_barcodes is that name.
+--
+-- Written in the same "added after launch" style as audit_log and
+-- active_sessions above (`if not exists` / `drop policy if exists`), so this
+-- whole block is safe to re-run against the live database.
+-- ==========================================================================
+
+-- ---- A. Scan mode -------------------------------------------------------
+-- 'continuous' is exactly today's behaviour and is the default for EVERY org,
+-- new and existing. Same principle as scan_qr: an organisation that has not
+-- stated a preference keeps what it already had. Defaulting new orgs to 'tap'
+-- instead was considered and rejected — two venues would then behave
+-- differently with nothing on screen to explain why, and the operators most
+-- likely to hit the side-scan problem are the ones who will go looking for
+-- the setting anyway.
+alter table public.organisations
+  add column if not exists scan_mode text not null default 'continuous';
+
+-- Separate statement, and guarded: adding the constraint inline above would
+-- be skipped on a database that already has the column.
+do $$
+begin
+  if not exists (
+    -- Scoped to the table, not just the name: constraint names are only
+    -- unique per table, so an unqualified match could find someone else's.
+    select 1 from pg_constraint
+     where conname = 'organisations_scan_mode_check'
+       and conrelid = 'public.organisations'::regclass
+  ) then
+    alter table public.organisations
+      add constraint organisations_scan_mode_check
+      check (scan_mode in ('continuous', 'tap'));
+  end if;
+end $$;
+
+-- A NEW function rather than more parameters on set_scan_prefs(), for two
+-- reasons: `create or replace function` with a different signature creates an
+-- OVERLOAD rather than replacing (the same trap the webhook folder rename hit
+-- from the other direction), and GitHub Pages serves a cached app.html for a
+-- while after a deploy — an old client calling the 2-arg form must keep
+-- working while the new one calls this.
+--
+-- Owner or manager, matching set_scan_prefs: a venue manager is exactly who
+-- should be able to say "stop adding whatever drifts past the lens", and the
+-- column stays off the client-writable GRANT so nothing else can write it.
+create or replace function public.set_scan_mode(p_mode text)
+returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_role text := public.my_role();
+begin
+  if v_org is null then
+    raise exception 'You do not belong to an organisation.';
+  end if;
+  -- Explicit null test, not `<>` — my_role() is NULL for a caller with no
+  -- membership and a NULL comparison is NULL, which plpgsql treats as false.
+  if v_role is null or v_role not in ('owner', 'manager') then
+    raise exception 'Only an owner or manager can change scanning settings.';
+  end if;
+  if p_mode is null or p_mode not in ('continuous', 'tap') then
+    raise exception 'Unknown scanning mode.';
+  end if;
+
+  update public.organisations set scan_mode = p_mode where id = v_org;
+  return p_mode;
+end $$;
+
+grant execute on function public.set_scan_mode(text) to authenticated;
+
+-- ---- B. Org barcode directory ------------------------------------------
+-- barcode -> human name, scoped to one organisation. Deliberately NOT a
+-- product catalogue: no price, no pack size, no supplier. It exists to make
+-- "9310072012345 not found" answerable by a person, and anything more starts
+-- competing with the stock system Gantry feeds rather than replaces.
+--
+-- The name never reaches the CSV. Export shape is set per org by
+-- export_format and is consumed by someone else's importer — adding a column
+-- to it is how the first on-site trial failed. Names are in-app only.
+create table if not exists public.org_barcodes (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.organisations(id) on delete cascade,
+  barcode text not null check (btrim(barcode) <> ''),
+  name text not null check (btrim(name) <> ''),
+  -- Survives the person leaving: the whole point is investigating a line
+  -- months later, and `on delete set null` keeps the row when the account
+  -- that made it is deleted (same choice as audit_log.actor_id).
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- One name per barcode per org. This is also the lookup index the scanner
+  -- path uses on every decode, so it earns its keep twice.
+  unique (org_id, barcode)
+);
+
+alter table public.org_barcodes enable row level security;
+
+-- Read is the whole org, INCLUDING staff. Staff are the people actually
+-- holding the phone, and a name they can't see while counting is a name that
+-- does nothing for the problem this solves.
+drop policy if exists "read org barcodes" on public.org_barcodes;
+create policy "read org barcodes" on public.org_barcodes
+  for select using (org_id = public.my_org_id());
+
+-- Writes are owner/manager. Note this means staff cannot name an unknown
+-- barcode from the counting screen — see the note in app.html's
+-- canManageBarcodeNames(). If that turns out to be the wrong call in the
+-- field, widening it to 'staff' here and dropping the client-side gate is the
+-- entire change.
+drop policy if exists "owner manager insert org barcodes" on public.org_barcodes;
+create policy "owner manager insert org barcodes" on public.org_barcodes
+  for insert with check (
+    org_id = public.my_org_id()
+    and public.my_role() in ('owner', 'manager')
+  );
+
+drop policy if exists "owner manager update org barcodes" on public.org_barcodes;
+create policy "owner manager update org barcodes" on public.org_barcodes
+  for update using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'))
+  with check (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+drop policy if exists "owner manager delete org barcodes" on public.org_barcodes;
+create policy "owner manager delete org barcodes" on public.org_barcodes
+  for delete using (org_id = public.my_org_id() and public.my_role() in ('owner', 'manager'));
+
+-- org_id/created_by are derived, never taken from the client: an upsert from
+-- the app sends only barcode and name. The insert policy above already pins
+-- org_id to my_org_id(), and these defaults mean the client doesn't have to
+-- send it correctly for that check to pass.
+alter table public.org_barcodes
+  alter column org_id set default public.my_org_id();
+alter table public.org_barcodes
+  alter column created_by set default auth.uid();
+
+revoke update on public.org_barcodes from authenticated, anon;
+grant update (barcode, name) on public.org_barcodes to authenticated;
+
+-- updated_at is what tells someone investigating whether a name predates the
+-- count they're arguing about, so it can't be left to the client to remember.
+create or replace function public.touch_org_barcode()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at := now();
+  return new;
+end $$;
+
+drop trigger if exists touch_org_barcodes on public.org_barcodes;
+create trigger touch_org_barcodes
+  before update on public.org_barcodes
+  for each row execute function public.touch_org_barcode();

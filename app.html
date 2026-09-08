@@ -306,7 +306,36 @@
   #zoom-range { flex: 1; accent-color: var(--accent); display: none; }
   #zoom-range.avail { display: block; }
 
+  /* ---- Tap to capture ----
+     Both of these live inside #reader-wrap, so they follow its rule: always
+     the dark viewfinder palette in BOTH themes, because they sit over a live
+     camera image rather than over a page surface. Shown only while a tap-mode
+     camera is running (see setTapModeUi()). */
+  #scan-reticule {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 68%; height: 46%; display: none;
+    border: 2px solid var(--white); border-radius: 14px;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+  }
+  #scan-reticule.on { display: block; }
+  /* Locked on: a barcode is decoded and in frame right now, so a tap will
+     land. Colour does the talking before the hint text is read. */
+  #scan-reticule.locked { border-color: var(--check); }
+  #tap-hint {
+    position: absolute; top: 8px; left: 8px; right: 8px; display: none;
+    text-align: center; font-size: 0.82rem; line-height: 1.35;
+    color: var(--white); background: var(--tool-scrim);
+    padding: 6px 8px; border-radius: 8px;
+    pointer-events: none;
+  }
+  #tap-hint.on { display: block; }
+  #tap-hint .locked-code { font-family: ui-monospace, Menlo, monospace; color: var(--check); }
+
   .controls { display: flex; gap: 8px; padding: 10px 12px; background: var(--surface); }
+  /* The one control that adds a line to a count — sized for a thumb holding a
+     phone in the other hand, well past the 44px floor. */
+  #capture-btn { min-height: 56px; font-size: 1.05rem; }
   #manual-row { display: flex; gap: 8px; padding: 0 12px 10px; background: var(--surface); }
   #filter-row { padding: 8px 12px; background: var(--surface); }
 
@@ -317,7 +346,27 @@
   }
   .item .info { flex: 1; min-width: 0; }
   .item .code { font-family: ui-monospace, Menlo, monospace; font-size: 1rem; word-break: break-all; }
+  /* The human name for this barcode, when the org has saved one (see
+     org_barcodes in schema.sql). Sits UNDER the barcode, not instead of it:
+     the barcode is what's printed on the bottle in your hand and what the
+     stock system will match on — the name is there to make a line
+     recognisable to a person, not to replace the thing being counted. */
+  .item .prod-name { font-size: 0.85rem; color: var(--text-body); margin-top: 2px; }
   .item .meta { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
+  /* Same idea inside the quantity dialog and the saved-names list. */
+  .dialog .prod-name { font-size: 0.9rem; color: var(--text-body); margin: -4px 0 10px; }
+  .barcode-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .barcode-row:last-child { border-bottom: none; }
+  .barcode-row .who { flex: 1; min-width: 0; }
+  .barcode-row .who .bc { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; color: var(--text-dim); }
+  .barcode-row .who .nm { font-weight: 600; word-break: break-word; }
+  #barcodes-list:empty::after { content: 'No names saved yet.'; color: var(--text-dim); font-size: 0.85rem; }
+  /* The one overlay that deliberately opens ON TOP of another one: naming a
+     barcode happens from the quantity dialog, mid-count, and that dialog must
+     stay open behind it so the count isn't lost. Every other .overlay is
+     z-index 50, and DOM order alone would put this one underneath. Still
+     below the header's 60, same as the rest. */
+  #barcode-name-overlay { z-index: 55; }
   .qty-controls { display: flex; align-items: center; gap: 6px; }
   .qty-controls button { padding: 8px 12px; font-size: 1.1rem; border-radius: 8px; }
   .qty-val {
@@ -794,7 +843,25 @@
     </label>
     <div class="plan-desc" style="margin-top:4px">Off by default. Wine bottles often have a QR — leave this off so
       the camera grabs the barcode. Turn QR on only if you need it.</div>
+    <!-- ===== Tap to capture =====
+         Raised from a venue: walking the phone along a shelf, the camera reads
+         whatever passes through the frame, so a neighbouring product joins the
+         count with nobody choosing it. Off by default — see scan_mode in
+         schema.sql for why every org, new and existing, starts on Continuous. -->
+    <label style="margin-top:14px">Scanning mode</label>
+    <label class="checkbox-row">
+      <input type="checkbox" id="scan-tap-mode">
+      <span>Tap to capture <small style="color:var(--text-dim)">(don't add barcodes automatically)</small></span>
+    </label>
+    <div class="plan-desc" style="margin-top:4px">Leave this off and every barcode the camera reads is added.
+      Turn it on and the camera stays on, but a barcode is only added when you tap <b>Capture</b> — useful on a
+      tight shelf where the phone can see more than one product.</div>
     <div class="plan-desc" id="scan-prefs-note" style="margin-top:8px;display:none">Only an owner or manager can change this.</div>
+    <!-- Barcode names live behind their own screen rather than in this card:
+         the list is unbounded, and it's a thing you go and manage, not a
+         switch you flip. Visible to everyone (staff read names while
+         counting); editing is gated inside the view itself. -->
+    <button id="open-barcodes-btn" class="acct-nav-btn">Barcode names</button>
   </div>
   <div class="acct-card">
     <h3>Organisation</h3>
@@ -968,6 +1035,50 @@
   </div>
 </div>
 
+<!-- ===== Barcode names =====
+     barcode -> human name, org-scoped (public.org_barcodes). Exists so that
+     "9310072012345 not found" in the venue's own stock system is answerable by
+     a person months later. Deliberately not a product catalogue: no price, no
+     pack size, no supplier — and none of it reaches the CSV, which stays
+     barcode + qty in the org's export format. ===== -->
+<div id="barcodes-view" class="view">
+  <div class="subheader" style="margin:-16px -12px 14px">
+    <button id="barcodes-back">‹ Back</button>
+    <div class="name">Barcode names</div>
+  </div>
+  <div class="acct-card" id="barcodes-add-card" style="display:none">
+    <h3>Add a name</h3>
+    <label for="barcode-add-code">Barcode</label>
+    <input id="barcode-add-code" type="text" inputmode="numeric" autocomplete="off" placeholder="Scan or type the barcode">
+    <label for="barcode-add-name">Name</label>
+    <input id="barcode-add-name" type="text" autocomplete="off" placeholder="e.g. Cascade Pale 375ml">
+    <button id="barcode-add-btn" class="primary" style="margin-top:14px;width:100%">Save name</button>
+  </div>
+  <div class="acct-card">
+    <h3>Saved names</h3>
+    <p class="plan-desc" id="barcodes-read-only-note" style="margin-bottom:10px;display:none">
+      Only an owner or manager can add or change names. You'll still see them while counting.</p>
+    <input id="barcodes-search" type="search" autocomplete="off" placeholder="Search barcode or name…">
+    <div id="barcodes-list" style="margin-top:10px"></div>
+  </div>
+</div>
+
+<!-- ===== Name a barcode (from the quantity dialog, mid-count) =====
+     Deliberately a separate dialog rather than a field inside the quantity
+     pad: naming is optional and must never stand between the operator and
+     saving the count. ===== -->
+<div id="barcode-name-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Name this barcode</div>
+    <div class="code" id="barcode-name-code"></div>
+    <input id="barcode-name-input" type="text" autocomplete="off" placeholder="e.g. Cascade Pale 375ml">
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="barcode-name-cancel" class="flex">Cancel</button>
+      <button id="barcode-name-save" class="primary flex">Save name</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Edit team member (single-venue #team-view only) ===== -->
 <div id="team-edit-member-overlay" class="overlay">
   <div class="dialog">
@@ -1079,9 +1190,18 @@
       <button id="torch-btn"><span class="ico" style="--i:url(icons/flashlight.svg)"></span></button>
       <input id="zoom-range" type="range">
     </div>
+    <!-- Tap-to-capture only. The reticule is the whole instruction for someone
+         who doesn't read the hint: put the barcode in the box. It turns green
+         (.locked) the moment a barcode is actually decoded in frame, so the
+         operator knows the tap will land before they make it. -->
+    <div id="scan-reticule" aria-hidden="true"></div>
+    <div id="tap-hint"></div>
   </div>
   <div class="controls">
     <button id="toggle-cam" class="primary flex"><span class="ico" style="--i:url(icons/camera.svg)"></span> Scan</button>
+    <!-- Shown only while a tap-mode camera is live. Big, and its own colour:
+         it is the one control that adds a line to the count. -->
+    <button id="capture-btn" class="success flex" style="display:none"><span class="ico" style="--i:url(icons/camera.svg)"></span> Capture</button>
   </div>
   <div id="manual-row">
     <input id="manual-input" type="text" placeholder="Or type a barcode…" autocomplete="off">
@@ -1203,6 +1323,14 @@
   <div class="dialog">
     <div class="title">Enter quantity</div>
     <div class="code" id="qty-code"></div>
+    <!-- The org's own name for this barcode, when it has one. This is the
+         moment it earns its keep: the operator can tell they're counting the
+         right product before a number is typed. -->
+    <div class="prod-name" id="qty-name" style="display:none"></div>
+    <!-- Owner/manager only, and only for a barcode with no name yet. A link,
+         not a field: naming is optional and must never stand between the
+         operator and saving the count. -->
+    <button id="qty-name-btn" class="link-btn" style="display:none;margin:-4px 0 10px">Name this barcode</button>
     <div class="hint" id="qty-hint" style="display:none"></div>
     <!-- type="text" rather than "number": with the in-app keypad below driving the
          value, a number input buys nothing and costs the spinner arrows plus
@@ -1628,6 +1756,9 @@
     // options live in Account.
     $('trial-limit-overlay').classList.remove('open');
     $('signup-sent-overlay').classList.remove('open');
+    // Same reason as the others: it holds one optional field, and leaving it
+    // stranded over another view would swallow every tap behind it.
+    $('barcode-name-overlay').classList.remove('open');
     if (wasOpen) shieldGhostClicks();
   }
 
@@ -1637,7 +1768,7 @@
     // stocktake, Home after a save — so this is the one place that reliably
     // catches a dialog left open by any of them.
     closeTransientOverlays();
-    ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view', 'team-view'].forEach(function (id) {
+    ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view', 'team-view', 'barcodes-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
     var signedInAndUsable = !!(currentUser && !needsOrgSetup && !paymentPending && !seatsFull);
@@ -2117,7 +2248,7 @@
     Promise.all([
       sb.from('profiles').select('full_name, marketing_opt_in').eq('id', currentUser.id).maybeSingle(),
       sb.from('memberships')
-        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, heartbeat_interval_seconds, scan_barcodes, scan_qr)')
+        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, heartbeat_interval_seconds, scan_barcodes, scan_qr, scan_mode)')
         .eq('user_id', currentUser.id).maybeSingle()
     ]).then(function (results) {
       var profileRes = results[0], memberRes = results[1];
@@ -2138,7 +2269,13 @@
           // database where the migration has not run yet — and there, defaulting
           // QR on would reintroduce the exact bug the setting exists to fix.
           scanBarcodes: org.scan_barcodes !== false,
-          scanQr: org.scan_qr === true
+          scanQr: org.scan_qr === true,
+          // Anything that isn't the explicit opt-in reads as 'continuous' —
+          // including a database without the migration. Same rule as the two
+          // flags above: a missing value must never invent a behaviour the
+          // operator didn't ask for, and here the safe side is the one they
+          // already have.
+          scanMode: org.scan_mode === 'tap' ? 'tap' : 'continuous'
         };
       } else if (memberRes.error && currentOrg) {
         // A FAILED request is not an answer. This branch used to treat a dropped
@@ -2358,6 +2495,10 @@
       // instead, on first login, rather than back at signup.
       if (!currentOrg) { showOrgSetupPrompt(); return; }
       loadLocations();
+      // Names are used by the scan path and the item list, so they're loaded
+      // once on entry alongside locations. Failure is silent by design (see
+      // loadBarcodeNames) — counting must not depend on them.
+      loadBarcodeNames();
       // navigate: true — entering the app belongs on Home.
       loadTakes(true);
     });
@@ -2558,8 +2699,41 @@
     // behaviour look like a fault rather than a decision someone made.
     $('scan-barcodes').disabled = !canManage;
     $('scan-qr').disabled = !canManage;
+    $('scan-tap-mode').checked = !!(currentOrg && currentOrg.scanMode === 'tap');
+    $('scan-tap-mode').disabled = !canManage;
     $('scan-prefs-note').style.display = canManage ? 'none' : '';
   }
+
+  // Its own RPC, not another argument on set_scan_prefs() — see set_scan_mode()
+  // in schema.sql for why (signature overloads, and a cached old client must
+  // keep working through a deploy).
+  function saveScanMode() {
+    var mode = $('scan-tap-mode').checked ? 'tap' : 'continuous';
+    $('scan-tap-mode').disabled = true;
+    sb.rpc('set_scan_mode', { p_mode: mode }).then(function (res) {
+      $('scan-tap-mode').disabled = false;
+      if (res.error) {
+        renderScanPrefs();
+        fail(res.error, 'Could not save the scanning mode');
+        return;
+      }
+      currentOrg.scanMode = (res.data === 'tap') ? 'tap' : 'continuous';
+      renderScanPrefs();
+      // A camera already running is holding the OLD mode's UI and decode
+      // behaviour. Re-apply rather than waiting for the next Scan tap, same
+      // reasoning as restartScannerForFormats() above — except nothing about
+      // the detector changes here, only what we do with what it decodes.
+      if (scanning) setTapModeUi();
+      toast(currentOrg.scanMode === 'tap'
+        ? 'Tap to capture on — barcodes are added only when you tap Capture'
+        : 'Tap to capture off — every barcode the camera reads is added');
+    }, function (err) {
+      $('scan-tap-mode').disabled = false;
+      renderScanPrefs();
+      fail(err, 'Could not save the scanning mode');
+    });
+  }
+  $('scan-tap-mode').onchange = saveScanMode;
 
   function saveScanPrefs() {
     var wantBarcodes = $('scan-barcodes').checked;
@@ -3906,10 +4080,20 @@
       info.className = 'info';
       var code = document.createElement('div');
       code.className = 'code'; code.textContent = it.barcode;
+      info.appendChild(code);
+      // Under the barcode, never instead of it — see .item .prod-name in the
+      // stylesheet. textContent, not innerHTML: this string is typed by an
+      // operator and stored in the database.
+      var savedName = barcodeNameFor(it.barcode);
+      if (savedName) {
+        var nameEl = document.createElement('div');
+        nameEl.className = 'prod-name'; nameEl.textContent = savedName;
+        info.appendChild(nameEl);
+      }
       var meta = document.createElement('div');
       meta.className = 'meta';
       meta.textContent = 'Last: ' + new Date(it.last_scanned).toLocaleTimeString();
-      info.appendChild(code); info.appendChild(meta);
+      info.appendChild(meta);
 
       var qc = document.createElement('div');
       qc.className = 'qty-controls';
@@ -4067,6 +4251,7 @@
     pendingCode = code;
     dialogOpen = true;
     $('qty-code').textContent = code;
+    renderQtyBarcodeName(code);
     var hint = $('qty-hint');
     if (existing && !isEdit) {
       hint.style.display = 'block';
@@ -4656,14 +4841,95 @@
     return create(Pony);
   }
 
+  // ---- Tap to capture ----------------------------------------------------
+  //
+  // Continuous mode is unchanged: whatever decodes, counts. Tap mode keeps the
+  // camera and the decoder running exactly as before — the ONLY difference is
+  // that a decode arms a capture instead of taking one. The operator's tap is
+  // what adds the line.
+  //
+  // Decoding continuously (rather than only firing the detector on tap) is
+  // deliberate: it's what lets the reticule turn green BEFORE the tap, so the
+  // operator can see the phone is locked on rather than tapping hopefully. It
+  // also means capture is instant — the decode has already happened.
+  function tapMode() { return !!(currentOrg && currentOrg.scanMode === 'tap'); }
+
+  // The most recent decode, and when. Only meaningful in tap mode.
+  var armed = { code: null, at: 0 };
+  // How stale a decode may be and still be what the operator meant. Long
+  // enough to cover the gap between "I can see it's locked on" and the thumb
+  // arriving; short enough that a barcode which has since left the frame
+  // can't be captured by a late tap.
+  var ARM_FRESH_MS = 900;
+
+  function armedIsFresh() {
+    return !!(armed.code && Date.now() - armed.at < ARM_FRESH_MS);
+  }
+
   function detectFrame() {
     if (!detector || !video || video.readyState < 2 || detectBusy || dialogOpen) return;
     detectBusy = true;
     detector.detect(video).then(function (codes) {
       detectBusy = false;
-      if (codes && codes.length && codes[0].rawValue) onScan(codes[0].rawValue);
+      var raw = (codes && codes.length && codes[0].rawValue) ? codes[0].rawValue : null;
+      if (!raw) { if (tapMode()) renderTapHint(); return; }
+      if (!tapMode()) { onScan(raw); return; }
+      // Tap mode: remember it, show it, add nothing.
+      var code = String(raw).trim();
+      if (!isPlausibleBarcode(code)) { renderTapHint(); return; }
+      armed = { code: code, at: Date.now() };
+      renderTapHint();
     }, function () { detectBusy = false; });
   }
+
+  // Shows/hides the tap-mode chrome. Called on every start, on every mode
+  // change under a live camera, and (via renderTapHint) as frames decode.
+  function setTapModeUi() {
+    var on = tapMode() && scanning;
+    $('capture-btn').style.display = on ? '' : 'none';
+    $('scan-reticule').classList.toggle('on', on);
+    $('tap-hint').classList.toggle('on', on);
+    if (!on) { armed = { code: null, at: 0 }; }
+    renderTapHint();
+  }
+
+  function renderTapHint() {
+    if (!tapMode() || !scanning) return;
+    var fresh = armedIsFresh();
+    $('scan-reticule').classList.toggle('locked', fresh);
+    if (fresh) {
+      // Name it if the org has one — at this point the operator can confirm
+      // they're pointing at the right product before anything is counted,
+      // which is the whole reason both of these features exist.
+      var nm = barcodeNameFor(armed.code);
+      $('tap-hint').innerHTML = 'Ready: <span class="locked-code"></span>'
+        + (nm ? '<br>' : '') + '<span class="locked-name"></span><br>Tap Capture to add it';
+      $('tap-hint').querySelector('.locked-code').textContent = armed.code;
+      $('tap-hint').querySelector('.locked-name').textContent = nm || '';
+    } else {
+      $('tap-hint').textContent = 'Point the box at a barcode, then tap Capture';
+    }
+  }
+
+  // The explicit capture. Deliberately does NOT go through onScan(): that
+  // path's 2.5s same-code debounce exists to stop a continuously-decoding
+  // camera adding the same bottle twice on its own, and here the second tap
+  // IS the operator saying "another one of these". Everything else onScan()
+  // does — plausibility, beep, quantity pad — happens the same way.
+  function captureScan() {
+    if (dialogOpen) return;
+    if (!scanning) { toast('Tap Scan to turn the camera on first', '#b91c1c'); return; }
+    if (!armedIsFresh()) {
+      toast('No barcode in the box yet — line it up and tap again', '#b91c1c');
+      return;
+    }
+    var code = armed.code;
+    armed = { code: null, at: 0 };
+    renderTapHint();
+    beep();
+    openQtyDialog(code, false);
+  }
+  $('capture-btn').onclick = captureScan;
 
   function setupCamTools() {
     var caps = (camTrack && camTrack.getCapabilities) ? camTrack.getCapabilities() : {};
@@ -4750,6 +5016,8 @@
       $('scanner-off').style.display = 'none';
       $('toggle-cam').textContent = '⏸ Stop';
       $('toggle-cam').classList.remove('primary');
+      // After scanning = true, so setTapModeUi() sees a live camera.
+      setTapModeUi();
     }).catch(function (err) {
       if (err && err.aborted) return;
       stopScanner();
@@ -4763,6 +5031,10 @@
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     stream = null; video = null; detector = null; camTrack = null;
     scanning = false; torchOn = false; detectBusy = false;
+    // Before the DOM tidy-up below, and unconditional: a stop must clear the
+    // armed decode as well as the chrome, or a Capture tap after a restart
+    // could fire on a barcode from the previous session.
+    setTapModeUi();
     $('reader').innerHTML = '';
     $('cam-tools').classList.remove('on');
     $('torch-btn').classList.remove('avail', 'lit');
@@ -5346,6 +5618,7 @@
       if (currentView === 'scan') $('back-btn').onclick();
       else if (currentView === 'account') $('acct-back').onclick();
       else if (currentView === 'team') $('team-back').onclick();
+      else if (currentView === 'barcodes') $('barcodes-back').onclick();
       // org-setup/payment-pending/seats-full are shown inside 'auth' —
       // without this, hardware back exits the app entirely from a screen
       // the user can't otherwise escape except via the logout button.
@@ -5368,6 +5641,193 @@
       if (document.visibilityState === 'visible' && currentUser) refreshOrgStatus();
     });
   }
+
+  // ---- Org barcode directory ---------------------------------------------
+  //
+  // barcode -> human name, org-scoped (public.org_barcodes). It exists for one
+  // job: when the venue's own stock system rejects a line as "barcode not
+  // found" weeks later, somebody has to work out what that line WAS. Raw
+  // digits can't answer that; a name can.
+  //
+  // Names are an aid, never a gate. Every failure path below is silent and
+  // non-blocking — an unnamed barcode, a failed load, or a database without
+  // the migration all leave counting working exactly as it does today, just
+  // without names. The CSV never sees any of this: export shape is set by the
+  // org's export_format and is read by someone else's importer.
+  var barcodeNames = {};      // { barcode: name } — the scan-path lookup
+  var barcodeRows = [];       // full rows, for the management view
+  var barcodeSearch = '';
+
+  function barcodeNameFor(code) {
+    if (!code) return '';
+    return barcodeNames[String(code).trim()] || '';
+  }
+  // Writes are owner/manager, matching the RLS policies in schema.sql. Worth
+  // knowing this is a real tension: staff are the ones holding the phone and
+  // meeting the unnamed barcode. If that proves wrong in the field, widening
+  // the two policies to 'staff' and deleting this gate is the whole change.
+  function canManageBarcodeNames() {
+    return !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
+  }
+
+  function loadBarcodeNames(cb) {
+    if (!currentOrg) { if (cb) cb(); return; }
+    sb.from('org_barcodes').select('id,barcode,name,updated_at').order('name')
+      .then(function (res) {
+        if (!res.error) {
+          barcodeRows = res.data || [];
+          barcodeNames = {};
+          barcodeRows.forEach(function (r) { barcodeNames[r.barcode] = r.name; });
+        }
+        // Deliberately no toast on failure. A missing table (migration not run
+        // yet) or a dropped request must not put a red banner over a count
+        // that is working fine — the names simply don't appear, and the next
+        // load picks them up.
+        if (cb) cb();
+      });
+  }
+
+  function saveBarcodeName(code, name, cb) {
+    var barcode = String(code || '').trim();
+    var nm = String(name || '').trim();
+    if (!barcode || !nm) { toast('Enter a barcode and a name', '#b91c1c'); if (cb) cb(false); return; }
+    if (!canManageBarcodeNames()) { toast('Only an owner or manager can save names', '#b91c1c'); if (cb) cb(false); return; }
+    // Upsert on (org_id, barcode) — the same barcode named twice is a rename,
+    // not a second row. org_id is sent explicitly even though the column
+    // defaults to my_org_id(), so the insert policy's check has something to
+    // compare rather than relying on the default firing first.
+    sb.from('org_barcodes')
+      .upsert({ org_id: currentOrg.id, barcode: barcode, name: nm }, { onConflict: 'org_id,barcode' })
+      .then(function (res) {
+        if (res.error) { fail(res.error, 'Could not save the name'); if (cb) cb(false); return; }
+        barcodeNames[barcode] = nm;
+        // Repaint anywhere the name is already on screen.
+        if (currentView === 'scan') renderItems();
+        if (pendingCode) renderQtyBarcodeName(pendingCode);
+        loadBarcodeNames(function () { if (currentView === 'barcodes') renderBarcodesList(); });
+        toast('Name saved');
+        if (cb) cb(true);
+      }, function (err) { fail(err, 'Could not save the name'); if (cb) cb(false); });
+  }
+
+  function deleteBarcodeName(id, barcode) {
+    if (!confirm('Delete the name for ' + barcode + '?\n\nCounts already recorded are not affected.')) return;
+    sb.from('org_barcodes').delete().eq('id', id).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not delete the name'); return; }
+      delete barcodeNames[barcode];
+      if (currentView === 'scan') renderItems();
+      loadBarcodeNames(function () { renderBarcodesList(); });
+    });
+  }
+
+  // ---- Quantity-dialog name line ----
+  function renderQtyBarcodeName(code) {
+    var nm = barcodeNameFor(code);
+    $('qty-name').textContent = nm;
+    $('qty-name').style.display = nm ? '' : 'none';
+    // Offer naming only where it's actionable: an unnamed barcode, and a role
+    // allowed to write one.
+    $('qty-name-btn').style.display = (!nm && canManageBarcodeNames()) ? '' : 'none';
+  }
+  $('qty-name-btn').onclick = function () {
+    if (!pendingCode) return;
+    openBarcodeNameDialog(pendingCode);
+  };
+
+  function openBarcodeNameDialog(code) {
+    $('barcode-name-code').textContent = code;
+    $('barcode-name-input').value = barcodeNameFor(code) || '';
+    $('barcode-name-overlay').classList.add('open');
+    $('barcode-name-input').focus();
+  }
+  function closeBarcodeNameDialog() {
+    $('barcode-name-overlay').classList.remove('open');
+  }
+  $('barcode-name-cancel').onclick = closeBarcodeNameDialog;
+  $('barcode-name-save').onclick = function () {
+    var code = $('barcode-name-code').textContent;
+    $('barcode-name-save').disabled = true;
+    saveBarcodeName(code, $('barcode-name-input').value, function () {
+      $('barcode-name-save').disabled = false;
+      closeBarcodeNameDialog();
+    });
+  };
+  $('barcode-name-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $('barcode-name-save').onclick();
+  });
+  // Taps in the gaps die here rather than bubbling to whatever is behind.
+  $('barcode-name-overlay').addEventListener('click', function (e) { e.stopPropagation(); });
+
+  // ---- The management screen ----
+  function openBarcodes() {
+    barcodeSearch = '';
+    $('barcodes-search').value = '';
+    var canManage = canManageBarcodeNames();
+    $('barcodes-add-card').style.display = canManage ? '' : 'none';
+    $('barcodes-read-only-note').style.display = canManage ? 'none' : '';
+    $('barcode-add-code').value = '';
+    $('barcode-add-name').value = '';
+    showView('barcodes');
+    $('barcodes-list').innerHTML = '<div class="empty">Loading…</div>';
+    loadBarcodeNames(function () { renderBarcodesList(); });
+  }
+
+  function renderBarcodesList() {
+    var listEl = $('barcodes-list');
+    var q = barcodeSearch;
+    var rows = q
+      ? barcodeRows.filter(function (r) {
+          return r.barcode.toLowerCase().indexOf(q) !== -1 || r.name.toLowerCase().indexOf(q) !== -1;
+        })
+      : barcodeRows;
+    listEl.innerHTML = '';
+    if (!rows.length) {
+      // :empty::after covers "nothing saved at all"; this covers "nothing
+      // matched", which is a different thing and must not read as the first.
+      if (q) {
+        var noMatch = document.createElement('div');
+        noMatch.className = 'empty';
+        noMatch.textContent = 'No names match "' + q + '".';
+        listEl.appendChild(noMatch);
+      }
+      return;
+    }
+    var canManage = canManageBarcodeNames();
+    rows.forEach(function (r) {
+      var row = document.createElement('div');
+      row.className = 'barcode-row';
+      var who = document.createElement('div');
+      who.className = 'who';
+      var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = r.name;
+      var bc = document.createElement('div'); bc.className = 'bc'; bc.textContent = r.barcode;
+      who.appendChild(nm); who.appendChild(bc);
+      row.appendChild(who);
+      if (canManage) {
+        var edit = document.createElement('button');
+        edit.className = 'link-btn'; edit.textContent = 'Edit';
+        edit.onclick = function () { openBarcodeNameDialog(r.barcode); };
+        var del = document.createElement('button');
+        del.className = 'link-btn'; del.textContent = 'Delete';
+        del.onclick = function () { deleteBarcodeName(r.id, r.barcode); };
+        row.appendChild(edit); row.appendChild(del);
+      }
+      listEl.appendChild(row);
+    });
+  }
+
+  $('barcodes-search').addEventListener('input', function () {
+    barcodeSearch = $('barcodes-search').value.trim().toLowerCase();
+    renderBarcodesList();
+  });
+  $('barcode-add-btn').onclick = function () {
+    $('barcode-add-btn').disabled = true;
+    saveBarcodeName($('barcode-add-code').value, $('barcode-add-name').value, function (ok) {
+      $('barcode-add-btn').disabled = false;
+      if (ok) { $('barcode-add-code').value = ''; $('barcode-add-name').value = ''; }
+    });
+  };
+  $('open-barcodes-btn').onclick = openBarcodes;
+  $('barcodes-back').onclick = function () { openAccount(); };
 
   // ---- In-app tutorial (coach marks) ----
   // A calm product PITCH for free-trial operators, not a feature tour: scan
