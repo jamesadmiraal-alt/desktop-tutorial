@@ -277,6 +277,23 @@
         <option value="full">Gantry CSV — stocktake, barcode, qty, timestamps</option>
       </select>
     </div>
+    <!-- Owner-only for the same reason as the export format above:
+         organisations UPDATE is owner-only RLS, so a manager toggling here
+         would only get an error. Enforced in the database as well as hidden
+         here — see the stocktakes/stocktake_items policies and
+         enforce_stocktake_visible() in schema.sql. -->
+    <div id="staff-visibility-row" style="margin-top:16px;display:none">
+      <!-- No .checkbox-row class here: that one lives in app.html, not this
+           page. The layout is inline rather than borrowing a name that would
+           look shared and isn't. -->
+      <label for="org-staff-own-only" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+        <input type="checkbox" id="org-staff-own-only" style="margin-top:3px">
+        <span>Staff only see stocktakes they started</span>
+      </label>
+      <p class="hint" style="margin-top:2px">Managers and the owner still see all of them.
+        With this on, staff can’t open — or scan into — a count someone else started,
+        so two staff can no longer share one stocktake.</p>
+    </div>
   </div>
 
   <!-- Organisation above, everything else in tabs. The org card is identity
@@ -617,6 +634,7 @@
   function applyRoleVisibility() {
     var owner = isOwner();
     $('export-format-row').style.display = owner ? '' : 'none';
+    $('staff-visibility-row').style.display = owner ? '' : 'none';
     $('add-member-card').style.display = owner ? '' : 'none';
     $('rotate-join-code-btn').style.display = owner ? '' : 'none';
     $('seats-owner-controls').style.display = owner ? '' : 'none';
@@ -638,6 +656,7 @@
     // explicitly, and matching exportFormat() in app.html exactly: the standard
     // format for 'standard'/'bepoz', 'full' for everything else.
     $('org-export-format').value = exportFormatValue(currentOrg.exportFormat);
+    $('org-staff-own-only').checked = currentOrg.staffSeeOwnOnly;
   }
 
   // Single source of truth for "which option represents this stored value",
@@ -666,6 +685,31 @@
         toast(value === 'standard'
           ? 'Exports will now be the standard format (barcode and count only)'
           : 'Exports will now be the full Gantry CSV');
+      });
+  };
+
+  // Same shape as the export format above: optimistic UI, reverted from the
+  // stored value if the write is refused. The database is the enforcement —
+  // this switch only records the decision.
+  $('org-staff-own-only').onchange = function () {
+    var box = $('org-staff-own-only');
+    var value = box.checked;
+    var previous = currentOrg.staffSeeOwnOnly;
+    box.disabled = true;
+    sb.from('organisations').update({ staff_see_own_stocktakes_only: value }).eq('id', currentOrg.id)
+      .then(function (res) {
+        box.disabled = false;
+        if (res.error) {
+          fail(res.error, 'Could not change who can see stocktakes');
+          box.checked = previous;
+          return;
+        }
+        currentOrg.staffSeeOwnOnly = value;
+        // Say what it means for the people holding the phones, not just that
+        // it saved — this one silently changes what staff can open.
+        toast(value
+          ? 'Staff now only see stocktakes they started'
+          : 'Staff can see all of this organisation’s stocktakes again');
       });
   };
 
@@ -1451,7 +1495,7 @@
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
     sb.from('memberships')
-      .select('role, organisations(id, name, plan_tier, join_code, export_format, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds)')
+      .select('role, organisations(id, name, plan_tier, join_code, export_format, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds, staff_see_own_stocktakes_only)')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(function (res) {
@@ -1486,7 +1530,11 @@
           role: role, exportFormat: org.export_format,
           rosterLastViewedAt: org.roster_last_viewed_at,
           concurrentSeats: org.concurrent_seats, seatsIncreasedAt: org.seats_increased_at || null,
-          heartbeatIntervalSeconds: org.heartbeat_interval_seconds
+          heartbeatIntervalSeconds: org.heartbeat_interval_seconds,
+          // Anything that isn't an explicit true reads as off — including a
+          // database without the migration, where the column is absent and this
+          // is undefined. Off is the behaviour every org already has.
+          staffSeeOwnOnly: org.staff_see_own_stocktakes_only === true
         };
         showView('admin');
         applyRoleVisibility();

@@ -281,6 +281,21 @@ create table public.organisations (
   scan_mode text not null default 'continuous'
     check (scan_mode in ('continuous', 'tap')),
 
+  -- OFF: every member sees every stocktake in the org (the original
+  -- behaviour, and what every existing organisation keeps).
+  -- ON: a `staff` member sees only the stocktakes they started. Owner and
+  -- manager always see all of them.
+  --
+  -- Owner-writable via the GRANT below rather than through an RPC — unlike
+  -- the scan prefs, which needed managers too. Here owner-only IS the
+  -- requirement, so the existing owner-only "owner update org" policy is
+  -- already the right boundary.
+  --
+  -- Enforced in RLS and by two triggers, not in the app — see the stocktakes
+  -- SELECT policy, the stocktake_items policies, and
+  -- enforce_stocktake_visible() further down.
+  staff_see_own_stocktakes_only boolean not null default false,
+
   created_at timestamptz not null default now()
 );
 
@@ -396,6 +411,47 @@ returns text language sql stable security definer set search_path = public as $$
   select role from public.memberships where user_id = auth.uid();
 $$;
 
+-- ---- Stocktake visibility (organisations.staff_see_own_stocktakes_only) ----
+--
+-- Four policies and two triggers depend on this rule. Written out six times it
+-- would drift, and a visibility rule that drifts is a leak — so it lives here.
+--
+-- Both are `stable` (evaluated once per statement rather than once per row) and
+-- `security definer`: they read organisations/stocktakes, which the caller may
+-- not be able to read for themselves, and can_see_stocktake() is reached from
+-- the stocktakes policy itself, where without definer it would recurse.
+create or replace function public.staff_sees_own_only()
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(
+    (select o.staff_see_own_stocktakes_only
+       from public.organisations o
+      where o.id = public.my_org_id()),
+    false);
+$$;
+
+grant execute on function public.staff_sees_own_only() to authenticated;
+
+-- The whole rule, for callers that have no RLS to lean on — the item and status
+-- RPCs are security definer and bypass policies entirely.
+create or replace function public.can_see_stocktake(p_stocktake_id uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.stocktakes s
+     where s.id = p_stocktake_id
+       and s.org_id = public.my_org_id()
+       and (
+         -- coalesce rather than `in` on a possibly-NULL role: my_role() is NULL
+         -- for a caller with no membership, and NULL comparisons have bitten
+         -- this file before.
+         coalesce(public.my_role(), '') in ('owner', 'manager')
+         or not public.staff_sees_own_only()
+         or s.created_by = auth.uid()
+       )
+  );
+$$;
+
+grant execute on function public.can_see_stocktake(uuid) to authenticated;
+
 -- ---- Stocktakes ----
 create table public.stocktakes (
   id uuid primary key default gen_random_uuid(),
@@ -409,8 +465,14 @@ create table public.stocktakes (
   -- policy below, since a plain FK can't also verify same-org). No default:
   -- the operator has to actively choose a location.
   location_id uuid not null references public.locations(id) on delete restrict,
-  -- Audit only, not a security predicate — `on delete set null` so a staff
-  -- member's account deletion doesn't take the org's stocktake with it.
+  -- `on delete set null` so a staff member's account deletion doesn't take the
+  -- org's stocktake with it.
+  --
+  -- This WAS "audit only, not a security predicate". It is one now: when
+  -- organisations.staff_see_own_stocktakes_only is on, this column is what
+  -- decides whether a staff member can see the row at all. Note the
+  -- consequence of the `set null` above — a take whose creator's account has
+  -- been deleted is visible to owner/manager only from then on.
   created_by uuid references auth.users(id) on delete set null default auth.uid(),
   name text not null,
   -- The workflow head office watches. 'ready_for_export' is the load-bearing
@@ -899,7 +961,8 @@ create policy "owner update org" on public.organisations
   with check (id = public.my_org_id() and public.my_role() = 'owner');
 
 revoke update on public.organisations from authenticated;
-grant update (name, logo_url, export_format, join_code, country, roster_last_viewed_at, heartbeat_interval_seconds)
+grant update (name, logo_url, export_format, join_code, country, roster_last_viewed_at,
+              heartbeat_interval_seconds, staff_see_own_stocktakes_only)
   on public.organisations to authenticated;
 -- No insert policy: organisations are only ever created via
 -- create_organisation() above (security definer, bypasses RLS).
@@ -1010,8 +1073,18 @@ create policy "owner delete memberships" on public.memberships
 -- own stocktake — once other people's work can be sitting inside it,
 -- letting any staff member delete the whole thing is a real footgun.
 -- UPDATE is not granted to clients at all — see the revoke below.
+-- Inlined rather than calling can_see_stocktake(), which would re-query
+-- stocktakes once per row to answer a question about the row already in hand.
+-- With the flag off this collapses to the original `org_id = my_org_id()`.
 create policy "read org stocktakes" on public.stocktakes
-  for select using (org_id = public.my_org_id());
+  for select using (
+    org_id = public.my_org_id()
+    and (
+      coalesce(public.my_role(), '') in ('owner', 'manager')
+      or not public.staff_sees_own_only()
+      or created_by = auth.uid()
+    )
+  );
 
 create policy "org members insert stocktakes" on public.stocktakes
   for insert with check (
@@ -1065,8 +1138,19 @@ create policy "owner manager delete stocktakes" on public.stocktakes
 -- someone else's tenant. No item-count cap any more — that was the old
 -- free-plan limit (3 distinct products per stocktake); there's no free
 -- plan now, every org that can reach this point has already paid.
+-- "The parent is visible to me", not a repeat of the predicate: the subquery
+-- is itself subject to the stocktakes policy above, so there is exactly one
+-- definition of visible. Without this, a staff member who could no longer see
+-- a stocktake could still read every barcode and quantity in it and harvest
+-- its id from stocktake_id — hiding the take while leaving its contents
+-- readable would be theatre.
 create policy "read org items" on public.stocktake_items
-  for select using (org_id = public.my_org_id());
+  for select using (
+    org_id = public.my_org_id()
+    and exists (
+      select 1 from public.stocktakes s where s.id = stocktake_items.stocktake_id
+    )
+  );
 
 create policy "org members insert items" on public.stocktake_items
   for insert with check (
@@ -1077,9 +1161,22 @@ create policy "org members insert items" on public.stocktake_items
     )
   );
 
+-- Same parent-visibility test as SELECT. (The INSERT policy above already
+-- contains an `exists` against stocktakes, so it tightens automatically with
+-- the stocktakes policy and is deliberately left alone.)
 create policy "org members update items" on public.stocktake_items
-  for update using (org_id = public.my_org_id())
-  with check (org_id = public.my_org_id());
+  for update using (
+    org_id = public.my_org_id()
+    and exists (
+      select 1 from public.stocktakes s where s.id = stocktake_items.stocktake_id
+    )
+  )
+  with check (
+    org_id = public.my_org_id()
+    and exists (
+      select 1 from public.stocktakes s where s.id = stocktake_items.stocktake_id
+    )
+  );
 
 -- No delete policy, and DELETE revoked outright. Removing scanned items goes
 -- through delete_stocktake_items() / clear_stocktake_items() (both further
@@ -1328,6 +1425,12 @@ begin
   if old.heartbeat_interval_seconds is distinct from new.heartbeat_interval_seconds then
     insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
     values (new.id, new.name, actor, actor_label, 'organisation.heartbeat_interval_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
+  -- A permission boundary, so who moved it and when belongs in the same trail
+  -- as role changes — it decides what a whole role can and cannot see.
+  if old.staff_see_own_stocktakes_only is distinct from new.staff_see_own_stocktakes_only then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.staff_visibility_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
   end if;
   return new;
 end $$;
@@ -1815,6 +1918,80 @@ drop trigger if exists stocktake_items_block_when_completed on public.stocktake_
 create trigger stocktake_items_block_when_completed
   before insert or update or delete on public.stocktake_items
   for each row execute function public.enforce_stocktake_not_completed();
+
+-- ==========================================================================
+-- The other half of staff_see_own_stocktakes_only.
+--
+-- The policies further up cover direct client DML. add_stocktake_item(),
+-- set_stocktake_item_qty(), delete_stocktake_items() and
+-- set_stocktake_status() are all `security definer` and bypass RLS entirely —
+-- they check the caller's ORG and stop there. That was right when every member
+-- could see every take, and is not any more: with the flag on, knowing a uuid
+-- would otherwise be enough to scan into, edit, or mark ready a count you
+-- cannot open.
+--
+-- Triggers rather than rewriting those four functions, for the same reason
+-- enforce_stocktake_not_completed() above is a trigger — and so any future
+-- writer inherits the rule without anyone having to remember it.
+--
+-- auth.uid() IS NULL means service_role, the SQL editor, or an edge function:
+-- no membership, and all trusted here. Same guard as log_organisations_change.
+-- ==========================================================================
+create or replace function public.enforce_stocktake_visible()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_take uuid := coalesce(new.stocktake_id, old.stocktake_id);
+  v_parent_exists boolean;
+begin
+  if auth.uid() is null then
+    return coalesce(new, old);
+  end if;
+  -- Does the parent still exist AT ALL, visibility aside? Deleting a stocktake
+  -- cascades to its items, and by the time those row deletions run the parent
+  -- is already gone — so a check that failed closed here would make deleting a
+  -- stocktake impossible. enforce_stocktake_not_completed() above passes in the
+  -- same situation for the same reason (its `v_status = 'completed'` is NULL,
+  -- hence false, when the lookup finds nothing).
+  --
+  -- This is not a hole: stocktake_items.stocktake_id is a foreign key, so an
+  -- INSERT naming a stocktake that doesn't exist is refused by the FK anyway.
+  select exists (select 1 from public.stocktakes s where s.id = v_take)
+    into v_parent_exists;
+  if not v_parent_exists then
+    return coalesce(new, old);
+  end if;
+
+  if not public.can_see_stocktake(v_take) then
+    -- The same message the RPCs use for a take in another org, so this can't
+    -- be used to tell "hidden from me" from "does not exist".
+    raise exception 'Stocktake not found.';
+  end if;
+  return coalesce(new, old);
+end $$;
+
+drop trigger if exists stocktake_items_visible on public.stocktake_items;
+create trigger stocktake_items_visible
+  before insert or update or delete on public.stocktake_items
+  for each row execute function public.enforce_stocktake_visible();
+
+-- The parent row: client UPDATE on stocktakes is revoked, so
+-- set_stocktake_status() is the only writer — and it is security definer too.
+create or replace function public.enforce_stocktake_row_visible()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then
+    return new;
+  end if;
+  if not public.can_see_stocktake(new.id) then
+    raise exception 'Stocktake not found.';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists stocktakes_visible_on_update on public.stocktakes;
+create trigger stocktakes_visible_on_update
+  before update on public.stocktakes
+  for each row execute function public.enforce_stocktake_row_visible();
 
 -- ==========================================================================
 -- The trial: five lines per stocktake, exports uncapped.
