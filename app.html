@@ -1639,16 +1639,61 @@
     fail(res.error, what);
   }
 
+  // ---- Scan beep ----
+  // ONE AudioContext for the life of the page, not one per beep. Two reasons,
+  // both of which made the old per-beep context fail silently on a phone:
+  //
+  //   * Browsers cap how many AudioContexts a page may hold (~6 in Chrome).
+  //     The old code closed each one in osc.onended, which is asynchronous, so
+  //     a fast run of scans piled them up until `new AudioContext()` threw —
+  //     straight into an empty catch. The beep stopped partway through a count
+  //     and nothing said why.
+  //   * A context created OUTSIDE a user gesture starts suspended on mobile,
+  //     and a camera decode callback is not a gesture. In continuous mode that
+  //     is every beep, so the sound never arrived at all.
+  //
+  // Hence: create once, resume on the first real touch (below), and keep it.
+  var audioCtx = null;
+  function scanAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+    }
+    // No-op when already running; the promise is ignored on purpose — if the
+    // browser refuses, the vibrate below is still worth having.
+    if (audioCtx.state === 'suspended') { try { audioCtx.resume(); } catch (e) {} }
+    return audioCtx;
+  }
+  // The unlock. Any first tap anywhere counts, so by the time a decode wants
+  // to beep the context is already running. once:true — it only ever needs to
+  // happen a single time, and a listener left on every tap for the life of a
+  // counting session is a listener that will eventually cost something.
+  document.addEventListener('pointerdown', function () { scanAudio(); }, { once: true });
+
   function beep() {
-    try {
-      var ctx = new (window.AudioContext || window.webkitAudioContext)();
-      var osc = ctx.createOscillator(), gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.value = 1200; gain.gain.value = 0.15;
-      osc.start(); osc.stop(ctx.currentTime + 0.12);
-      osc.onended = function () { ctx.close(); };
-    } catch (e) {}
-    if (navigator.vibrate) navigator.vibrate(80);
+    var ctx = scanAudio();
+    if (ctx) {
+      try {
+        var t = ctx.currentTime;
+        var osc = ctx.createOscillator(), gain = ctx.createGain();
+        // A square wave at ~2.7kHz is the retail-scanner sound people already
+        // know, and it carries across a noisy venue in a way the old 1200Hz
+        // sine at 0.15 gain did not.
+        osc.type = 'square';
+        // Set directly rather than scheduled: the frequency never ramps, and
+        // setValueAtTime() leaves .value reading the 440 default, which makes
+        // this impossible to introspect or assert on.
+        osc.frequency.value = 2700;
+        // Ramped rather than switched: starting and stopping a square wave at
+        // full amplitude puts a click on both ends.
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.3, t + 0.008);
+        gain.gain.setValueAtTime(0.3, t + 0.07);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(t); osc.stop(t + 0.13);
+      } catch (e) {}
+    }
+    if (navigator.vibrate) navigator.vibrate(60);
   }
 
   // ---- Views ----
