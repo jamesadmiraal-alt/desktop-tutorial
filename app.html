@@ -5487,6 +5487,31 @@
     });
   }
 
+  // Shared by Export and Share: handing the numbers to someone outside the app
+  // is what finishes a count, whichever button did it.
+  //
+  // reason 'export' (not 'manual') so the activity log can tell an automatic
+  // completion from someone deliberately tapping Mark completed, and so
+  // setTakeStatus() stays quiet and lets the message below be the only one.
+  function completeAfterHandover(take, handoverMsg) {
+    // The handover itself is true regardless of what the status write does
+    // next, so say it first and unconditionally.
+    toast(handoverMsg);
+    // Re-exporting an already-completed take: nothing to change, and
+    // set_stocktake_status() would no-op anyway.
+    if (take.status === 'completed') return;
+    setTakeStatus(take, 'completed', 'export', function () {
+      // setTakeStatus only advances t.status when the RPC succeeded, so this
+      // is a reliable read of whether it landed. On failure it has already
+      // toasted the reason, and that toast arrives after this callback — so
+      // saying nothing here leaves the explanation as the last word rather
+      // than painting over it with a cheerier message.
+      if (take.status === 'completed') {
+        toast(handoverMsg + ' — count marked completed');
+      }
+    });
+  }
+
   // Export goes straight to the file — the format comes from the organisation's
   // setting (Admin → Export format), not from a dialog. A venue uses the same POS
   // every time, so asking on every export would be friction with one right answer.
@@ -5569,60 +5594,103 @@
 
       function deliver() {
         downloadCsv(csv, name, fmt.bom);
-        // Name the format in the toast. Two exports that look identical but import
-        // very differently is exactly the confusion that cost an on-site trial, so
-        // the operator should be able to see which shape they just got.
-        toast(fmt.label + ' export downloaded');
+        // Handing the numbers over IS finishing the count — see the note below.
+        // Ordered download-then-complete on purpose: the file is the thing the
+        // operator asked for, so it must not wait on a round trip, and if the
+        // status write fails they still have their export.
+        completeAfterHandover(take, fmt.label + ' export downloaded');
       }
 
-      // EXPORT EXPORTS. It does not change the stocktake's status.
+      // EXPORT COMPLETES THE COUNT. Changed 2026-09-09 at James's direction,
+      // and this reverses an earlier decision — read the history before
+      // reverting it again in either direction.
       //
-      // It used to call setTakeStatus(take, 'completed', 'export'), and that is
-      // the ST5 defect: one tap on Export CSV downloaded a file AND declared the
-      // count finished. Combined with a miss-tap onto the adjacent status button
-      // it took ST5 from In Progress to Ready to Completed without anyone
-      // choosing any of it, and flipped another device mid-count to
-      // "completed / exported".
+      // Originally export DID complete the take (the three-state spec defined
+      // `completed` as "an export has happened"). That was removed after ST5,
+      // where one tap on Export downloaded a file AND closed the count: a
+      // miss-tap walked a take from In Progress to Ready to Completed with
+      // nobody choosing it, and flipped another device mid-count.
       //
-      // Completing a count is a decision about the count, so it belongs to the
-      // button that says so. Downloading a copy of the numbers is not that
-      // decision — head office re-exporting a file they mislaid must not mutate
-      // anything, and a venue exporting to check the figures must not be locked
-      // out of their own count as a result.
+      // What makes it safe to bring back is that ST5's actual mechanisms were
+      // each fixed separately since, and all four still stand:
+      //   * the sheet's read-only and state-changing groups are split by a
+      //     labelled divider and ~48px of dead space (the ST6 hit-area fix);
+      //   * state controls are inert for STATE_ARM_MS after the sheet opens;
+      //   * exportStocktake() refuses anything that isn't already
+      //     ready_for_export, so export can no longer be the step that jumps a
+      //     count out of In Progress;
+      //   * guardAgainstLiveCount() refuses while someone is still scanning.
       //
-      // The iOS ordering problem the old comment described is gone with the RPC:
-      // there is no in-flight request left for the download's navigation to
-      // cancel, because there is no request.
+      // Re-exporting an already-completed take stays allowed and is a no-op on
+      // the status: set_stocktake_status() returns early when the status is
+      // unchanged, so it writes no second audit row.
       deliver();
     });
   }
 
-  $('take-share').onclick = function () {
+  $('take-share').onclick = function () { shareStocktake(); };
+
+  // Share is now gated exactly like Export, and for the same reasons. It used
+  // to have neither check, which meant the app refused to EXPORT a count
+  // someone was still scanning into but would happily SHARE that same count
+  // out of the building — the stricter of the two paths was the one that
+  // didn't hand data to an outsider.
+  function shareStocktake() {
+    if (!actionsTake) {
+      toast('Open the stocktake’s ⋯ menu again', '#b91c1c');
+      return;
+    }
+    if (actionsTake.status !== 'ready_for_export' && actionsTake.status !== 'completed') {
+      toast('Mark this stocktake ready for export first', '#b91c1c');
+      return;
+    }
+    guardAgainstLiveCount(actionsTake, function () { doShare(); });
+  }
+
+  function doShare() {
     fetchTakeItems(actionsTake.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
+      // Snapshot up front: the sheet closes below and actionsTake can be
+      // repointed by the next ⋯ tap before the share resolves.
+      var take = actionsTake;
       // Same format as Export: whoever receives a shared file is going to import
       // it into the same POS, so handing them a different shape would be a trap.
       var fmt = exportFormat();
-      var csv = fmt.build(actionsTake, takeItems);
+      var csv = fmt.build(take, takeItems);
       // Same BOM rule as downloadCsv — a shared standard-format file gets
       // imported too, so it must not carry a mark that corrupts its first barcode.
       var file = new File([(fmt.bom === false ? '' : '﻿') + csv],
-                          fileName(actionsTake, fmt.suffix), { type: 'text/csv' });
+                          fileName(take, fmt.suffix), { type: 'text/csv' });
       // Same reasoning as Export: the card must not contradict the file.
-      syncTakeSnapshot(actionsTake, takeItems);
+      syncTakeSnapshot(take, takeItems);
+      closeTakeActions();
+
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: 'Gantry export: ' + actionsTake.name }).catch(function () {});
+        navigator.share({ files: [file], title: 'Gantry export: ' + take.name }).then(
+          function () { completeAfterHandover(take, 'Shared'); },
+          // Rejection is the only cancellation signal the Web Share API gives
+          // (AbortError). Completing here would lock a count because someone
+          // opened the share sheet and thought better of it — and a staff
+          // member can't reopen a completed take, so they'd need a manager.
+          //
+          // Worth knowing: several platforms RESOLVE on dismissal rather than
+          // rejecting, so this cannot catch every cancel. It catches the ones
+          // it can, and that is the whole of what the API offers.
+          function () {}
+        );
       } else if (navigator.clipboard) {
         navigator.clipboard.writeText(csv).then(
-          function () { toast('CSV copied to clipboard'); },
+          // A copy either happened or it didn't — deterministic, unlike the
+          // share sheet above, so this is the more trustworthy of the two.
+          function () { completeAfterHandover(take, 'CSV copied to clipboard'); },
           function () { toast('Copy failed — use Export CSV', '#b91c1c'); }
         );
       } else {
+        // Nothing left the device, so nothing is finished.
         toast('Sharing not supported — use Export CSV', '#b91c1c');
       }
-      $('take-actions-overlay').classList.remove('open');
     });
-  };
+  }
 
   $('take-clear').onclick = function () {
     // Same arming delay as the status controls — this is the most destructive
