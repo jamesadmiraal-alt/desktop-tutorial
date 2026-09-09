@@ -1581,7 +1581,15 @@ begin
   -- CALLER's org, and sit in ONE stocktake so the single audit row below has an
   -- unambiguous subject. Any mismatch is reported identically, so this can't be
   -- used to probe which item UUIDs exist in other organisations.
-  select count(*), count(distinct i.stocktake_id), min(i.stocktake_id), coalesce(sum(i.qty), 0)
+  -- (array_agg(...))[1] rather than min(): Postgres has no min(uuid), and this
+  -- line raised `function min(uuid) does not exist` on EVERY call from the day
+  -- it shipped — plpgsql only plans the statement on first execution, so it
+  -- was created without complaint and failed at run time. Line delete was
+  -- broken for everyone, not just staff, until 2026-09-09.
+  --
+  -- Taking the first element is exact, not a guess: v_distinct_takes is checked
+  -- to be 1 immediately below, so every row carries the same stocktake_id.
+  select count(*), count(distinct i.stocktake_id), (array_agg(i.stocktake_id))[1], coalesce(sum(i.qty), 0)
     into removed_count, v_distinct_takes, v_take_id, unit_total
     from public.stocktake_items i
    where i.id = any(v_ids) and i.org_id = v_org;

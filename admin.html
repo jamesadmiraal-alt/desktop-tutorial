@@ -228,7 +228,19 @@
   </div>
 </header>
 
-<div id="login-view" class="wrap">
+<!-- Shown first, and the only view visible before JS runs. The login card used
+     to hold that position, so anyone with a valid session watched a login
+     screen flash past on every visit to the console — it was never a real
+     prompt, just the default state of the page while getSession() resolved.
+     This covers both async gaps: the session check AND the memberships lookup
+     in checkAccessAndEnter() that follows it. -->
+<div id="loading-view" class="wrap">
+  <div class="auth-card" style="text-align:center">
+    <p class="hint" style="margin:0">Checking your access…</p>
+  </div>
+</div>
+
+<div id="login-view" class="wrap" style="display:none">
   <div class="auth-card">
     <div class="logo">
       <svg viewBox="0 0 40 40" width="36" height="36" aria-hidden="true">
@@ -567,10 +579,40 @@
   }
 
   function showView(name) {
-    ['login-view', 'denied-view', 'admin-view'].forEach(function (id) {
+    ['loading-view', 'login-view', 'denied-view', 'admin-view'].forEach(function (id) {
       $(id).style.display = id === name + '-view' ? '' : 'none';
     });
-    $('logout-btn').style.display = name === 'login' ? 'none' : '';
+    // Nothing to log out of while we're still working out who this is.
+    $('logout-btn').style.display = (name === 'login' || name === 'loading') ? 'none' : '';
+  }
+
+  // ---- Honest empty states ----
+  //
+  // Several lists say "No members yet." / "No venues yet." / "No one is
+  // currently logged in." via `:empty::after`. That is a claim about the
+  // ORGANISATION, and an empty container while a request is still in flight
+  // makes the page assert it before it knows — which is what the manager
+  // stress test saw. A placeholder child makes :empty false until there is a
+  // real answer.
+  //
+  // Only when the list is currently empty: a refresh after archiving or adding
+  // keeps the rows already on screen rather than blanking them, the same
+  // reasoning as loadTakes() in app.html.
+  function showListLoading(id) {
+    var el = $(id);
+    if (el && !el.firstChild) el.innerHTML = '<div class="hint">Loading…</div>';
+  }
+
+  // A failed load must not fall back to the "nothing here" message either —
+  // "No venues yet" and "we couldn't reach the server" are opposite facts.
+  function showListError(id, msg) {
+    var el = $(id);
+    if (!el) return;
+    el.innerHTML = '';
+    var d = document.createElement('div');
+    d.className = 'hint';
+    d.textContent = msg;
+    el.appendChild(d);
   }
 
   // ---- Tabs ----
@@ -807,7 +849,13 @@
           + 'This only works if it has never been counted. If it has stocktakes, '
           + 'archive it instead.')) return;
         removeBtn.disabled = true;
-        sb.from('locations').delete().eq('id', loc.id).then(function (res) {
+        // .select('id') so the response carries the rows actually deleted.
+        // Without it a DELETE that removed NOTHING is indistinguishable from
+        // one that worked: PostgREST answers 204 with no error when RLS
+        // filters the row out, so the old code reported "Location deleted"
+        // and the row stayed on screen — the silent no-op reported from the
+        // manager stress test.
+        sb.from('locations').delete().eq('id', loc.id).select('id').then(function (res) {
           removeBtn.disabled = false;
           if (res.error) {
             var blocked = /foreign key|violates|restrict/i.test(res.error.message || '');
@@ -815,6 +863,15 @@
               ? { message: 'This location has stocktakes, so deleting it would destroy '
                   + 'them. Archive it instead — ' + ARCHIVE_BLURB }
               : res.error, blocked ? '' : 'Could not delete location');
+            return;
+          }
+          if (!res.data || !res.data.length) {
+            // No error and nothing deleted: the database declined without
+            // raising. Say so rather than claiming success, and refresh so the
+            // list stops disagreeing with the server.
+            toast('That location wasn’t deleted — you may not have permission, '
+              + 'or it has already gone. Refreshing the list.', '#b91c1c');
+            loadVenues();
             return;
           }
           loadVenues();
@@ -991,9 +1048,14 @@
   }
 
   function loadVenues() {
+    showListLoading('venues-list');
     sb.from('venues').select('id,name,archived_at,locations(id,name,archived_at)')
       .order('name').then(function (res) {
-      if (res.error) { fail(res.error, 'Could not load venues'); return; }
+      if (res.error) {
+        fail(res.error, 'Could not load venues');
+        showListError('venues-list', 'Couldn’t load venues. Check your connection and try again.');
+        return;
+      }
       var venues = (res.data || []).map(function (v) {
         // Active locations first within each venue, then alphabetical — same
         // reasoning as the venue ordering below.
@@ -1196,8 +1258,13 @@
   };
 
   function loadRoster() {
+    showListLoading('roster-list');
     sb.rpc('list_org_members').then(function (res) {
-      if (res.error) { fail(res.error, 'Could not load team'); return; }
+      if (res.error) {
+        fail(res.error, 'Could not load team');
+        showListError('roster-list', 'Couldn’t load the team. Check your connection and try again.');
+        return;
+      }
       renderRoster(res.data || []);
       // Mark as viewed now that these members have been shown — next
       // load's "NEW" badges only cover whoever joined after this moment.
@@ -1316,8 +1383,16 @@
   }
 
   function loadActiveSessions() {
+    showListLoading('active-sessions-list');
     sb.rpc('list_active_sessions').then(function (res) {
-      if (res.error) { fail(res.error, 'Could not load active sessions'); return; }
+      if (res.error) {
+        fail(res.error, 'Could not load active sessions');
+        // Especially important here: the empty state claims "No one is
+        // currently logged in", which an owner could act on by buying fewer
+        // seats. It must never stand in for a failed request.
+        showListError('active-sessions-list', 'Couldn’t check who is logged in. Try again in a moment.');
+        return;
+      }
       renderActiveSessions(res.data || []);
     });
   }

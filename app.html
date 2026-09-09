@@ -5237,12 +5237,58 @@
     return EXPORT_FORMATS[currentOrg && currentOrg.exportFormat] || EXPORT_FORMATS.full;
   }
 
+  function slugify(s, fallback) {
+    return String(s == null ? '' : s)
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || fallback;
+  }
+
+  // The venue's timezone, not the device's and not UTC. A count finished late
+  // on the 9th and exported at 00:30 on the 10th is data ABOUT the 9th, and a
+  // file named for the 10th gets filed under the wrong day by whoever imports
+  // it.
+  var EXPORT_TZ = 'Australia/Adelaide';
+
+  // The COUNT's date, not the download's. take.created_at is when the
+  // stocktake was started, which is the date the numbers describe.
+  function takeDateStamp(take) {
+    var raw = take && (take.created_at || take.updated_at);
+    var d = raw ? new Date(raw) : new Date();
+    if (isNaN(d.getTime())) d = new Date();
+    try {
+      // en-CA formats as YYYY-MM-DD, so the parts come out already in order
+      // and only the separators need removing — no re-parsing a localised
+      // D/M/YYYY back into fields.
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: EXPORT_TZ, year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(d).replace(/-/g, '');
+    } catch (e) {
+      // Old WebViews without full Intl timezone support: the device's own
+      // local date is still far closer to the truth than nothing.
+      var pad = function (n) { return String(n).padStart(2, '0'); };
+      return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
+    }
+  }
+
+  // gantry-{location}-{take}-{countdate}[-{format}].csv
+  //
+  // The location is the point: a take called "Morning count" gave a file with
+  // nothing in the name to say WHERE it was counted, and head office receiving
+  // four of those has no way to tell them apart. Reported from a live export.
+  //
+  // Used by BOTH Export CSV and Share, so the two can never disagree about
+  // what the file is called.
   function fileName(take, suffix) {
-    var d = new Date();
-    var pad = function (n) { return String(n).padStart(2, '0'); };
-    var slug = take.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'stocktake';
-    return 'gantry-' + slug + '-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
-           '-' + pad(d.getHours()) + pad(d.getMinutes()) + (suffix ? '-' + suffix : '') + '.csv';
+    var takeSlug = slugify(take && take.name, 'stocktake');
+    var locSlug = slugify(take && take.locations && take.locations.name, '');
+    var parts = ['gantry'];
+    // Only when it isn't already there. The default name suggestTakeName()
+    // offers is "<location> – <date>", so most takes already carry it and
+    // prepending unconditionally would produce gantry-cellar-cellar-…
+    if (locSlug && takeSlug.indexOf(locSlug) === -1) parts.push(locSlug);
+    parts.push(takeSlug);
+    parts.push(takeDateStamp(take));
+    if (suffix) parts.push(suffix);
+    return parts.join('-') + '.csv';
   }
 
   // `bom` defaults to true: Excel needs the byte-order mark to read the Gantry
