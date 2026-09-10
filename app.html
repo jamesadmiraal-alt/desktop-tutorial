@@ -1213,7 +1213,7 @@
   <div id="list"></div>
 </div>
 
-<!-- ===== Stocktake actions (Export/Share/Clear) — reached from the Home
+<!-- ===== Stocktake actions (Export/Clear) — reached from the Home
      list via each row's ⋯ button, not while a stocktake is being scanned ===== -->
 <div id="take-actions-overlay" class="overlay">
   <div class="dialog">
@@ -1226,10 +1226,15 @@
          is the fix for the hit-area, not decoration. -->
     <div class="action-sheet">
       <!-- No ▾ any more: it used to open a format picker (Gantry CSV / MYOB /
-           Lightspeed). One format now, so this exports directly. Export EXPORTS
-           — it no longer changes the stocktake's status. See doExport(). -->
+           Lightspeed). One format now, so this exports directly.
+           There was a Share button beside this until 2026-09-10, removed at
+           James's direction because two near-identical buttons in this sheet
+           were confusing. It handed over the same CSV via navigator.share(),
+           and on any device without file sharing it fell back to copying the
+           text to the clipboard — which on a desktop meant tapping Share
+           silently copied a CSV and marked the count completed. Export is now
+           the only way the numbers leave the app. -->
       <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export CSV</button>
-      <button id="take-share">Share</button>
     </div>
     <!-- The heading is not decoration. Before it, both halves of this sheet were
          an identical stack of buttons, so "Export CSV" and "Mark ready for
@@ -3502,7 +3507,7 @@
     info.appendChild(nm); info.appendChild(meta);
     var more = document.createElement('button');
     more.className = 'more'; more.textContent = '⋯';
-    more.setAttribute('aria-label', 'Export, share, or clear this stocktake');
+    more.setAttribute('aria-label', 'Export or clear this stocktake');
     more.onclick = function (e) {
       e.stopPropagation();
       openTakeActions(t);
@@ -5137,7 +5142,7 @@
     renderItems();
   });
 
-  // ---- Stocktake actions (Export/Share/Clear) ----
+  // ---- Stocktake actions (Export/Clear) ----
   // Reached from a Home row's ⋯ button — not while a stocktake is open for
   // scanning, so these work on demand against whichever stocktake's dialog
   // is currently open (actionsTake), fetching its items fresh each time
@@ -5275,8 +5280,9 @@
   // nothing in the name to say WHERE it was counted, and head office receiving
   // four of those has no way to tell them apart. Reported from a live export.
   //
-  // Used by BOTH Export CSV and Share, so the two can never disagree about
-  // what the file is called.
+  // Export is the only caller now that Share is gone, but this stays a helper
+  // rather than being inlined: the filename is a contract with whoever
+  // receives the file, and it deserves a named place to change.
   function fileName(take, suffix) {
     var takeSlug = slugify(take && take.name, 'stocktake');
     var locSlug = slugify(take && take.locations && take.locations.name, '');
@@ -5305,8 +5311,8 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
 
-  // Every caller of this is about to put these rows in front of someone — a CSV,
-  // a shared file — so the Home card behind them must not still be showing an
+  // Every caller of this is about to put these rows in front of someone — a CSV
+  // handed to whoever imports it — so the Home card behind them must not still be showing an
   // older total. takeTotals() reads the aggregate embedded by loadTakes(), which
   // is a snapshot from whenever Home last loaded; another device counting since
   // then makes the card disagree with the file. During the stress test that read
@@ -5376,7 +5382,7 @@
   //
   // 350ms: long enough to cover the synthesized event, far short of the time it
   // takes to read a sheet and choose. Only the state-changing controls are held
-  // back — Export, Share and Cancel are safe to hit immediately and holding
+  // back — Export and Cancel are safe to hit immediately and holding
   // those would just feel broken.
   var STATE_ARM_MS = 350;
   var actionsOpenedAt = 0;
@@ -5487,8 +5493,10 @@
     });
   }
 
-  // Shared by Export and Share: handing the numbers to someone outside the app
-  // is what finishes a count, whichever button did it.
+  // Handing the numbers out of the app is what finishes a count. Export is the
+  // only path that does that now, but this stays a named step rather than two
+  // lines inside deliver(), because "what completes a count" is a product rule
+  // and has already been reversed twice.
   //
   // reason 'export' (not 'manual') so the activity log can tell an automatic
   // completion from someone deliberately tapping Mark completed, and so
@@ -5628,69 +5636,16 @@
     });
   }
 
-  $('take-share').onclick = function () { shareStocktake(); };
-
-  // Share is now gated exactly like Export, and for the same reasons. It used
-  // to have neither check, which meant the app refused to EXPORT a count
-  // someone was still scanning into but would happily SHARE that same count
-  // out of the building — the stricter of the two paths was the one that
-  // didn't hand data to an outsider.
-  function shareStocktake() {
-    if (!actionsTake) {
-      toast('Open the stocktake’s ⋯ menu again', '#b91c1c');
-      return;
-    }
-    if (actionsTake.status !== 'ready_for_export' && actionsTake.status !== 'completed') {
-      toast('Mark this stocktake ready for export first', '#b91c1c');
-      return;
-    }
-    guardAgainstLiveCount(actionsTake, function () { doShare(); });
-  }
-
-  function doShare() {
-    fetchTakeItems(actionsTake.id, function (takeItems) {
-      if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
-      // Snapshot up front: the sheet closes below and actionsTake can be
-      // repointed by the next ⋯ tap before the share resolves.
-      var take = actionsTake;
-      // Same format as Export: whoever receives a shared file is going to import
-      // it into the same POS, so handing them a different shape would be a trap.
-      var fmt = exportFormat();
-      var csv = fmt.build(take, takeItems);
-      // Same BOM rule as downloadCsv — a shared standard-format file gets
-      // imported too, so it must not carry a mark that corrupts its first barcode.
-      var file = new File([(fmt.bom === false ? '' : '﻿') + csv],
-                          fileName(take, fmt.suffix), { type: 'text/csv' });
-      // Same reasoning as Export: the card must not contradict the file.
-      syncTakeSnapshot(take, takeItems);
-      closeTakeActions();
-
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: 'Gantry export: ' + take.name }).then(
-          function () { completeAfterHandover(take, 'Shared'); },
-          // Rejection is the only cancellation signal the Web Share API gives
-          // (AbortError). Completing here would lock a count because someone
-          // opened the share sheet and thought better of it — and a staff
-          // member can't reopen a completed take, so they'd need a manager.
-          //
-          // Worth knowing: several platforms RESOLVE on dismissal rather than
-          // rejecting, so this cannot catch every cancel. It catches the ones
-          // it can, and that is the whole of what the API offers.
-          function () {}
-        );
-      } else if (navigator.clipboard) {
-        navigator.clipboard.writeText(csv).then(
-          // A copy either happened or it didn't — deterministic, unlike the
-          // share sheet above, so this is the more trustworthy of the two.
-          function () { completeAfterHandover(take, 'CSV copied to clipboard'); },
-          function () { toast('Copy failed — use Export CSV', '#b91c1c'); }
-        );
-      } else {
-        // Nothing left the device, so nothing is finished.
-        toast('Sharing not supported — use Export CSV', '#b91c1c');
-      }
-    });
-  }
+  // Share lived here until 2026-09-10. Removed at James's direction — two
+  // near-identical buttons in one sheet, and the fallback path (no file
+  // sharing available → copy the CSV text to the clipboard) meant a desktop
+  // tap on Share silently copied text and completed the count.
+  //
+  // Anything that wants it back should note what it needs: the same
+  // ready_for_export gate and guardAgainstLiveCount() that exportStocktake()
+  // uses, and completion driven only by navigator.share() RESOLVING — several
+  // platforms resolve on dismissal rather than rejecting, so a naive version
+  // locks a count when someone opens the share sheet and backs out.
 
   $('take-clear').onclick = function () {
     // Same arming delay as the status controls — this is the most destructive
@@ -6080,9 +6035,13 @@
       },
       {
         id: 'export', ctx: 'sheet', title: 'Export CSV',
-        body: "Download or share a CSV file — each line is a barcode and how many you counted.",
-        // #take-export only — Share can stay in the copy, but the spotlight
-        // must land on Export, not sweep the whole read-only button group.
+        // No longer mentions sharing: the Share button was removed on
+        // 2026-09-10, and a tour that points at a button nobody can find is
+        // worse than no tour. Not worth a TUTORIAL_VERSION bump on its own —
+        // anyone who has already seen the tour won't be shown the old wording
+        // again, and re-running the whole thing to fix four words would be a
+        // bigger interruption than the error.
+        body: "Download the CSV — each line is a barcode and how many you counted.",
         target: function () { return $('take-export'); },
         enter: function () { showView('home'); openTakeActions(TUTORIAL_PREVIEW_TAKE); }
       },

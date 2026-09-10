@@ -243,10 +243,13 @@
          exactly where you left off.</p>
     </div>
     <div class="card">
-      <div class="icon"><span class="ico" style="--i:url(icons/share-2.svg)"></span></div>
+      <!-- Was a share-2 icon and "share it to email or WhatsApp" until
+           2026-09-10, when the in-app Share button was removed. The page must
+           not keep promising a button that isn't there. -->
+      <div class="icon"><span class="ico" style="--i:url(icons/download.svg)"></span></div>
       <h3>Export anywhere</h3>
-      <p>One tap exports the stocktake as CSV — download it, share it to email or WhatsApp,
-         or paste it straight into your spreadsheet.</p>
+      <p>One tap downloads the stocktake as CSV — ready to import into your stock
+         system, or open straight in your spreadsheet.</p>
     </div>
   </div>
 </section>
@@ -313,7 +316,7 @@
          sequence, so they have to match the order things actually happen in. -->
     <div class="step"><div class="n">3</div><h3>Scan</h3><p>Point your phone's camera at a barcode — beep, done.</p></div>
     <div class="step"><div class="n">4</div><h3>Count</h3><p>The number pad pops up — type the quantity and save. Scan again to add to the count.</p></div>
-    <div class="step"><div class="n">5</div><h3>Export</h3><p>Download or share the finished stocktake as CSV — ready for your books or stock system.</p></div>
+    <div class="step"><div class="n">5</div><h3>Export</h3><p>Download the finished stocktake as CSV — ready for your books or stock system.</p></div>
     <div class="step"><div class="n">6</div><h3>Choose a plan</h3><p>The trial covers 5 products per stocktake. When you need a full count, pick Single- or Multi-venue and check out securely with Stripe.</p></div>
   </div>
 </section>
@@ -332,7 +335,7 @@
         <li>1 location</li>
         <li>Unlimited products per stocktake</li>
         <li>Phone-camera scanning</li>
-        <li>CSV export &amp; share</li>
+        <li>CSV export</li>
         <li>Cloud sync across devices</li>
       </ul>
       <a class="btn" href="app.html#signup">Get started</a>
