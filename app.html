@@ -5498,24 +5498,48 @@
   // lines inside deliver(), because "what completes a count" is a product rule
   // and has already been reversed twice.
   //
+  // THE ORDER IS LOAD-BEARING, AND IT IS NOT THE OBVIOUS ONE. The status write
+  // goes FIRST and the file waits for it.
+  //
+  // iOS Safari treats downloadCsv()'s blob-URL <a download> as a navigation and
+  // cancels whatever fetch is still in flight. A status write issued AFTER the
+  // download therefore dies as `TypeError: Load failed`, and the operator gets
+  // a red "Could not update stocktake" sitting over a count that exported
+  // perfectly well. Reported from an iPhone on 2026-09-10, one day after
+  // completion-on-export shipped — and this file had already recorded the
+  // hazard, in the comment that used to explain why export made no request at
+  // all. Putting a request back into that path without restoring the warning is
+  // what let it return.
+  //
+  // A failed status write must never withhold the file. The export is what the
+  // operator asked for; a count still sitting in Ready for export is a much
+  // smaller problem than numbers they cannot get at.
+  //
   // reason 'export' (not 'manual') so the activity log can tell an automatic
   // completion from someone deliberately tapping Mark completed, and so
-  // setTakeStatus() stays quiet and lets the message below be the only one.
-  function completeAfterHandover(take, handoverMsg) {
-    // The handover itself is true regardless of what the status write does
-    // next, so say it first and unconditionally.
-    toast(handoverMsg);
+  // setTakeStatus() stays quiet and lets the messages here be the only ones.
+  function completeThenHandOver(take, handOver, handoverMsg) {
     // Re-exporting an already-completed take: nothing to change, and
-    // set_stocktake_status() would no-op anyway.
-    if (take.status === 'completed') return;
+    // set_stocktake_status() would no-op anyway — so don't spend a round trip
+    // (or risk a cancelled one) before handing the file over.
+    if (take.status === 'completed') {
+      handOver();
+      toast(handoverMsg);
+      return;
+    }
     setTakeStatus(take, 'completed', 'export', function () {
+      // Now the request has settled, the navigation is safe to trigger.
+      handOver();
       // setTakeStatus only advances t.status when the RPC succeeded, so this
-      // is a reliable read of whether it landed. On failure it has already
-      // toasted the reason, and that toast arrives after this callback — so
-      // saying nothing here leaves the explanation as the last word rather
-      // than painting over it with a cheerier message.
+      // is a reliable read of whether it landed.
       if (take.status === 'completed') {
         toast(handoverMsg + ' — count marked completed');
+      } else {
+        // setTakeStatus has already toasted the underlying reason, and this
+        // replaces it deliberately: "Could not update stocktake: TypeError:
+        // Load failed" tells a bartender nothing they can act on, whereas
+        // which half worked and what to do next does.
+        toast(handoverMsg + ' — still Ready for export, finish it from ⋯', '#b91c1c');
       }
     });
   }
@@ -5601,12 +5625,13 @@
       closeTakeActions();
 
       function deliver() {
-        downloadCsv(csv, name, fmt.bom);
-        // Handing the numbers over IS finishing the count — see the note below.
-        // Ordered download-then-complete on purpose: the file is the thing the
-        // operator asked for, so it must not wait on a round trip, and if the
-        // status write fails they still have their export.
-        completeAfterHandover(take, fmt.label + ' export downloaded');
+        // Status first, file second — completeThenHandOver() explains why, and
+        // it is the opposite of what it looks like it should be. Do not move
+        // downloadCsv() back above the status write: on iOS the download
+        // navigation cancels it.
+        completeThenHandOver(take, function () {
+          downloadCsv(csv, name, fmt.bom);
+        }, fmt.label + ' export downloaded');
       }
 
       // EXPORT COMPLETES THE COUNT. Changed 2026-09-09 at James's direction,
