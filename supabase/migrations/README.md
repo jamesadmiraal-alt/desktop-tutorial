@@ -5,9 +5,10 @@ is guarded to refuse to run against a project that already has an organisation.
 It is the description of a finished database, not a way to change a live one.
 
 These files are how a live project actually changes. Each is additive and safe to
-run once against `vfixdchbkmqryfhirphx` (the project named **BarScan** in the
-Supabase dashboard — that is Gantry; `zythshvfgphkwwfborvb`/BarberBook is a
-different product, don't paste into it).
+run once against `vfixdchbkmqryfhirphx` (named **Gantry** in the Supabase
+dashboard as of 2026-09-29 — it was **BarScan**, so older notes say that;
+`zythshvfgphkwwfborvb`/BarberBook is a different product, don't paste into it).
+The ref in the dashboard URL is the thing to check, not the name.
 
 ## Rules
 
@@ -19,7 +20,8 @@ different product, don't paste into it).
 2. Run them in filename order. Never re-order or edit a file that has already
    been run — add a new one.
 3. Run in the Supabase SQL editor (Dashboard → SQL Editor → New query → Run), or
-   `supabase db execute`. Check the project switcher reads **BarScan** first.
+   `supabase db execute`. Check the URL carries `vfixdchbkmqryfhirphx` first —
+   the switcher reads **Gantry** now, and read **BarScan** before 2026-09-29.
 4. Deploy order per change: **SQL → Edge Functions → HTML.** A function or page
    that calls something not yet in the database fails for real users.
 
@@ -53,3 +55,5 @@ different product, don't paste into it).
 | `20260908_01_tap_capture_and_barcode_names.sql` | `organisations.scan_mode` + `set_scan_mode()` (tap-to-capture), and the `org_barcodes` directory (barcode → human name) with its RLS | **Already applied 2026-09-08**, before `app.html` was pushed — written up after the fact, because the SQL was run from an extract of `schema.sql` instead of from a file here. Re-running is harmless but pointless. Existing orgs keep `'continuous'` and an empty directory, so it changed nothing until someone opted in. Names are **in-app only** — the CSV is untouched |
 | `20260909_01_staff_see_own_stocktakes.sql` | `organisations.staff_see_own_stocktakes_only`, `staff_sees_own_only()` / `can_see_stocktake()`, the `stocktakes` + `stocktake_items` SELECT/UPDATE policies, and two `enforce_stocktake_visible` triggers | Run **before** pushing the new `admin.html`. With the flag **off** every predicate short-circuits to today's behaviour, so it is observably a no-op until an owner turns it on — safe to run mid-count. **Turning it ON changes counting, not just listing:** staff can no longer open or scan into a take someone else started, so two staff can't share one stocktake. Also promotes `stocktakes.created_by` from "audit only" to a security predicate — takes whose creator has been deleted (`created_by is null`) become owner/manager-only. Check `select count(*) from public.stocktakes where created_by is null;` before switching a venue over |
 | `20260909_02_fix_min_uuid_line_delete.sql` | `delete_stocktake_items()` used `min(i.stocktake_id)`; Postgres has no `min(uuid)`, so removing a scanned line raised `function min(uuid) does not exist` on every call | **Run as soon as possible — it fixes a live bug for the CURRENTLY deployed page**, which already calls this RPC and today just shows an error toast. The ✕ on a stocktake line has been dead for every role since `20260818_01`, because plpgsql only plans a statement on first execution. `create or replace`, same signature, no data touched, safe to run twice and safe mid-count. The two historical files carrying the bad line are deliberately **not** edited (rule 2) — this supersedes them |
+| `20260929_01_strip_leading_zero_export.sql` | `organisations.strip_leading_zero` + `set_strip_leading_zero()` (drop ONE leading zero from 13/14-digit barcodes **in exports only**), the `stocktakes.last_export_*` columns + `record_stocktake_export()`, and a `strip_leading_zero` branch in the org audit trigger | Run **before** pushing the new `admin.html`/`app.html` — the toggle 404s as PGRST202 until it exists. Additive: one defaulted column on organisations, three nullable ones on stocktakes, two new functions, one `create or replace` trigger function. **Every existing org is `false`**, so no export changes shape until someone ticks the box — safe to run mid-count. Stored barcodes are never rewritten by this or anything else; the rule lives in `barcode-export.js` and is tested by `node scripts/test-barcode-export.js`. app.html treats a failed export stamp as non-fatal, so exports keep working before this runs, just untraceably |
+| `20260929_02_fix_barcode_name_upsert_grant.sql` | `grant update (org_id, barcode, name) on org_barcodes` — naming a barcode failed with `permission denied for table org_barcodes` (42501) because the upsert's `on conflict do update set` names `org_id`, which `20260908_01` revoked and never re-granted | **Run as soon as possible — it fixes a live bug for the CURRENTLY deployed page.** Not RLS: the policies are correct and untouched, and writes stay owner/manager. It refused EVERY name save, not only renames — Postgres checks the DO UPDATE column privileges when the statement starts, before it knows whether a conflicting row exists. One GRANT, no data touched, safe to run twice and safe mid-count. Granting `org_id` cannot leak a row between orgs: the update policy pins `using` and `with check` to `my_org_id()` |

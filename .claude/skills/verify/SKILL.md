@@ -15,7 +15,9 @@ admin). Node is on the *user* PATH, so a fresh terminal has it, but a
 already-open shell may not — call it by full path to be safe:
 
 ```powershell
-$node = "$env:LOCALAPPDATA\nodejs\node-v24.19.0-win-x64"          # node.exe, npm.cmd, npx.cmd
+# node moved out of %LOCALAPPDATA% and IS on PATH now (verified 2026-09-29) —
+# `node` alone works in a fresh shell; the full path is just belt and braces.
+$node = "C:\Program Files\nodejs"                                  # node.exe, npm.cmd, npx.cmd
 $test = "$env:LOCALAPPDATA\gantry-testing"                         # playwright + http-server live here
 $env:NODE_PATH = "$test\node_modules"                              # so require('playwright') resolves
 
@@ -26,9 +28,18 @@ Start-Process "$node\node.exe" -ArgumentList "$test\node_modules\http-server\bin
 & "$node\node.exe" yourscript.js     # require('playwright'); chromium.launch() finds its own browser
 ```
 
-Playwright's Chromium is in `%LOCALAPPDATA%\ms-playwright` and is found
-automatically — do NOT pass `executablePath` on Windows. Deliberately installed
-outside the repo so the Capacitor `package.json` stays untouched.
+Playwright's Chromium is in `%LOCALAPPDATA%\ms-playwright`, deliberately outside
+the repo so the Capacitor `package.json` stays untouched. It used to be found
+automatically; as of playwright 1.63 the *headless shell* for the current build
+is missing there while the full browser is present, so a bare
+`chromium.launch()` dies with "Executable doesn't exist at
+…chromium_headless_shell-1243…". Point at the full browser rather than running
+`npx playwright install` (check the versioned dir name first — it changes):
+
+```js
+chromium.launch({ executablePath: process.env.LOCALAPPDATA +
+  '/ms-playwright/chromium-1243/chrome-win64/chrome.exe' })
+```
 
 Kill the server when done: `Get-Process node | Stop-Process` (nothing else here
 runs node).
@@ -76,6 +87,42 @@ error in the one big inline script: watch `pageerror`/`console` and assert the
 new elements exist). To exercise logged-in flows, either use a throwaway test
 account or stub `window.sb` before the app's script runs and drive the handlers
 directly.
+
+## Unit tests that need no browser
+
+```
+node scripts/test-barcode-export.js
+```
+
+Covers `barcode-export.js` — the export-time leading-zero rule and the line
+merging that goes with it. It evaluates the real file with a stub `window`
+(same global-assigning convention as `config.js`), so there is no second copy
+of the rules to drift.
+
+## Driving code that lives inside the IIFE
+
+`app.html` and `admin.html` each wrap their whole script in `(function () { … })()`,
+so NOTHING is reachable from `page.evaluate` — not `doExport`, not `currentOrg`,
+not `sb`. Calling one gives "X is not defined"; assigning one is worse, because
+it silently creates a *global* `currentOrg` the closure never reads and the
+handler then throws on `null`.
+
+Cheapest way through: copy the page to `app-test.html`, splice a hook block in
+just before the closing `})();`, serve that, delete it after. The hook's setters
+are defined INSIDE the closure, so the real handlers run against stubs:
+
+```js
+window.__T = {
+  doExport: function () { return doExport(); },
+  setOrg: function (o) { currentOrg = o; },
+  setSb: function (x) { sb = x; },
+  onDownload: function (fn) { downloadCsv = fn; },
+  stubItems: function (items) { fetchTakeItems = function (id, cb) { cb(items); }; },
+};
+```
+
+That exercises the shipping code instead of a re-implementation of it. Never
+commit the instrumented copy.
 
 ## Flows worth driving
 

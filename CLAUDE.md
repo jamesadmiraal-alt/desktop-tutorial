@@ -175,5 +175,24 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   it from `EXPORT_FORMATS` makes such a row fall back silently to the 5-column file, which
   is that original bug returning invisibly. The BOM is per-format on purpose: Excel needs it
   for `'full'`, and it corrupts the first barcode for `'standard'`.
+- **Barcodes are stored exactly as scanned and normalised only on export.** Nothing in this
+  repo pads or trims a digit at capture, and nothing should: the decoders disagree with each
+  other (native `BarcodeDetector` on Android Chrome vs the zxing-wasm ponyfill elsewhere), so
+  the same bottle can arrive as UPC-A 12, EAN-13 13 or GTIN-14 depending on the phone, and
+  what was scanned is the evidence of what the camera read. The per-org
+  `organisations.strip_leading_zero` (default **false**, set in admin.html beside the export
+  format, written by `set_strip_leading_zero()` — owner/manager) removes **exactly one**
+  leading zero from an **all-digit 13- or 14-character** code while the file is built. The
+  rule lives in `barcode-export.js` (`normaliseBarcodeForExport`), is tested by
+  `node scripts/test-barcode-export.js`, and is applied in `doExport()` to **every** format —
+  not inside a builder. 12 digits is deliberately excluded: a 12-digit code starting with
+  zero is a real UPC-A, and stripping it would break a line that already matched.
+  `mergeItemsForExport()` runs in the same pass and is not optional — once a zero can be
+  dropped, two stored lines can become one product, and an importer handed the same barcode
+  twice silently keeps one of the counts. Each export stamps `stocktakes.last_export_format`
+  / `last_export_strip_leading_zero` / `last_exported_at` via `record_stocktake_export()`,
+  because a re-export is a no-op on `status` and would otherwise leave no trace at all.
+  Evidence: Colac Port Adelaide, 2026-09-29 — ~50 of ~600 lines unmatched in Bepoz, the
+  non-missing ones all one leading zero away.
 - Quantity precision is 2 dp in THREE places — the numpad's input guard, `QTY_DP` in
   app.html, and `qty numeric(12,2)` in schema.sql. Anything finer needs all three.

@@ -25,6 +25,7 @@
 <script src="supabase.min.js"></script>
 <script src="config.js"></script>
 <script src="audit-sentences.js"></script>
+<script src="barcode-export.js"></script>
 <!-- Capacitor runtime, vendored (see NATIVE-SETUP.md). No-ops harmlessly on
      the plain web deploy: capacitorExports.Capacitor.isNativePlatform() is
      false outside a native shell, and all native-only code below is guarded
@@ -551,11 +552,24 @@
   .audit-row .when { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
   .audit-empty { color: var(--text-dim); font-size: 0.85rem; }
 
+  /* Wraps, and that is a fix rather than a preference. This was a single-line
+     pill with `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`,
+     so every message longer than the screen was truncated mid-sentence — Colac
+     reported "Could not save the name: permission denied for ...", where the
+     ellipsis ate the object name that said WHICH table was refusing. A success
+     toast is three words and unaffected; an error toast is a Postgres sentence
+     and is the only thing standing between an operator and a support call.
+
+     14px rather than the old 999px: a three-line box with a pill radius reads as
+     a mistake. Errors are also held longer (see toast()) — 2s is not enough to
+     read two lines, and re-triggering a toast to read it is not a thing an
+     operator can do. */
   #toast {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
-    background: var(--success); color: var(--on-accent); padding: 10px 18px; border-radius: 999px;
+    background: var(--success); color: var(--on-accent); padding: 10px 18px; border-radius: 14px;
     font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 60;
-    white-space: nowrap; max-width: 92vw; overflow: hidden; text-overflow: ellipsis;
+    max-width: min(92vw, 30rem); line-height: 1.35; text-align: center;
+    overflow-wrap: break-word;
   }
   #toast.show { opacity: 1; }
 
@@ -1069,7 +1083,7 @@
      saving the count. ===== -->
 <div id="barcode-name-overlay" class="overlay">
   <div class="dialog">
-    <div class="title">Name this barcode</div>
+    <div class="title" id="barcode-name-title">Name this barcode</div>
     <div class="code" id="barcode-name-code"></div>
     <input id="barcode-name-input" type="text" autocomplete="off" placeholder="e.g. Cascade Pale 375ml">
     <div class="dialog-actions" style="margin-top:14px">
@@ -1586,13 +1600,18 @@
     return String(qtyRound(v));
   }
 
+  // Long messages stay up longer. "Name saved" is read at a glance; a refusal
+  // naming a table and a privilege is two lines of prose, and 2 seconds of it is
+  // the same as not showing it — there is no way to ask for it again.
+  var TOAST_MS = 2000, TOAST_MS_LONG = 6000, TOAST_LONG_CHARS = 60;
   function toast(msg, bg) {
     var t = $('toast');
     t.textContent = msg;
     t.style.background = bg || '#059669';
     t.classList.add('show');
     clearTimeout(t._h);
-    t._h = setTimeout(function () { t.classList.remove('show'); }, 2000);
+    var hold = String(msg || '').length > TOAST_LONG_CHARS ? TOAST_MS_LONG : TOAST_MS;
+    t._h = setTimeout(function () { t.classList.remove('show'); }, hold);
   }
   // Turns a Postgres/PostgREST error into something an operator can act on.
   // 42501 (insufficient_privilege) reaching a scan write almost always means this
@@ -1622,6 +1641,16 @@
   }
 
   function fail(error, what) {
+    // The whole error object, not just .message. A PostgREST error carries code,
+    // details and hint, and those are what identify the fault: Colac's naming bug
+    // showed "permission denied for ..." on screen while `code: '42501'` and the
+    // object name — the evidence that it was a missing GRANT rather than an RLS
+    // policy — were never printed anywhere. This costs nothing and is the first
+    // thing to ask for in a bug report.
+    console.error(what || 'Request failed', error);
+    // Deliberately the raw message rather than failHint(): failHint maps every
+    // "permission denied" to "this login may now be in use on another device",
+    // which is true of a scan write mid-count and was actively misleading here.
     toast((what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed'), '#b91c1c');
   }
 
@@ -2298,7 +2327,7 @@
     Promise.all([
       sb.from('profiles').select('full_name, marketing_opt_in').eq('id', currentUser.id).maybeSingle(),
       sb.from('memberships')
-        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, heartbeat_interval_seconds, scan_barcodes, scan_qr, scan_mode)')
+        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, strip_leading_zero, heartbeat_interval_seconds, scan_barcodes, scan_qr, scan_mode)')
         .eq('user_id', currentUser.id).maybeSingle()
     ]).then(function (results) {
       var profileRes = results[0], memberRes = results[1];
@@ -2313,6 +2342,11 @@
           planTier: org.plan_tier, country: org.country || '',
           countryChangedAt: org.country_changed_at || null,
           exportFormat: org.export_format,
+          // Export-time only: which digits go in the file, never which digits are
+          // stored. A MISSING value must read as OFF — an org that never asked
+          // for this, or a database where the migration has not run, must get the
+          // file it got yesterday. See barcode-export.js.
+          stripLeadingZero: org.strip_leading_zero === true,
           heartbeatIntervalSeconds: org.heartbeat_interval_seconds,
           // A MISSING value must not read as "on". The columns are NOT NULL
           // DEFAULT server-side, so this only matters for a client talking to a
@@ -5618,9 +5652,30 @@
       // be repointed by the next ⋯ tap before the async work finishes.
       var take = actionsTake;
       var fmt = exportFormat();
-      var csv = fmt.build(take, takeItems);
+      // Barcodes are STORED exactly as the camera read them and normalised HERE,
+      // on the way out — see barcode-export.js for why that boundary is where it
+      // is, and what Colac's import failure looked like.
+      //
+      // Every format goes through this, which is the point of doing it here
+      // rather than inside a builder: 'standard' is what Bepoz reads today, but a
+      // Gantry CSV handed to someone's spreadsheet has the same barcodes in it.
+      //
+      // Merging is not optional once a zero can be dropped: "0797776409853" and
+      // "797776409853" are two stored lines that become ONE product in the file,
+      // and handing an importer the same barcode twice means one of the two
+      // counts silently loses.
+      var stripLeadingZero = !!(currentOrg && currentOrg.stripLeadingZero);
+      var exportItems = window.GANTRY_EXPORT.mergeItemsForExport(takeItems, {
+        stripLeadingZero: stripLeadingZero,
+      });
+      var csv = fmt.build(take, exportItems);
       var name = fileName(take, fmt.suffix);
-      // The card behind this dialog must agree with the file being handed over.
+      // The card behind this dialog must agree with the file being handed over —
+      // and it is the STORED lines that it should agree with, so this gets
+      // takeItems, not exportItems. The unit total is identical either way; the
+      // line count can legitimately be lower in the file than on the card when
+      // normalisation merged two paddings of one product, and the card describes
+      // what the stocktake holds.
       syncTakeSnapshot(take, takeItems);
       closeTakeActions();
 
@@ -5657,8 +5712,48 @@
       // Re-exporting an already-completed take stays allowed and is a no-op on
       // the status: set_stocktake_status() returns early when the status is
       // unchanged, so it writes no second audit row.
-      deliver();
+      //
+      // Which is exactly why the export stamp below is its own record: from the
+      // status log, a second export of a completed take is invisible. Now that
+      // the barcodes in the file depend on an org setting, "which file did we
+      // import?" has to be answerable weeks later.
+      //
+      // Stamped BEFORE the file is handed over, for the same reason
+      // completeThenHandOver() writes the status first: on iOS the download
+      // navigation cancels requests still in flight (commit ef011fc). Failure is
+      // non-fatal and silent — a missing stamp must never withhold a file the
+      // operator is entitled to, and this RPC does not exist at all until the
+      // migration runs.
+      recordExport(take, fmt, stripLeadingZero, deliver);
     });
+  }
+
+  // Writes down what the export actually sent: the format, and whether the
+  // leading zero was dropped. Traceability, not permission — record_stocktake_export()
+  // grants nothing and refuses a stocktake outside the caller's org.
+  //
+  // `next` always runs, exactly once, whatever happens. A stocktake that exported
+  // but wasn't stamped is a gap in the log; a stocktake that didn't export because
+  // the log was down is a venue that can't do its job.
+  function recordExport(take, fmt, stripLeadingZero, next) {
+    var done = false;
+    var proceed = function () { if (!done) { done = true; next(); } };
+    // A stamp that never settles must not strand the export either — the same
+    // watchdog reasoning as commitQty()'s.
+    var guard = setTimeout(proceed, 4000);
+    var finish = function (err) {
+      clearTimeout(guard);
+      // Console only, deliberately: this is for whoever is investigating an
+      // import later, and the operator can do nothing about it. PGRST202 here
+      // just means the migration hasn't run yet.
+      if (err) console.error('record_stocktake_export failed (export still handed over):', err);
+      proceed();
+    };
+    sb.rpc('record_stocktake_export', {
+      p_stocktake_id: take.id,
+      p_format: fmt.label,
+      p_strip_leading_zero: stripLeadingZero,
+    }).then(function (res) { finish(res && res.error); }, finish);
   }
 
   // Share lived here until 2026-09-10. Removed at James's direction — two
@@ -5831,6 +5926,10 @@
     var nm = String(name || '').trim();
     if (!barcode || !nm) { toast('Enter a barcode and a name', '#b91c1c'); if (cb) cb(false); return; }
     if (!canManageBarcodeNames()) { toast('Only an owner or manager can save names', '#b91c1c'); if (cb) cb(false); return; }
+    // Which of the two it is, read BEFORE the write, purely so the toast can say
+    // so: "Name saved" after correcting a wrong name leaves the operator
+    // wondering whether it saved the old one.
+    var existed = !!barcodeNames[barcode];
     // Upsert on (org_id, barcode) — the same barcode named twice is a rename,
     // not a second row. org_id is sent explicitly even though the column
     // defaults to my_org_id(), so the insert policy's check has something to
@@ -5844,7 +5943,7 @@
         if (currentView === 'scan') renderItems();
         if (pendingCode) renderQtyBarcodeName(pendingCode);
         loadBarcodeNames(function () { if (currentView === 'barcodes') renderBarcodesList(); });
-        toast('Name saved');
+        toast(existed ? 'Name updated' : 'Name saved');
         if (cb) cb(true);
       }, function (err) { fail(err, 'Could not save the name'); if (cb) cb(false); });
   }
@@ -5864,9 +5963,18 @@
     var nm = barcodeNameFor(code);
     $('qty-name').textContent = nm;
     $('qty-name').style.display = nm ? '' : 'none';
-    // Offer naming only where it's actionable: an unnamed barcode, and a role
+    // Offered for BOTH an unnamed and a wrongly-named barcode, to any role
     // allowed to write one.
-    $('qty-name-btn').style.display = (!nm && canManageBarcodeNames()) ? '' : 'none';
+    //
+    // It used to be `!nm && canManage` — hidden the moment a name existed — and
+    // that was backwards. The moment anyone discovers a name is wrong is this
+    // one: the bottle is in their hand, the wrong name is on the screen above
+    // the numpad, and the only fix was to memorise the barcode, finish the
+    // count, and go hunting in Account → Barcodes. A name nobody can correct
+    // where they find it stops being an aid and becomes a second thing to
+    // distrust (Colac, 2026-09-29).
+    $('qty-name-btn').textContent = nm ? 'Edit name' : 'Name this barcode';
+    $('qty-name-btn').style.display = canManageBarcodeNames() ? '' : 'none';
   }
   $('qty-name-btn').onclick = function () {
     if (!pendingCode) return;
@@ -5874,10 +5982,19 @@
   };
 
   function openBarcodeNameDialog(code) {
+    var nm = barcodeNameFor(code);
+    // Say which of the two things is about to happen. The input has always
+    // pre-filled an existing name, so a dialog headed "Name this barcode" over a
+    // name that is already there reads as if it is about to create a second one.
+    $('barcode-name-title').textContent = nm ? 'Edit name' : 'Name this barcode';
     $('barcode-name-code').textContent = code;
-    $('barcode-name-input').value = barcodeNameFor(code) || '';
+    $('barcode-name-input').value = nm || '';
     $('barcode-name-overlay').classList.add('open');
     $('barcode-name-input').focus();
+    // Select rather than park the caret at the end: a correction is usually a
+    // replacement ("Tyrells Sem" → "Tyrrell's Semillon"), and clearing a
+    // pre-filled field on a phone keyboard is its own small chore.
+    if (nm) $('barcode-name-input').select();
   }
   function closeBarcodeNameDialog() {
     $('barcode-name-overlay').classList.remove('open');

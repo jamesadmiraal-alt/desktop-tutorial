@@ -128,6 +128,20 @@ window.GANTRY_AUDIT = (function () {
       }
       return r.actor_label + ' changed the status of "' + r.target_label + '"';
     },
+    // Written by record_stocktake_export(), and it exists because
+    // status_changed CANNOT cover this: set_stocktake_status() no-ops when the
+    // status is unchanged, so every RE-export of a completed stocktake is
+    // invisible in the status trail. Once the barcodes in the file depend on an
+    // org setting, "which file did we import?" needs an answer per export.
+    //
+    // Reads as "exported (with the zero dropped)" rather than naming the column:
+    // whoever is reading this is comparing the log against a file a POS rejected.
+    'stocktake.exported': function (r) {
+      var a = r.after || {};
+      var fmt = a.format ? ' as ' + a.format : '';
+      var zero = a.strip_leading_zero ? ', leading zero removed' : '';
+      return r.actor_label + ' exported "' + r.target_label + '"' + fmt + zero;
+    },
     'stocktake_items.cleared': function (r) {
       var b = r.before || {};
       // hasNum, not `typeof === 'number'`: unit totals come from a numeric column
@@ -164,6 +178,14 @@ window.GANTRY_AUDIT = (function () {
     'organisation.name_changed': function (r) { return r.actor_label + ' renamed the organisation from "' + r.before.name + '" to "' + r.after.name + '"'; },
     'organisation.logo_changed': function (r) { return r.actor_label + ' changed the organisation logo'; },
     'organisation.export_format_changed': function (r) { return r.actor_label + ' changed the export format from ' + r.before.export_format + ' to ' + r.after.export_format; },
+    // The digits in the file, where export_format above is the columns. Both are
+    // "what we send the POS", which is why an import that came back unmatched
+    // starts with these two lines of the log.
+    'organisation.strip_leading_zero_changed': function (r) {
+      return r.actor_label + (r.after && r.after.strip_leading_zero
+        ? ' turned ON removing the leading zero from exported barcodes'
+        : ' turned OFF removing the leading zero from exported barcodes');
+    },
     'organisation.country_changed': function (r) { return r.actor_label + ' changed the billing country from ' + r.before.country + ' to ' + r.after.country; },
     'organisation.join_code_changed': function (r) { return r.actor_label + ' rotated the join code'; },
     // Written explicitly by the set-seat-count Edge Function, not by a trigger:

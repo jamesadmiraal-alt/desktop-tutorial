@@ -198,8 +198,10 @@
 
   #toast {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
-    background: var(--success); color: var(--on-accent); padding: 10px 18px; border-radius: 999px;
+    background: var(--success); color: var(--on-accent); padding: 10px 18px; border-radius: 14px;
     font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 60;
+    max-width: min(92vw, 30rem); line-height: 1.35; text-align: center;
+    overflow-wrap: break-word;
   }
   #toast.show { opacity: 1; }
 
@@ -288,6 +290,25 @@
         <option value="standard">Standard export — barcode and count only, no header row</option>
         <option value="full">Gantry CSV — stocktake, barcode, qty, timestamps</option>
       </select>
+    </div>
+    <!-- Beside the export format on purpose: that setting is the shape of the
+         COLUMNS, this one is the shape of the DIGITS, and both are properties of
+         the POS being fed. Whoever is fixing an import that came back "no product
+         match" needs to see them together.
+
+         Owner AND manager, unlike the rows either side of it, which are hidden
+         from managers because organisations UPDATE is owner-only RLS. This one
+         writes through set_strip_leading_zero() — owner or manager, same as the
+         scanning settings in app.html — because the person who discovers the POS
+         rejected 50 lines is usually the venue manager. -->
+    <div id="strip-zero-row" style="margin-top:16px">
+      <label for="org-strip-zero" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+        <input type="checkbox" id="org-strip-zero" style="margin-top:3px">
+        <span>Remove leading zero from barcodes in exports</span>
+      </label>
+      <p class="hint" style="margin-top:2px">Some POS systems store barcodes without the
+        leading zero the scanner adds. This only changes exported files. Scanned data is
+        never altered.</p>
     </div>
     <!-- Owner-only for the same reason as the export format above:
          organisations UPDATE is owner-only RLS, so a manager toggling here
@@ -556,6 +577,9 @@
     t._h = setTimeout(function () { t.classList.remove('show'); }, 2200);
   }
   function fail(error, what) {
+    // The whole object, not just .message — code/details/hint are what identify a
+    // fault. Same reasoning as app.html's fail().
+    console.error(what || 'Request failed', error);
     toast((what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed'), '#b91c1c');
   }
 
@@ -699,6 +723,7 @@
     // format for 'standard'/'bepoz', 'full' for everything else.
     $('org-export-format').value = exportFormatValue(currentOrg.exportFormat);
     $('org-staff-own-only').checked = currentOrg.staffSeeOwnOnly;
+    $('org-strip-zero').checked = !!currentOrg.stripLeadingZero;
   }
 
   // Single source of truth for "which option represents this stored value",
@@ -728,6 +753,37 @@
           ? 'Exports will now be the standard format (barcode and count only)'
           : 'Exports will now be the full Gantry CSV');
       });
+  };
+
+  // An RPC rather than a PATCH, unlike the export format above: the column is
+  // deliberately off the client-writable GRANT so that owner AND manager can set
+  // it without widening the owner-only org policy to `country` (the billing
+  // currency), `join_code` and `export_format`. Same pattern as
+  // set_scan_prefs()/set_scan_mode().
+  //
+  // The toast says what it does to the FILE, not that a setting saved: this is
+  // the setting an operator reaches for after an import came back with 50
+  // unmatched lines, and what they need to know is whether the next export will
+  // be different.
+  $('org-strip-zero').onchange = function () {
+    var box = $('org-strip-zero');
+    var value = box.checked;
+    var previous = !!currentOrg.stripLeadingZero;
+    box.disabled = true;
+    sb.rpc('set_strip_leading_zero', { p_on: value }).then(function (res) {
+      box.disabled = false;
+      if (res.error) {
+        fail(res.error, 'Could not change the barcode setting');
+        box.checked = previous;
+        return;
+      }
+      // Render what the server stored, not what was tapped.
+      currentOrg.stripLeadingZero = res.data === true;
+      box.checked = currentOrg.stripLeadingZero;
+      toast(currentOrg.stripLeadingZero
+        ? 'Exports will drop one leading zero from 13- and 14-digit barcodes'
+        : 'Exports will use barcodes exactly as scanned');
+    });
   };
 
   // Same shape as the export format above: optimistic UI, reverted from the
@@ -1570,7 +1626,7 @@
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
     sb.from('memberships')
-      .select('role, organisations(id, name, plan_tier, join_code, export_format, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds, staff_see_own_stocktakes_only)')
+      .select('role, organisations(id, name, plan_tier, join_code, export_format, strip_leading_zero, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds, staff_see_own_stocktakes_only)')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(function (res) {
@@ -1603,6 +1659,9 @@
         currentOrg = {
           id: org.id, name: org.name, planTier: org.plan_tier, joinCode: org.join_code,
           role: role, exportFormat: org.export_format,
+          // Missing reads as OFF: an org that never asked for this, or a database
+          // where the migration has not run, must keep the export it had.
+          stripLeadingZero: org.strip_leading_zero === true,
           rosterLastViewedAt: org.roster_last_viewed_at,
           concurrentSeats: org.concurrent_seats, seatsIncreasedAt: org.seats_increased_at || null,
           heartbeatIntervalSeconds: org.heartbeat_interval_seconds,

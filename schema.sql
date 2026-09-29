@@ -164,6 +164,30 @@ create table public.organisations (
   -- asked for it.
   export_format text not null default 'standard'
     check (export_format in ('full', 'standard', 'bepoz', 'myob', 'lightspeed')),
+  -- Remove ONE leading zero from a 13- or 14-digit all-digit barcode when
+  -- building an export file. The shape of the digits, where export_format is the
+  -- shape of the columns — both are properties of the POS being fed.
+  --
+  -- Colac Port Adelaide, 2026-09-29: ~50 of ~600 lines failed to match on
+  -- import, and the ones that weren't simply missing from Bepoz were a leading
+  -- zero. The same product came back as "0797776409853" from one phone and
+  -- "797776409853" from another; Tyrrell's Semillon came back with "00" where
+  -- Bepoz holds a single "0". Gantry does not pad — the same printed symbol is
+  -- legitimately reported as UPC-A (12), EAN-13 (padded to 13) or GTIN-14
+  -- depending on the decoder, and Gantry runs two of them (native
+  -- BarcodeDetector on Android Chrome, zxing-wasm everywhere else).
+  --
+  -- EXPORT ONLY. Stored barcodes are never rewritten: what was scanned is the
+  -- evidence of what the camera read, the right answer is per-POS rather than
+  -- universal, and turning this off must give back the file that would have been
+  -- produced before the setting existed. The rule lives in barcode-export.js
+  -- (normaliseBarcodeForExport) and is tested by scripts/test-barcode-export.js.
+  --
+  -- Default FALSE, because this changes the bytes somebody's importer reads. Off
+  -- the client-writable GRANT below — set_strip_leading_zero() is the only
+  -- writer, so owner AND manager can set it without widening the owner-only org
+  -- policy to `country`/`join_code`/`export_format`.
+  strip_leading_zero boolean not null default false,
   -- No free tier — a brand-new org starts 'pending' (created, but blocked
   -- from doing anything real: no locations exist yet, so no stocktakes can
   -- exist either — see the locations insert policy below) until the owner
@@ -491,6 +515,19 @@ create table public.stocktakes (
   -- revoked (see below the policies).
   status text not null default 'in_progress'
     check (status in ('in_progress', 'ready_for_export', 'completed')),
+  -- What the last export of this stocktake actually sent. Written only by
+  -- record_stocktake_export() below — client UPDATE on this table is revoked, and
+  -- these are deliberately off every GRANT.
+  --
+  -- Re-exports are allowed and are a no-op on `status`, so set_stocktake_status()
+  -- writes nothing for them and the status log cannot answer "was the file we
+  -- imported the stripped one?". Since strip_leading_zero changes the digits a
+  -- POS matches on, that question now has consequences — hence recording the
+  -- settings used, on the stocktake, where anyone arguing about an import is
+  -- already looking. A re-export uses the CURRENT settings and overwrites these.
+  last_exported_at timestamptz,
+  last_export_format text,
+  last_export_strip_leading_zero boolean,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -1432,6 +1469,13 @@ begin
     insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
     values (new.id, new.name, actor, actor_label, 'organisation.staff_visibility_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
   end if;
+  -- Changes the bytes a POS importer reads, same as export_format above — "who
+  -- changed the file we send the POS, and when" is the first question asked when
+  -- an import goes wrong.
+  if old.strip_leading_zero is distinct from new.strip_leading_zero then
+    insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, before, after)
+    values (new.id, new.name, actor, actor_label, 'organisation.strip_leading_zero_changed', 'organisation', new.id, new.name, to_jsonb(old), to_jsonb(new));
+  end if;
   return new;
 end $$;
 
@@ -2147,6 +2191,41 @@ end $$;
 grant execute on function public.set_scan_prefs(boolean, boolean) to authenticated;
 
 -- ==========================================================================
+-- Whether exports drop one leading zero (see organisations.strip_leading_zero
+-- above for why this exists at all).
+--
+-- An RPC for the same permission reason as set_scan_prefs(): "owner update org"
+-- is owner-only, but the person who discovers the POS rejected 50 lines is
+-- usually the venue manager, and widening that policy would also hand them
+-- `country` (the billing currency), `join_code` and `export_format`.
+--
+-- Returns the stored value, so the client renders what the server holds rather
+-- than what was tapped.
+-- ==========================================================================
+create or replace function public.set_strip_leading_zero(p_on boolean)
+returns boolean
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_role text := public.my_role();
+  v_on boolean := coalesce(p_on, false);
+begin
+  if v_org is null then
+    raise exception 'You do not belong to an organisation.';
+  end if;
+  -- Explicit null test, not `<>`: my_role() is NULL for a caller with no
+  -- membership and a NULL comparison is NULL, which plpgsql treats as false.
+  if v_role is null or v_role not in ('owner', 'manager') then
+    raise exception 'Only an owner or manager can change export settings.';
+  end if;
+
+  update public.organisations set strip_leading_zero = v_on where id = v_org;
+  return v_on;
+end $$;
+
+grant execute on function public.set_strip_leading_zero(boolean) to authenticated;
+
+-- ==========================================================================
 -- One OPEN stocktake per name per org.
 --
 -- Two staff starting a count at the same location on the same day both get the
@@ -2318,6 +2397,68 @@ begin
 end $$;
 
 grant execute on function public.set_stocktake_status(uuid, text, text) to authenticated;
+
+-- ==========================================================================
+-- What an export actually sent — see the last_export_* columns on stocktakes.
+--
+-- Any org member who can see the stocktake, because any of them can export one.
+-- This RECORDS what happened; set_stocktake_status() is still what gates the
+-- workflow, and this function grants nothing.
+--
+-- security definer because client UPDATE on stocktakes is revoked, so the org
+-- scoping the dropped update policy used to provide is re-implemented here. The
+-- row-visibility trigger (enforce_stocktake_row_visible) still fires on top, so a
+-- staff member under staff_see_own_stocktakes_only cannot stamp a take they
+-- cannot see.
+--
+-- Unlike set_stocktake_status() this does NOT no-op on a repeat: a re-export
+-- changes no status, so the status log says nothing about it, and this row is the
+-- only trace that a second file left the building.
+-- ==========================================================================
+create or replace function public.record_stocktake_export(
+  p_stocktake_id uuid,
+  p_format text,
+  p_strip_leading_zero boolean
+)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.my_org_id();
+  v_take_org uuid;
+  v_take_name text;
+  -- Clamped and defaulted rather than trusted: it is a label for a human reading
+  -- the log, and the client picks it.
+  v_format text := left(coalesce(btrim(p_format), 'unknown'), 40);
+  v_strip boolean := coalesce(p_strip_leading_zero, false);
+  actor uuid := auth.uid();
+  actor_label text;
+  org_label text;
+begin
+  select s.org_id, s.name into v_take_org, v_take_name
+    from public.stocktakes s where s.id = p_stocktake_id;
+
+  -- Same message whether the stocktake is missing or belongs to another org, so
+  -- this can't be used to probe for UUIDs.
+  if v_take_org is null or v_take_org is distinct from v_org then
+    raise exception 'Stocktake not found.';
+  end if;
+
+  update public.stocktakes
+     set last_exported_at = now(),
+         last_export_format = v_format,
+         last_export_strip_leading_zero = v_strip
+   where id = p_stocktake_id;
+
+  select coalesce(p.full_name, u.email, 'Unknown user') into actor_label
+    from auth.users u left join public.profiles p on p.id = u.id where u.id = actor;
+  select o.name into org_label from public.organisations o where o.id = v_org;
+
+  insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, after)
+  values (v_org, org_label, actor, actor_label, 'stocktake.exported', 'stocktake',
+          p_stocktake_id, v_take_name,
+          jsonb_build_object('format', v_format, 'strip_leading_zero', v_strip));
+end $$;
+
+grant execute on function public.record_stocktake_export(uuid, text, boolean) to authenticated;
 
 -- ==========================================================================
 -- Archiving venues and locations.
@@ -3108,7 +3249,28 @@ alter table public.org_barcodes
   alter column created_by set default auth.uid();
 
 revoke update on public.org_barcodes from authenticated, anon;
-grant update (barcode, name) on public.org_barcodes to authenticated;
+-- org_id IS in this list, and it has to be — this was a live bug from
+-- 2026-09-08 until 2026-09-29, reported from Colac as
+-- "Could not save the name: permission denied for ..." (42501, a privilege
+-- failure, not RLS).
+--
+-- app.html saves a name with an upsert, which PostgREST issues as
+-- `insert … on conflict (org_id, barcode) do update set org_id = excluded.org_id,
+-- barcode = …, name = …` — every column in the payload appears in the SET list,
+-- and the client sends org_id. With only (barcode, name) granted, Postgres
+-- refused the statement, and it refused EVERY name save rather than only
+-- renames: the DO UPDATE column privileges are checked when the statement
+-- starts, before it is known whether a conflicting row exists.
+--
+-- Safe, despite org_id being writable in principle: the update policy above pins
+-- both `using` and `with check` to org_id = my_org_id(), so no row can be read
+-- out of, or moved into, another org. The GRANT decides which columns may appear
+-- in a SET list; RLS decides which rows and which values.
+--
+-- Do NOT "tidy" this back to two columns and drop org_id from the client payload
+-- instead. That fixes one call site and leaves the table unable to accept a
+-- correct upsert from the next one.
+grant update (org_id, barcode, name) on public.org_barcodes to authenticated;
 
 -- updated_at is what tells someone investigating whether a name predates the
 -- count they're arguing about, so it can't be left to the client to remember.

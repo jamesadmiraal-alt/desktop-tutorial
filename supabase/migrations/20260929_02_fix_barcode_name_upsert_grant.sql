@@ -1,0 +1,91 @@
+-- Naming a scanned barcode has never worked. This is the missing privilege.
+--
+-- Reported from Colac Port Adelaide, 2026-09-29: naming a barcode raises a red
+-- toast reading "Could not save the name: permission denied for ...", as the ORG
+-- OWNER. That is Postgres 42501 — a privilege failure, NOT an RLS policy
+-- failure. RLS refuses with "new row violates row-level security policy"; the
+-- policies on org_barcodes are correct and are not touched here.
+--
+-- The cause. app.html saves a name with an upsert:
+--
+--   sb.from('org_barcodes')
+--     .upsert({ org_id: …, barcode: …, name: … }, { onConflict: 'org_id,barcode' })
+--
+-- which PostgREST issues as:
+--
+--   insert into org_barcodes (org_id, barcode, name) values (…)
+--   on conflict (org_id, barcode)
+--   do update set org_id = excluded.org_id,
+--                 barcode = excluded.barcode,
+--                 name = excluded.name;
+--
+-- The DO UPDATE SET list therefore names org_id, because the client sends org_id
+-- in the payload. And 20260908_01 granted column-scoped UPDATE on two columns
+-- only:
+--
+--   revoke update on public.org_barcodes from authenticated, anon;
+--   grant update (barcode, name) on public.org_barcodes to authenticated;
+--
+-- No UPDATE on org_id, so the statement is refused. Note this is refused for
+-- EVERY name save, not only renames: Postgres checks the DO UPDATE column
+-- privileges when the statement starts, before it knows whether a conflicting
+-- row exists. INSERT, SELECT and DELETE were never the problem — they come from
+-- Supabase's default privileges, which is why loading and listing names look
+-- perfectly healthy.
+--
+-- The fix is the grant, not a change to what the client sends. A client-side
+-- tweak (dropping org_id from the payload, which the column's
+-- `default public.my_org_id()` makes redundant) would make this one call site
+-- work while leaving the table still unable to accept a correct upsert — the
+-- next caller, or a REST call from a script, would hit it again.
+--
+-- Why granting UPDATE on org_id is safe: the update policy pins both sides to
+-- the caller's own org —
+--
+--   using (org_id = public.my_org_id() and public.my_role() in ('owner','manager'))
+--   with check (org_id = public.my_org_id() and public.my_role() in ('owner','manager'))
+--
+-- so a client can neither touch another org's row nor move one of its own rows
+-- into another org. The GRANT decides which columns may appear in a SET list;
+-- RLS decides which rows and which values. Both still hold.
+--
+-- Writes remain OWNER/MANAGER — confirmed 2026-09-29. Staff still cannot name a
+-- barcode from the counting screen; the note in schema.sql beside these policies
+-- describes what widening it would take if that changes.
+--
+-- One GRANT. No data touched, no policy changed, safe to run twice, safe mid-count.
+-- Mirrored into schema.sql.
+--
+-- Run AS SOON AS POSSIBLE — it fixes a live bug for the CURRENTLY deployed page,
+-- which already tries this upsert and today just shows a red toast. No app.html
+-- change is required for the fix itself (the toast-readability change shipping
+-- alongside is cosmetic).
+
+grant update (org_id, barcode, name) on public.org_barcodes to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Verify:
+--
+--   -- 1. the three columns are updatable, and nothing else is:
+--   select column_name, privilege_type
+--     from information_schema.column_privileges
+--    where table_name = 'org_barcodes' and grantee = 'authenticated'
+--      and privilege_type = 'UPDATE'
+--    order by column_name;
+--   -- expect exactly: barcode, name, org_id
+--
+--   -- 2. in the app, as owner AND as manager, both halves of the round trip:
+--   --    a brand-new barcode  -> "Name saved"
+--   --    the SAME barcode renamed (an apostrophe on purpose, e.g.
+--   --    Tyrrell's Semillon) -> "Name saved", one row, not two:
+--   select barcode, name, created_at, updated_at from public.org_barcodes
+--    where org_id = public.my_org_id() order by updated_at desc limit 5;
+--
+--   -- 3. staff are still refused, by RLS not by privilege:
+--   --   ERROR: new row violates row-level security policy for table "org_barcodes"
+--
+--   -- 4. and a row still cannot be moved to another org — this must fail even
+--   --    though org_id is now updatable:
+--   --   PATCH /rest/v1/org_barcodes?id=eq.<row>  {"org_id": "<other org uuid>"}
+--   -- expect: 42501 new row violates row-level security policy
+-- ---------------------------------------------------------------------------

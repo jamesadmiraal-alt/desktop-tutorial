@@ -18,6 +18,11 @@ A phone-friendly web app for hospitality stocktaking, backed by [Supabase](https
 - Real accounts (Supabase Auth) — data syncs across devices, and row-level security ensures each user can only ever read or modify their own stocktakes
 - Export to CSV download, native share sheet, or clipboard
 - Columns exported: `stocktake, barcode, qty, first_scanned, last_scanned`
+- Barcodes are stored exactly as the camera read them. An optional per-organisation export
+  setting ("Remove leading zero from barcodes in exports", in the admin console beside the
+  export format) drops **one** leading zero from 13- and 14-digit all-digit codes **in the
+  file only** — some POS systems store a barcode without the zero a scanner reports. Lines
+  that become the same barcode are merged and their quantities added. Off by default.
 
 ## Files
 
@@ -28,6 +33,7 @@ A phone-friendly web app for hospitality stocktaking, backed by [Supabase](https
 | `config.js` | Your Supabase project URL, anon key, and upgrade link |
 | `schema.sql` | Database tables, triggers, and row-level-security policies |
 | `barcode-detector.iife.js` + `zxing_reader.wasm` | Vendored barcode decoding (native BarcodeDetector on Android, ZXing WebAssembly elsewhere) |
+| `barcode-export.js` | Export-time barcode normalisation (leading zero, line merging) — `node scripts/test-barcode-export.js` |
 | `supabase.min.js` | Vendored Supabase JS client |
 
 Libraries are vendored (no CDN) so the app keeps loading on flaky connections.
