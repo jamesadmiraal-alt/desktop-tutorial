@@ -22,6 +22,10 @@
 <script src="supabase.min.js"></script>
 <script src="config.js"></script>
 <script src="audit-sentences.js"></script>
+<!-- For the template picker's shared helpers (which template is in effect,
+     option labels, the explanation). Nothing here builds a file. -->
+<script src="barcode-export.js"></script>
+<script src="export-engine.js"></script>
 <!-- Design-system tokens: colours, type, spacing, radii, motion -->
 <link rel="stylesheet" href="styles.css">
 <style>
@@ -278,40 +282,27 @@
     <span class="plan-badge" id="org-plan-badge"></span>
     <!-- Sits on the Organisation card rather than in a tab: it's a
          set-once-and-forget property of the business, and it belongs next to the
-         org's identity rather than buried under Venues or Team. Owner-only —
-         organisations UPDATE is owner-only RLS, so a manager choosing here would
-         only get an error. -->
-    <div id="export-format-row" style="margin-top:16px;display:none">
-      <label for="org-export-format">Stocktake export format</label>
-      <p class="hint" style="margin-top:2px">Which CSV shape <span style="white-space:nowrap">Export CSV</span> produces in the app.
-        Set this to match the system you import into — the wrong shape imports as
-        “no product match” rather than failing outright.</p>
-      <select id="org-export-format">
-        <option value="standard">Standard export — barcode and count only, no header row</option>
-        <option value="full">Gantry CSV — stocktake, barcode, qty, timestamps</option>
-      </select>
-    </div>
-    <!-- Beside the export format on purpose: that setting is the shape of the
-         COLUMNS, this one is the shape of the DIGITS, and both are properties of
-         the POS being fed. Whoever is fixing an import that came back "no product
-         match" needs to see them together.
+         org's identity rather than buried under Venues or Team.
 
-         Owner AND manager, unlike the rows either side of it, which are hidden
-         from managers because organisations UPDATE is owner-only RLS. This one
-         writes through set_strip_leading_zero() — owner or manager, same as the
-         scanning settings in app.html — because the person who discovers the POS
-         rejected 50 lines is usually the venue manager. -->
-    <div id="strip-zero-row" style="margin-top:16px">
-      <label for="org-strip-zero" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
-        <input type="checkbox" id="org-strip-zero" style="margin-top:3px">
-        <span>Remove leading zero from barcodes in exports</span>
-      </label>
-      <p class="hint" style="margin-top:2px">Some POS systems store barcodes without the
-        leading zero the scanner adds. This only changes exported files. Scanned data is
-        never altered.</p>
+         ONE picker where there used to be two controls — the export format
+         select (the shape of the COLUMNS) and the leading-zero checkbox (the
+         shape of the DIGITS). Both are now properties of a template, so a venue
+         chooses "Bepoz" rather than assembling Bepoz out of parts.
+
+         Owner AND manager: it writes through set_export_template(), not a PATCH,
+         so it doesn't need the owner-only org policy. The person who discovers
+         the POS rejected 50 lines is usually the venue manager. -->
+    <div id="export-template-row" style="margin-top:16px">
+      <label for="org-export-template">Export template</label>
+      <p class="hint" style="margin-top:2px">Which file <span style="white-space:nowrap">Export</span> produces in the app.
+        Pick the one for the system you import into — the wrong shape or barcode form imports as
+        “no product match” rather than failing outright. Scanned data is never altered.</p>
+      <select id="org-export-template"><option value="">Loading…</option></select>
+      <p class="hint" id="org-export-template-detail" style="margin-top:6px"></p>
     </div>
-    <!-- Owner-only for the same reason as the export format above:
-         organisations UPDATE is owner-only RLS, so a manager toggling here
+    <!-- Owner-only, UNLIKE the export template above (which goes through an
+         RPC): this one is a plain PATCH, organisations UPDATE is owner-only RLS,
+         and a manager toggling here
          would only get an error. Enforced in the database as well as hidden
          here — see the stocktakes/stocktake_items policies and
          enforce_stocktake_visible() in schema.sql. -->
@@ -699,7 +690,6 @@
   // capability exists and is merely unavailable right now. It doesn't.
   function applyRoleVisibility() {
     var owner = isOwner();
-    $('export-format-row').style.display = owner ? '' : 'none';
     $('staff-visibility-row').style.display = owner ? '' : 'none';
     $('add-member-card').style.display = owner ? '' : 'none';
     $('rotate-join-code-btn').style.display = owner ? '' : 'none';
@@ -714,79 +704,91 @@
       : currentOrg.planTier === 'single' ? 'Single-venue plan' : 'Multi-venue plan';
     badge.className = 'plan-badge ' + (currentOrg.planTier === 'free' ? 'free' : 'pro');
     $('join-code-display').textContent = currentOrg.joinCode;
-    // Never trust the raw column value here. A row can legitimately hold something
-    // with no matching <option> — 'bepoz' from before the rename, or a legacy
-    // 'myob'/'lightspeed' — and an unmatched value makes the browser display
-    // whichever option happens to be FIRST. That now says "Standard export",
-    // so a Gantry-CSV org would be told it was on the standard format. Mapping
-    // explicitly, and matching exportFormat() in app.html exactly: the standard
-    // format for 'standard'/'bepoz', 'full' for everything else.
-    $('org-export-format').value = exportFormatValue(currentOrg.exportFormat);
     $('org-staff-own-only').checked = currentOrg.staffSeeOwnOnly;
-    $('org-strip-zero').checked = !!currentOrg.stripLeadingZero;
+    loadExportTemplates();
   }
 
-  // Single source of truth for "which option represents this stored value",
-  // used on load and when reverting a failed change.
-  function exportFormatValue(stored) {
-    return (stored === 'standard' || stored === 'bepoz') ? 'standard' : 'full';
+  // ---- Export templates ----------------------------------------------------
+  //
+  // RLS hands back the system templates plus this org's own, and nothing else —
+  // that is the whole visibility rule, so the list here is whatever the select
+  // returns. The same picker is in app.html's Account → Exports, for venues
+  // that can't reach this console; both use export-engine.js's helpers so they
+  // can't disagree about which template is in effect.
+  var exportTemplates = [];
+  var ENGINE = window.GANTRY_EXPORT_ENGINE;
+
+  function effectiveTemplate() {
+    return ENGINE.effectiveTemplate(exportTemplates, currentOrg);
   }
 
-  $('org-export-format').onchange = function () {
-    var sel = $('org-export-format');
-    var value = sel.value;
-    var previous = currentOrg.exportFormat;
-    sel.disabled = true;
-    sb.from('organisations').update({ export_format: value }).eq('id', currentOrg.id)
+  function loadExportTemplates() {
+    sb.from('export_templates')
+      .select('id,is_system,code,name,description,verified,barcode_rules,import_behaviour,mode')
+      .order('is_system', { ascending: false }).order('name')
       .then(function (res) {
-        sel.disabled = false;
         if (res.error) {
-          fail(res.error, 'Could not change the export format');
-          sel.value = exportFormatValue(previous);
+          // A database without the 20261010_01 migration lands here too. Say
+          // so in place rather than leaving "Loading…" forever.
+          console.error('Could not load export templates', res.error);
+          $('org-export-template').innerHTML = '<option value="">Could not load templates</option>';
+          $('org-export-template').disabled = true;
           return;
         }
-        currentOrg.exportFormat = value;
-        // Say what it means, not just that it saved — the whole reason this
-        // setting exists is that a wrong format imports as "no product match"
-        // rather than failing loudly.
-        toast(value === 'standard'
-          ? 'Exports will now be the standard format (barcode and count only)'
-          : 'Exports will now be the full Gantry CSV');
+        exportTemplates = res.data || [];
+        renderExportTemplates();
       });
-  };
+  }
 
-  // An RPC rather than a PATCH, unlike the export format above: the column is
-  // deliberately off the client-writable GRANT so that owner AND manager can set
-  // it without widening the owner-only org policy to `country` (the billing
-  // currency), `join_code` and `export_format`. Same pattern as
-  // set_scan_prefs()/set_scan_mode().
-  //
-  // The toast says what it does to the FILE, not that a setting saved: this is
-  // the setting an operator reaches for after an import came back with 50
-  // unmatched lines, and what they need to know is whether the next export will
-  // be different.
-  $('org-strip-zero').onchange = function () {
-    var box = $('org-strip-zero');
-    var value = box.checked;
-    var previous = !!currentOrg.stripLeadingZero;
-    box.disabled = true;
-    sb.rpc('set_strip_leading_zero', { p_on: value }).then(function (res) {
-      box.disabled = false;
+  function renderExportTemplates() {
+    var sel = $('org-export-template');
+    sel.innerHTML = '';
+    sel.disabled = false;
+    ENGINE.groupTemplates(exportTemplates).forEach(function (g) {
+      var og = document.createElement('optgroup');
+      og.label = g.label;
+      g.rows.forEach(function (t) {
+        var o = document.createElement('option');
+        o.value = t.id;
+        o.textContent = ENGINE.templateOptionLabel(t);
+        o.disabled = !ENGINE.isSelectableDefault(t);
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+    var eff = effectiveTemplate();
+    sel.value = eff ? eff.id : '';
+    $('org-export-template-detail').textContent = ENGINE.templateDetail(eff);
+  }
+
+  $('org-export-template').onchange = function () {
+    var sel = $('org-export-template');
+    var id = sel.value;
+    var previous = effectiveTemplate();
+    if (!id) return;
+    sel.disabled = true;
+    sb.rpc('set_export_template', { p_template_id: id }).then(function (res) {
+      sel.disabled = false;
       if (res.error) {
-        fail(res.error, 'Could not change the barcode setting');
-        box.checked = previous;
+        fail(res.error, 'Could not change the export template');
+        sel.value = previous ? previous.id : '';
         return;
       }
-      // Render what the server stored, not what was tapped.
-      currentOrg.stripLeadingZero = res.data === true;
-      box.checked = currentOrg.stripLeadingZero;
-      toast(currentOrg.stripLeadingZero
-        ? 'Exports will drop one leading zero from 13- and 14-digit barcodes'
-        : 'Exports will use barcodes exactly as scanned');
+      currentOrg.exportTemplateId = res.data;
+      var t = effectiveTemplate();
+      // Mirror locally what set_export_template() mirrored in the database.
+      var mirror = ENGINE.legacyMirror(t);
+      currentOrg.exportFormat = mirror.exportFormat;
+      currentOrg.stripLeadingZero = mirror.stripLeadingZero;
+      $('org-export-template-detail').textContent = ENGINE.templateDetail(t);
+      // Say what changes, not that a setting saved: this is reached for after
+      // an import came back unmatched, and the question is whether the NEXT
+      // file will be different.
+      toast('Exports will now use the ' + (t ? t.name : 'chosen') + ' template');
     });
   };
 
-  // Same shape as the export format above: optimistic UI, reverted from the
+  // Same shape as the export template above: optimistic UI, reverted from the
   // stored value if the write is refused. The database is the enforcement —
   // this switch only records the decision.
   $('org-staff-own-only').onchange = function () {
@@ -1626,7 +1628,7 @@
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
     sb.from('memberships')
-      .select('role, organisations(id, name, plan_tier, join_code, export_format, strip_leading_zero, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds, staff_see_own_stocktakes_only)')
+      .select('role, organisations(id, name, plan_tier, join_code, export_format, strip_leading_zero, export_template_id, roster_last_viewed_at, concurrent_seats, seats_increased_at, heartbeat_interval_seconds, staff_see_own_stocktakes_only)')
       .eq('user_id', user.id)
       .maybeSingle()
       .then(function (res) {
@@ -1662,6 +1664,7 @@
           // Missing reads as OFF: an org that never asked for this, or a database
           // where the migration has not run, must keep the export it had.
           stripLeadingZero: org.strip_leading_zero === true,
+          exportTemplateId: org.export_template_id || null,
           rosterLastViewedAt: org.roster_last_viewed_at,
           concurrentSeats: org.concurrent_seats, seatsIncreasedAt: org.seats_increased_at || null,
           heartbeatIntervalSeconds: org.heartbeat_interval_seconds,

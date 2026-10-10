@@ -99,6 +99,48 @@ window.GANTRY_EXPORT = (function () {
     return raw.slice(1);
   }
 
+  // The template-driven form of the rule above (export_templates.barcode_rules).
+  //
+  //   { leading_zero: 'keep' | 'strip_one' | 'strip_all' | 'pad',
+  //     pad_length:   8..14   (only for 'pad'; default 13),
+  //     trim:         true    (default) }
+  //
+  // 'strip_one' IS normaliseBarcodeForExport() — not a reimplementation of it —
+  // so the 13/14-digit guard and the one-zero-never-a-loop rule hold for every
+  // template that asks for it. The Bepoz system template uses it, and the
+  // byte-identity test in scripts/test-export-engine.js depends on that.
+  //
+  // 'strip_all' and 'pad' are deliberately NEVER a default. Both exist because
+  // some POS really do store barcodes as integers (no zeros at all) or as fixed
+  // GTIN-13; both are only correct for a POS known to want them, which is why
+  // they are a template choice and not an org-wide switch. Both refuse any code
+  // that isn't all digits, for the same QR/Code-128 reason as above.
+  //
+  // trim defaults ON and is a no-op on real data — add_stocktake_item() already
+  // btrim()s every barcode it stores. It is here for the custom templates of
+  // Phase 3, whose identifiers may come from an uploaded POS file.
+  function applyBarcodeRules(code, rules) {
+    var raw = (code === null || code === undefined) ? '' : String(code);
+    var r = rules || {};
+    if (r.trim !== false) raw = raw.trim();
+    var lz = r.leading_zero || 'keep';
+    if (lz === 'strip_one') return normaliseBarcodeForExport(raw, { stripLeadingZero: true });
+    if (!/^[0-9]+$/.test(raw)) return raw;
+    if (lz === 'strip_all') {
+      // Keep one digit: "0000" is a code someone scanned, and an empty
+      // identifier would be a line nobody can match OR trace.
+      var t = raw.replace(/^0+/, '');
+      return t === '' ? '0' : t;
+    }
+    if (lz === 'pad') {
+      var len = Number(r.pad_length);
+      if (!(len >= 8 && len <= 14)) len = 13;
+      while (raw.length < len) raw = '0' + raw;
+      return raw;
+    }
+    return raw;
+  }
+
   // Local qty helpers, matching qtyNum()/qtyRound() in app.html and kept local
   // for the same reason audit-sentences.js keeps its own units(): this file has
   // no dependency on the page.
@@ -150,17 +192,29 @@ window.GANTRY_EXPORT = (function () {
   // Order is first-appearance, so a file stays in the order the count produced
   // and a re-export with the setting flipped is diffable against the last one.
   function mergeItemsForExport(items, opts) {
+    var keyOf = (opts && typeof opts.keyOf === 'function') ? opts.keyOf : null;
     var out = [];
     var seen = {};
     (items || []).forEach(function (it) {
       if (!it) return;
-      var code = normaliseBarcodeForExport(it.barcode, opts);
+      // opts.keyOf is the export engine's hook: once the identifier can be a SKU
+      // or a stock code, two DIFFERENT barcodes that resolve to the same SKU are
+      // one product in the POS and must be one line, so the merge key has to be
+      // the resolved identifier rather than the barcode. Without keyOf this is
+      // exactly the original barcode-keyed merge.
+      var code = keyOf ? keyOf(it) : normaliseBarcodeForExport(it.barcode, opts);
       // '#' prefix: a bare barcode as an object key is user data landing in a
       // namespace that already contains "constructor" and "__proto__". Numeric
       // barcodes make that unlikely rather than impossible, and unlikely is not
       // a property worth relying on.
       var key = '#' + code;
-      var prev = seen[key];
+      // A BLANK identifier is never a merge key. Under keyOf, "blank" means the
+      // product list had no SKU for this barcode — and every such line sharing
+      // the key "" would collapse into one row whose quantity is the sum of
+      // unrelated products. Each stays its own line, so the match check can
+      // name every one of them.
+      var unkeyed = keyOf && code === '';
+      var prev = unkeyed ? null : seen[key];
       if (!prev) {
         // A copy, never the caller's row: the stored objects are also what the
         // Home card's snapshot reads, and mutating them would make the screen
@@ -169,9 +223,11 @@ window.GANTRY_EXPORT = (function () {
         for (var k in it) {
           if (Object.prototype.hasOwnProperty.call(it, k)) row[k] = it[k];
         }
-        row.barcode = code;
+        // With keyOf the raw barcode is kept (the identifier lives in
+        // row.identifier), so a template can still print both.
+        if (keyOf) row.identifier = code; else row.barcode = code;
         row.qty = qtyRound(it.qty);
-        seen[key] = row;
+        if (!unkeyed) seen[key] = row;
         out.push(row);
         return;
       }
@@ -186,6 +242,7 @@ window.GANTRY_EXPORT = (function () {
 
   return {
     normaliseBarcodeForExport: normaliseBarcodeForExport,
+    applyBarcodeRules: applyBarcodeRules,
     mergeItemsForExport: mergeItemsForExport,
     STRIPPABLE_LENGTHS: STRIPPABLE_LENGTHS,
   };

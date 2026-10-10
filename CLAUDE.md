@@ -168,28 +168,51 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   `<style>`. The header mark is a PNG (`icons/email-mark.png`, generated from
   `icons/gantry-mark.svg`) because email clients don't render SVG, and it is written to
   degrade gracefully because most clients block remote images by default.
-- Export shape comes from `organisations.export_format`, set once per org by the owner in
-  admin.html. `'standard'` is `barcode,count` with no header row and **no BOM** — verified
-  against a real Bepoz importer after a trial where Gantry's own 5-column CSV matched no
-  products at all. `'bepoz'` is an alias for the same builder (pre-rename value); deleting
-  it from `EXPORT_FORMATS` makes such a row fall back silently to the 5-column file, which
-  is that original bug returning invisibly. The BOM is per-format on purpose: Excel needs it
-  for `'full'`, and it corrupts the first barcode for `'standard'`.
+- **Export shape comes from an export template**, not code: a row of `export_templates`
+  (identifier type + fallback, `barcode_rules`, ordered `columns`, header, delimiter,
+  extension, filename pattern, `bom`, `import_behaviour`, `mode`), chosen per org as
+  `organisations.export_template_id` via `set_export_template()` — owner/manager — from
+  EITHER admin.html's Organisation card OR app.html's Account → Exports card. The second
+  exists because admin.html is Multi-venue only: without it, single-venue and trial venues
+  could never choose their file. Both pickers take which-template-is-in-effect, option
+  labels and the explanation from export-engine.js's picker helpers, so they can't
+  disagree; staff see the Account card disabled, like Scanning. One engine, `export-engine.js` (`buildExport`), builds every file; there
+  are no per-POS builders in app.html any more. System templates (`is_system`, `org_id`
+  NULL) are seeded from ONE JSON literal between `$seed$` markers in
+  `20261010_01_export_templates.sql`, which must appear identically in `schema.sql` — and
+  `node scripts/test-export-engine.js` parses that block and proves `standard`/`bepoz`/
+  `full` byte-identical to the old builders, which it keeps **verbatim** as the oracle.
+  Edit a seed → re-run that test. Things that stay load-bearing inside templates: `standard`
+  and `bepoz` are `barcode,count` with no header row and **no BOM** — verified against a
+  real Bepoz import after Gantry's 5-column CSV matched nothing; the BOM is per template
+  because Excel needs it for `full` and it corrupts the first barcode of a POS file.
+  **System template names and descriptions are read by every org** — no customer names,
+  venues or trial dates in them; provenance goes in the SQL comments.
+  The legacy `export_format` / `strip_leading_zero` columns still exist and are
+  **mirrored** by `set_export_template()` so a cached old app.html exports the same file;
+  an org with no template id resolves through `legacyTemplateCode()` in export-engine.js
+  (`'standard'`/`'bepoz'` → standard or bepoz by the flag, anything else → full), which the
+  migration's UPDATE also states and the test pins. Unverified templates (`verified`, a
+  server-only column) are labelled in the picker and under the Export button, as is
+  `import_behaviour = 'replace'`. Fill mode (`mode = 'fill'`) is refused by both the RPC
+  and the engine until Phase 4.
 - **Barcodes are stored exactly as scanned and normalised only on export.** Nothing in this
   repo pads or trims a digit at capture, and nothing should: the decoders disagree with each
   other (native `BarcodeDetector` on Android Chrome vs the zxing-wasm ponyfill elsewhere), so
   the same bottle can arrive as UPC-A 12, EAN-13 13 or GTIN-14 depending on the phone, and
-  what was scanned is the evidence of what the camera read. The per-org
-  `organisations.strip_leading_zero` (default **false**, set in admin.html beside the export
-  format, written by `set_strip_leading_zero()` — owner/manager) removes **exactly one**
-  leading zero from an **all-digit 13- or 14-character** code while the file is built. The
-  rule lives in `barcode-export.js` (`normaliseBarcodeForExport`), is tested by
-  `node scripts/test-barcode-export.js`, and is applied in `doExport()` to **every** format —
-  not inside a builder. 12 digits is deliberately excluded: a 12-digit code starting with
+  what was scanned is the evidence of what the camera read. A template's
+  `barcode_rules.leading_zero` decides the exported form: `keep`, `strip_one`, `strip_all`
+  or `pad` (`applyBarcodeRules()` in `barcode-export.js`). `strip_one` — what the Bepoz
+  template uses, and what the older org-wide `strip_leading_zero` flag still forces onto a
+  `keep` template via `withLegacyStrip()` — removes **exactly one** leading zero from an
+  **all-digit 13- or 14-character** code, and IS `normaliseBarcodeForExport`, tested by
+  `node scripts/test-barcode-export.js`. It runs in the engine for every template — not
+  inside a column. 12 digits is deliberately excluded: a 12-digit code starting with
   zero is a real UPC-A, and stripping it would break a line that already matched.
-  `mergeItemsForExport()` runs in the same pass and is not optional — once a zero can be
-  dropped, two stored lines can become one product, and an importer handed the same barcode
-  twice silently keeps one of the counts. Each export stamps `stocktakes.last_export_format`
+  `mergeItemsForExport()` runs in the same pass, keyed on the RESOLVED identifier, and is
+  not optional — once a zero can be dropped (or two barcodes share a SKU), two stored lines
+  can become one product, and an importer handed the same identifier twice silently keeps
+  one of the counts. A blank identifier is never a merge key. Each export stamps `stocktakes.last_export_format`
   / `last_export_strip_leading_zero` / `last_exported_at` via `record_stocktake_export()`,
   because a re-export is a no-op on `status` and would otherwise leave no trace at all.
   Evidence: Colac Port Adelaide, 2026-09-29 — ~50 of ~600 lines unmatched in Bepoz, the

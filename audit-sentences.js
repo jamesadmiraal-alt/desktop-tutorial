@@ -181,6 +181,17 @@ window.GANTRY_AUDIT = (function () {
     // The digits in the file, where export_format above is the columns. Both are
     // "what we send the POS", which is why an import that came back unmatched
     // starts with these two lines of the log.
+    // Written by log_organisations_change() when set_export_template() runs.
+    // The trigger resolves both names into the row, because a UUID in a dispute
+    // is not evidence. When this fires, the two legacy lines below (format,
+    // leading zero) are deliberately NOT written for the same tap — they are
+    // mirrors of the template, not separate decisions.
+    'organisation.export_template_changed': function (r) {
+      var to = r.after && r.after.export_template_name;
+      var from = r.before && r.before.export_template_name;
+      if (!to) return r.actor_label + ' changed the export template';
+      return r.actor_label + ' changed the export template' + (from ? ' from ' + from : '') + ' to ' + to;
+    },
     'organisation.strip_leading_zero_changed': function (r) {
       return r.actor_label + (r.after && r.after.strip_leading_zero
         ? ' turned ON removing the leading zero from exported barcodes'

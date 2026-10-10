@@ -26,6 +26,7 @@
 <script src="config.js"></script>
 <script src="audit-sentences.js"></script>
 <script src="barcode-export.js"></script>
+<script src="export-engine.js"></script>
 <!-- Capacitor runtime, vendored (see NATIVE-SETUP.md). No-ops harmlessly on
      the plain web deploy: capacitorExports.Capacitor.isNativePlatform() is
      false outside a native shell, and all native-only code below is guarded
@@ -877,6 +878,27 @@
          counting); editing is gated inside the view itself. -->
     <button id="open-barcodes-btn" class="acct-nav-btn">Barcode names</button>
   </div>
+  <!-- ===== Exports =====
+       Which file Export produces — the same org setting admin.html's
+       Organisation card sets, written by the same set_export_template().
+
+       It is here as well because admin.html is Multi-venue only: a single-venue
+       or trial venue had NO way to choose what its export looked like, and the
+       venue manager working from the app had to go and find the head-office
+       console to fix a file the POS had just rejected.
+
+       Same audience and same rule as Scanning above: owner or manager changes it;
+       staff see it disabled with a note — hidden would make the file they export
+       look like an accident rather than a decision someone made. -->
+  <div class="acct-card" id="acct-export-card">
+    <h3>Exports</h3>
+    <label for="acct-export-template">Export template</label>
+    <select id="acct-export-template"><option value="">Loading…</option></select>
+    <div class="plan-desc" id="acct-export-template-detail" style="margin-top:6px"></div>
+    <div class="plan-desc" style="margin-top:4px">Pick the one for the system you import into — the wrong shape or
+      barcode form imports as “no product match” rather than failing outright. Scanned data is never altered.</div>
+    <div class="plan-desc" id="acct-export-note" style="margin-top:8px;display:none">Only an owner or manager can change this.</div>
+  </div>
   <div class="acct-card">
     <h3>Organisation</h3>
     <div class="acct-email" id="acct-org-name"></div>
@@ -1249,6 +1271,10 @@
            silently copied a CSV and marked the count completed. Export is now
            the only way the numbers leave the app. -->
       <button id="take-export" class="success"><span class="ico" style="--i:url(icons/download.svg)"></span> Export CSV</button>
+      <!-- Says what is worth knowing before the file leaves: an unverified
+           template, or a POS that REPLACES its counts with the file. Set by
+           renderExportButton(); empty and hidden for the verified templates. -->
+      <div id="take-export-note" class="hint" style="display:none;margin-top:6px"></div>
     </div>
     <!-- The heading is not decoration. Before it, both halves of this sheet were
          an identical stack of buttons, so "Export CSV" and "Mark ready for
@@ -1465,7 +1491,7 @@
                    cfg.supabaseAnonKey && cfg.supabaseAnonKey.indexOf('YOUR-') === -1;
 
   var currentUser = null;   // {id, email, name}
-  var currentOrg = null;    // {id, name, role, planTier, country, countryChangedAt, exportFormat}
+  var currentOrg = null;    // {id, name, role, planTier, country, countryChangedAt, exportFormat, exportTemplateId, exportTemplate}
   var locations = [];       // this org's pre-created venues: [{id, name}]
   var currentTake = null;   // {id, name, ...}
   var items = [];           // items of currentTake: [{id, barcode, qty, first_scanned, last_scanned}]
@@ -1800,7 +1826,7 @@
     // itself is not.
     //
     // Without this test the shield eats our own programmatic clicks, and the
-    // one that matters is downloadCsv()'s `a.click()` on an <a download>:
+    // one that matters is downloadFile()'s `a.click()` on an <a download>:
     // closing the actions sheet arms the shield, deliver() fires ~1ms later,
     // preventDefault() lands on the anchor, and the export silently produces no
     // file. Found by the export test after the sheet was moved onto the shield.
@@ -2327,7 +2353,7 @@
     Promise.all([
       sb.from('profiles').select('full_name, marketing_opt_in').eq('id', currentUser.id).maybeSingle(),
       sb.from('memberships')
-        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, strip_leading_zero, heartbeat_interval_seconds, scan_barcodes, scan_qr, scan_mode)')
+        .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, strip_leading_zero, export_template_id, heartbeat_interval_seconds, scan_barcodes, scan_qr, scan_mode)')
         .eq('user_id', currentUser.id).maybeSingle()
     ]).then(function (results) {
       var profileRes = results[0], memberRes = results[1];
@@ -2347,6 +2373,11 @@
           // for this, or a database where the migration has not run, must get the
           // file it got yesterday. See barcode-export.js.
           stripLeadingZero: org.strip_leading_zero === true,
+          // Which export_templates row Export produces. NULL is legitimate (an
+          // org created after 20261010_01, or whose own template was deleted —
+          // the FK is ON DELETE SET NULL) and resolves to the legacy mapping in
+          // legacyTemplateCode().
+          exportTemplateId: org.export_template_id || null,
           heartbeatIntervalSeconds: org.heartbeat_interval_seconds,
           // A MISSING value must not read as "on". The columns are NOT NULL
           // DEFAULT server-side, so this only matters for a client talking to a
@@ -2361,6 +2392,10 @@
           // already have.
           scanMode: org.scan_mode === 'tap' ? 'tap' : 'continuous'
         };
+        // Fetched now only so the Export button can NAME the template the
+        // moment the sheet opens. The export itself re-reads it — see
+        // withExportTemplate().
+        loadExportTemplate();
       } else if (memberRes.error && currentOrg) {
         // A FAILED request is not an answer. This branch used to treat a dropped
         // connection exactly like "this user has no organisation", clearing
@@ -2857,11 +2892,98 @@
   $('scan-barcodes').onchange = saveScanPrefs;
   $('scan-qr').onchange = saveScanPrefs;
 
+  // ---- Account → Exports ----------------------------------------------------
+  //
+  // The list is whatever RLS returns: the Gantry templates plus this org's own.
+  // Which one is "in effect", the option labels and the explanation all come
+  // from export-engine.js, shared with admin.html's picker so the two can never
+  // disagree about what the org is exporting.
+  var acctExportTemplates = [];
+
+  function loadAccountExportTemplates() {
+    if (!currentOrg) return;
+    var org = currentOrg;
+    sb.from('export_templates').select(TEMPLATE_COLUMNS)
+      .order('is_system', { ascending: false }).order('name')
+      .then(function (res) {
+        if (currentOrg !== org) return;
+        if (res.error) {
+          // Includes a database without 20261010_01. Say so in place, rather
+          // than "Loading…" forever.
+          console.error('Could not load export templates', res.error);
+          $('acct-export-template').innerHTML = '<option value="">Could not load templates</option>';
+          $('acct-export-template').disabled = true;
+          return;
+        }
+        acctExportTemplates = res.data || [];
+        renderAccountExportTemplates();
+      }, function (err) { console.error('Could not load export templates', err); });
+  }
+
+  function renderAccountExportTemplates() {
+    var ENGINE = window.GANTRY_EXPORT_ENGINE;
+    var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
+    var sel = $('acct-export-template');
+    if (!acctExportTemplates.length) return; // still loading — keep "Loading…"
+    sel.innerHTML = '';
+    ENGINE.groupTemplates(acctExportTemplates).forEach(function (g) {
+      var og = document.createElement('optgroup');
+      og.label = g.label;
+      g.rows.forEach(function (t) {
+        var o = document.createElement('option');
+        o.value = t.id;
+        o.textContent = ENGINE.templateOptionLabel(t);
+        o.disabled = !ENGINE.isSelectableDefault(t);
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+    var eff = ENGINE.effectiveTemplate(acctExportTemplates, currentOrg);
+    sel.value = eff ? eff.id : '';
+    sel.disabled = !canManage;
+    $('acct-export-template-detail').textContent = ENGINE.templateDetail(eff);
+    $('acct-export-note').style.display = canManage ? 'none' : '';
+  }
+
+  $('acct-export-template').onchange = function () {
+    var ENGINE = window.GANTRY_EXPORT_ENGINE;
+    var sel = $('acct-export-template');
+    var id = sel.value;
+    var previous = ENGINE.effectiveTemplate(acctExportTemplates, currentOrg);
+    if (!id || !currentOrg) return;
+    sel.disabled = true;
+    sb.rpc('set_export_template', { p_template_id: id }).then(function (res) {
+      sel.disabled = false;
+      if (res.error) {
+        sel.value = previous ? previous.id : '';
+        fail(res.error, 'Could not change the export template');
+        return;
+      }
+      currentOrg.exportTemplateId = res.data;
+      var t = ENGINE.effectiveTemplate(acctExportTemplates, currentOrg);
+      // Mirror locally what set_export_template() mirrored in the database, and
+      // re-point the cached template the Export button reads, so the very next
+      // export sheet already names the new one.
+      var mirror = ENGINE.legacyMirror(t);
+      currentOrg.exportFormat = mirror.exportFormat;
+      currentOrg.stripLeadingZero = mirror.stripLeadingZero;
+      if (t) currentOrg.exportTemplate = t;
+      $('acct-export-template-detail').textContent = ENGINE.templateDetail(t);
+      // What the NEXT file will be — the question this setting is reached for.
+      toast('Exports will now use the ' + (t ? t.name : 'chosen') + ' template');
+    }, function (err) {
+      sel.disabled = false;
+      sel.value = previous ? previous.id : '';
+      fail(err, 'Could not change the export template');
+    });
+  };
+
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
     renderAccountName();
     renderMarketingPref();
     renderScanPrefs();
+    loadAccountExportTemplates();
     renderOrgAccountInfo();
     renderPlan();
     renderUpgradePrices();
@@ -2876,6 +2998,8 @@
       renderAccountName();
       renderMarketingPref();
       renderScanPrefs();
+      // Re-read: the refresh may have brought a template changed in Admin.
+      loadAccountExportTemplates();
       renderOrgAccountInfo();
       renderPlan();
       renderUpgradePrices();
@@ -5181,104 +5305,112 @@
   // scanning, so these work on demand against whichever stocktake's dialog
   // is currently open (actionsTake), fetching its items fresh each time
   // rather than relying on the scan view's live `items` array.
-  function csvEscape(v) {
-    v = String(v);
-    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  // ---- Export templates ---------------------------------------------------
+  //
+  // Which file Export produces is a row of public.export_templates, chosen per
+  // org in admin.html (organisations.export_template_id). The file is built by
+  // export-engine.js — one engine for every template.
+  //
+  // The two builders that used to live here (buildStandardCsv, buildCsv) and
+  // their EXPORT_FORMATS map are gone. They are kept VERBATIM in
+  // scripts/test-export-engine.js as the oracle the engine is proved
+  // byte-identical against, for every seeded template, with the old strip
+  // toggle both ways. Everything they knew — the Bepoz evidence for a headerless
+  // two-column file, the per-format BOM, the 'bepoz' alias — now lives in the
+  // seeded template rows and the comments around them in
+  // supabase/migrations/20261010_01_export_templates.sql.
+
+  // The template an org with no export_template_id gets — see
+  // legacyTemplateCode() in export-engine.js, which admin.html shares.
+  function legacyTemplateCode(org) {
+    return window.GANTRY_EXPORT_ENGINE.legacyTemplateCode(
+      org && org.exportFormat, !!(org && org.stripLeadingZero));
   }
 
-  // All three builders put qty through qtyText(): the raw value can arrive as
-  // "0.40" (trailing zero) or as 0.30000000000000004 after arithmetic, and a
-  // spreadsheet or POS importer showing either would undermine confidence in the
-  // count even where it parses correctly.
-  function buildCsv(take, takeItems) {
-    var rows = [['stocktake', 'barcode', 'qty', 'first_scanned', 'last_scanned']];
-    takeItems.forEach(function (it) {
-      rows.push([take.name, it.barcode, qtyText(it.qty), it.first_scanned, it.last_scanned]);
+  var TEMPLATE_COLUMNS = 'id,org_id,is_system,code,name,description,verified,'
+    + 'identifier_type,identifier_fallback,barcode_rules,include_header,columns,'
+    + 'delimiter,file_extension,file_name_pattern,bom,import_behaviour,mode';
+
+  // Fetches the org's template (or the legacy mapping's, when it has none) and
+  // caches it on currentOrg for the button label. cb(template) on success,
+  // cb(null, error) on failure. A stale id — a template deleted between the org
+  // load and now — falls through to the legacy mapping once rather than
+  // refusing to export.
+  function loadExportTemplate(cb) {
+    var org = currentOrg;
+    if (!org) { if (cb) cb(null, { message: 'No organisation' }); return; }
+    var byLegacy = function () {
+      return sb.from('export_templates').select(TEMPLATE_COLUMNS)
+        .eq('is_system', true).eq('code', legacyTemplateCode(org)).maybeSingle();
+    };
+    var first = org.exportTemplateId
+      ? sb.from('export_templates').select(TEMPLATE_COLUMNS).eq('id', org.exportTemplateId).maybeSingle()
+      : byLegacy();
+    Promise.resolve(first).then(function (res) {
+      if (!res.error && !res.data && org.exportTemplateId) return byLegacy();
+      return res;
+    }).then(function (res) {
+      if (res.error || !res.data) {
+        if (cb) cb(null, res.error || { message: 'No export template is set up for this organisation.' });
+        return;
+      }
+      // Only cache onto the org this request was made for — refreshOrgStatus()
+      // replaces currentOrg wholesale, and a slow response must not decorate
+      // its successor.
+      if (currentOrg === org) {
+        org.exportTemplate = res.data;
+        if ($('take-actions-overlay').classList.contains('open')) renderExportButton();
+      }
+      if (cb) cb(res.data);
+    }, function (err) { if (cb) cb(null, err); });
+  }
+
+  // The template export uses: ALWAYS re-read, because this is the moment the
+  // choice turns into a file someone else's importer will read, and a template
+  // changed in Admin five minutes ago must be the one that's used. The cached
+  // copy is the fallback for a dropped request, not the source of truth.
+  function withExportTemplate(cb) {
+    loadExportTemplate(function (t, err) {
+      if (t) { cb(t); return; }
+      var cached = currentOrg && currentOrg.exportTemplate;
+      if (cached) {
+        console.error('Export template refresh failed; using the cached copy:', err);
+        cb(cached);
+        return;
+      }
+      cb(null, err);
     });
-    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
   }
 
-  // The standard export: two columns, NO header row. Every part of that is
-  // load-bearing, established by an on-site trial rather than guessed at.
-  //
-  // Named "standard" rather than "bepoz" deliberately. It was built for Bepoz and
-  // verified against Bepoz, but `barcode,count` is the shape stock importers
-  // generally want — so naming it after one vendor would make the next customer
-  // on a different POS assume it doesn't apply to them, and rebuild it. The Bepoz
-  // specifics below are kept because they're the EVIDENCE for the shape, not
-  // because the shape is Bepoz-only.
-  //
-  //   * Bepoz maps CSV column 1 -> Barcode and column 2 -> Count. Gantry's own
-  //     export leads with the stocktake NAME, so Bepoz was comparing
-  //     "Colac Port Adl · Cellar – 20/8/2026" against its product barcodes and
-  //     reading the real barcode as a quantity. Every line came back
-  //     "## No Product Match ##" — not a data problem, a column-alignment one.
-  //   * A header row is imported as DATA. Ours arrived as barcode "stocktake"
-  //     with a count of 0 (the non-numeric "barcode" coerced to zero).
-  //   * No store/location column — CONFIRMED with the operator on 2026-08-20.
-  //     Bepoz takes the store from its own import profile, so sending our venue
-  //     name would just be another unmatched column. Don't "helpfully" add one.
-  //
-  // Quantities go out exactly as counted, decimals included — CONFIRMED against
-  // the real Bepoz importer on 2026-08-20, which accepted 0.15. So no rounding
-  // here, which was always the right call anyway: silently turning a 0.4 part
-  // bottle into 1 would corrupt the very counts the decimal numpad exists for.
-  //
-  // Two decimal places is the ceiling, and it's the same ceiling in three places:
-  // the numpad's input guard, QTY_DP, and `qty numeric(12,2)` in schema.sql.
-  // Anything finer (0.125 for a nip, say) needs all three changed together — the
-  // column would round it before it ever reached an export.
-  //
-  // NOTE: this is the same two-column shape as the old buildMyobCsv, which was
-  // deleted for being an unverified guess. It's back because it stopped being a
-  // guess, not because the deletion was wrong.
-  function buildStandardCsv(take, takeItems) {
-    var rows = takeItems.map(function (it) { return [it.barcode, qtyText(it.qty)]; });
-    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\r\n');
+  // "Standard (barcode, count)" -> "Standard". The parenthetical is for the
+  // picker in Admin; on a button it nests into "Export CSV (Standard (…))".
+  function templateShortName(t) {
+    return String((t && t.name) || 'Export').replace(/\s*\([^)]*\)\s*$/, '') || 'Export';
   }
 
-  // Keyed by organisations.export_format. Unknown values fall back to Gantry's own
-  // full export rather than throwing — an org row holding a legacy 'myob' or
-  // 'lightspeed' still gets a usable file.
+  // Name the template on the button. Which file you get is an org setting in
+  // Admin, invisible from here, and the shapes are not interchangeable — a
+  // headerless barcode,count pair for a POS versus a five-column file with a
+  // header for a human. Sending the wrong one at a venue is what cost the first
+  // on-site trial.
   //
-  // 'bepoz' is an ALIAS, not a leftover, and it must not be deleted casually. The
-  // format shipped under that name before being renamed to 'standard', so a row
-  // can still hold it — either because the rename migration hasn't run yet, or
-  // because an old backup gets restored. Without this alias such a row falls
-  // through to `full`, and the customer silently gets the 5-column file that
-  // matches nothing on import. That is the ORIGINAL bug, reappearing quietly, in
-  // the one place nobody would think to look.
-  //
-  // `bom` matters more than it looks. downloadCsv prepends a UTF-8 byte-order mark
-  // so Excel opens the Gantry export with its accented venue names intact. A
-  // barcode-and-number file has no non-ASCII content to disambiguate, and the mark
-  // would make the FIRST barcode arrive as "﻿9351142000085" — which a strict
-  // importer silently fails to match, i.e. exactly the bug this format exists to
-  // fix. The standard export therefore gets no BOM.
-  //
-  // Worth knowing if you hand-test by editing an export in Excel: Excel rewrites
-  // the encoding on save, so a manual fix hides this while the app's own file
-  // would still have failed.
-  var STANDARD_FORMAT = {
-    build: buildStandardCsv, suffix: 'standard', label: 'Standard', short: 'Standard', bom: false
-  };
-  // `short` is what goes on the Export button. The operator cannot see which
-  // shape they are about to get — the format is an org setting in Admin, not a
-  // per-export choice — and the two files are wildly different: a headerless
-  // barcode,qty pair versus a five-column file with a header. Naming it on the
-  // button is the only cue at the moment it matters.
-  var EXPORT_FORMATS = {
-    standard: STANDARD_FORMAT,
-    bepoz: STANDARD_FORMAT, // pre-rename value; see above
-    full: { build: buildCsv, suffix: '', label: 'Gantry CSV', short: 'Gantry', bom: true }
-  };
-  function exportFormat() {
-    return EXPORT_FORMATS[currentOrg && currentOrg.exportFormat] || EXPORT_FORMATS.full;
-  }
-
-  function slugify(s, fallback) {
-    return String(s == null ? '' : s)
-      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || fallback;
+  // The note under it says the two things worth knowing BEFORE the file leaves:
+  // that the template hasn't been checked against a real import, and that the
+  // POS replaces its counts with the file rather than adding to them.
+  function renderExportButton() {
+    var t = currentOrg && currentOrg.exportTemplate;
+    var kind = (t && t.file_extension === 'txt') ? 'TXT' : 'CSV';
+    $('take-export').innerHTML = ICO('download') + ' Export ' + kind;
+    if (t) $('take-export').appendChild(document.createTextNode(' (' + templateShortName(t) + ')'));
+    var notes = [];
+    if (t && !t.verified) {
+      notes.push('This export template has not been checked against a real import yet — check the first one closely.');
+    }
+    if (t && t.import_behaviour === 'replace') {
+      notes.push('Your POS replaces its counts with this file, so anything not in it may be set to zero. Export the whole count, not part of it.');
+    }
+    $('take-export-note').textContent = notes.join(' ');
+    $('take-export-note').style.display = notes.length ? '' : 'none';
   }
 
   // The venue's timezone, not the device's and not UTC. A count finished late
@@ -5308,35 +5440,22 @@
     }
   }
 
-  // gantry-{location}-{take}-{countdate}[-{format}].csv
-  //
-  // The location is the point: a take called "Morning count" gave a file with
-  // nothing in the name to say WHERE it was counted, and head office receiving
-  // four of those has no way to tell them apart. Reported from a live export.
-  //
-  // Export is the only caller now that Share is gone, but this stays a helper
-  // rather than being inlined: the filename is a contract with whoever
-  // receives the file, and it deserves a named place to change.
-  function fileName(take, suffix) {
-    var takeSlug = slugify(take && take.name, 'stocktake');
-    var locSlug = slugify(take && take.locations && take.locations.name, '');
-    var parts = ['gantry'];
-    // Only when it isn't already there. The default name suggestTakeName()
-    // offers is "<location> – <date>", so most takes already carry it and
-    // prepending unconditionally would produce gantry-cellar-cellar-…
-    if (locSlug && takeSlug.indexOf(locSlug) === -1) parts.push(locSlug);
-    parts.push(takeSlug);
-    parts.push(takeDateStamp(take));
-    if (suffix) parts.push(suffix);
-    return parts.join('-') + '.csv';
-  }
+  // The filename is now the template's (file_name_pattern, expanded by
+  // export-engine.js's fileNameFor()). The default pattern reproduces what the
+  // fileName() that lived here always produced —
+  // gantry-{location}-{stocktake}-{date} — including not repeating the location
+  // when the stocktake's name already carries it. The location is the point: a
+  // take called "Morning count" gave a file with nothing in the name to say
+  // WHERE it was counted, and head office receiving four of those has no way to
+  // tell them apart. Reported from a live export.
 
-  // `bom` defaults to true: Excel needs the byte-order mark to read the Gantry
-  // export's accented venue names as UTF-8. Machine-read formats pass false —
-  // see EXPORT_FORMATS for why that matters to the standard export.
-  function downloadCsv(csvText, filename, bom) {
-    var body = (bom === false ? '' : '﻿') + csvText;
-    var blob = new Blob([body], { type: 'text/csv;charset=utf-8' });
+  // `bom` and `mime` come from the engine's result, which takes them from the
+  // template. The BOM is load-bearing in opposite directions — Excel needs it
+  // for the Gantry CSV, and it corrupts the first barcode of a headerless POS
+  // file — so it is never defaulted here.
+  function downloadFile(text, filename, bom, mime) {
+    var body = (bom === true ? '\uFEFF' : '') + text;
+    var blob = new Blob([body], { type: mime || 'text/csv;charset=utf-8' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -5463,13 +5582,10 @@
       setTakeStatus(t, 'completed', 'manual');
     };
 
-    // Name the shape on the button. Which file you get is an org setting in
-    // Admin, invisible from here, and the two are not interchangeable — a
-    // headerless barcode,qty pair for a POS import versus a five-column file
-    // with a header for a human. Sending the wrong one at a venue is what cost
-    // the first on-site trial.
-    var fmt = exportFormat();
-    $('take-export').innerHTML = ICO('download') + ' Export CSV (' + fmt.short + ')';
+    // See renderExportButton(). If the template hasn't arrived yet the button
+    // says plain "Export CSV" and is relabelled when it lands.
+    renderExportButton();
+    if (!(currentOrg && currentOrg.exportTemplate)) loadExportTemplate();
 
     $('take-actions-overlay').classList.add('open');
   }
@@ -5535,7 +5651,7 @@
   // THE ORDER IS LOAD-BEARING, AND IT IS NOT THE OBVIOUS ONE. The status write
   // goes FIRST and the file waits for it.
   //
-  // iOS Safari treats downloadCsv()'s blob-URL <a download> as a navigation and
+  // iOS Safari treats downloadFile()'s blob-URL <a download> as a navigation and
   // cancels whatever fetch is still in flight. A status write issued AFTER the
   // download therefore dies as `TypeError: Load failed`, and the operator gets
   // a red "Could not update stocktake" sitting over a count that exported
@@ -5646,47 +5762,59 @@
   }
 
   function doExport() {
-    fetchTakeItems(actionsTake.id, function (takeItems) {
+    // Snapshot up front: the overlay closes below and actionsTake can be
+    // repointed by the next ⋯ tap before the async work finishes.
+    var take = actionsTake;
+    withExportTemplate(function (template, templateErr) {
+      // No template, no file. The alternative — guessing a shape — is how the
+      // first on-site trial sent Bepoz a file it matched nothing in.
+      if (!template) { fail(templateErr, 'Could not load the export template'); return; }
+      fetchTakeItems(take.id, function (takeItems) {
       if (!takeItems.length) { toast('Nothing to export yet', '#b91c1c'); return; }
-      // Snapshot everything up front: the overlay closes below and actionsTake can
-      // be repointed by the next ⋯ tap before the async work finishes.
-      var take = actionsTake;
-      var fmt = exportFormat();
       // Barcodes are STORED exactly as the camera read them and normalised HERE,
-      // on the way out — see barcode-export.js for why that boundary is where it
-      // is, and what Colac's import failure looked like.
+      // on the way out, by the template's barcode_rules — see barcode-export.js
+      // for why that boundary is where it is, and what Colac's import failure
+      // looked like. The engine resolves each line's identifier, merges lines
+      // that resolve to the same one (two paddings of one barcode are one
+      // product; handing an importer the same code twice silently loses one of
+      // the counts), then lays out the template's columns.
       //
-      // Every format goes through this, which is the point of doing it here
-      // rather than inside a builder: 'standard' is what Bepoz reads today, but a
-      // Gantry CSV handed to someone's spreadsheet has the same barcodes in it.
-      //
-      // Merging is not optional once a zero can be dropped: "0797776409853" and
-      // "797776409853" are two stored lines that become ONE product in the file,
-      // and handing an importer the same barcode twice means one of the two
-      // counts silently loses.
-      var stripLeadingZero = !!(currentOrg && currentOrg.stripLeadingZero);
-      var exportItems = window.GANTRY_EXPORT.mergeItemsForExport(takeItems, {
-        stripLeadingZero: stripLeadingZero,
-      });
-      var csv = fmt.build(take, exportItems);
-      var name = fileName(take, fmt.suffix);
+      // withLegacyStrip(): the org-wide strip_leading_zero toggle from before
+      // templates, still honoured until every org is on a template that says so
+      // itself. set_export_template() keeps it mirrored, so normally a no-op.
+      var t = window.GANTRY_EXPORT_ENGINE.withLegacyStrip(
+        template, !!(currentOrg && currentOrg.stripLeadingZero));
+      var out;
+      try {
+        out = window.GANTRY_EXPORT_ENGINE.buildExport(t, takeItems, {
+          stocktakeName: take.name,
+          locationName: take.locations && take.locations.name,
+          dateStamp: takeDateStamp(take),
+          names: barcodeNames,
+        });
+      } catch (e) {
+        // A template the engine refuses (bad columns, fill mode) produces
+        // nothing rather than something wrong.
+        fail(e, 'This export template cannot produce a file');
+        return;
+      }
       // The card behind this dialog must agree with the file being handed over —
       // and it is the STORED lines that it should agree with, so this gets
-      // takeItems, not exportItems. The unit total is identical either way; the
-      // line count can legitimately be lower in the file than on the card when
-      // normalisation merged two paddings of one product, and the card describes
-      // what the stocktake holds.
+      // takeItems, not the merged lines. The unit total is identical either way;
+      // the line count can legitimately be lower in the file than on the card
+      // when two paddings of one product merged, and the card describes what the
+      // stocktake holds.
       syncTakeSnapshot(take, takeItems);
       closeTakeActions();
 
       function deliver() {
         // Status first, file second — completeThenHandOver() explains why, and
         // it is the opposite of what it looks like it should be. Do not move
-        // downloadCsv() back above the status write: on iOS the download
+        // downloadFile() back above the status write: on iOS the download
         // navigation cancels it.
         completeThenHandOver(take, function () {
-          downloadCsv(csv, name, fmt.bom);
-        }, fmt.label + ' export downloaded');
+          downloadFile(out.text, out.fileName, out.bom, out.mime);
+        }, templateShortName(template) + ' export downloaded');
       }
 
       // EXPORT COMPLETES THE COUNT. Changed 2026-09-09 at James's direction,
@@ -5724,18 +5852,22 @@
       // non-fatal and silent — a missing stamp must never withhold a file the
       // operator is entitled to, and this RPC does not exist at all until the
       // migration runs.
-      recordExport(take, fmt, stripLeadingZero, deliver);
+      var rules = t.barcode_rules || {};
+      recordExport(take, template.name,
+                   rules.leading_zero === 'strip_one' || rules.leading_zero === 'strip_all',
+                   deliver);
+      });
     });
   }
 
-  // Writes down what the export actually sent: the format, and whether the
-  // leading zero was dropped. Traceability, not permission — record_stocktake_export()
+  // Writes down what the export actually sent: the template's name, and whether
+  // leading zeros were dropped. Traceability, not permission — record_stocktake_export()
   // grants nothing and refuses a stocktake outside the caller's org.
   //
   // `next` always runs, exactly once, whatever happens. A stocktake that exported
   // but wasn't stamped is a gap in the log; a stocktake that didn't export because
   // the log was down is a venue that can't do its job.
-  function recordExport(take, fmt, stripLeadingZero, next) {
+  function recordExport(take, templateName, stripLeadingZero, next) {
     var done = false;
     var proceed = function () { if (!done) { done = true; next(); } };
     // A stamp that never settles must not strand the export either — the same
@@ -5751,7 +5883,7 @@
     };
     sb.rpc('record_stocktake_export', {
       p_stocktake_id: take.id,
-      p_format: fmt.label,
+      p_format: templateName,
       p_strip_leading_zero: stripLeadingZero,
     }).then(function (res) { finish(res && res.error); }, finish);
   }
