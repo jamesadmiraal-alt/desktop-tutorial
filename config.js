@@ -5,6 +5,12 @@
 window.BARSCAN_CONFIG = {
   supabaseUrl: 'https://vfixdchbkmqryfhirphx.supabase.co',
   supabaseAnonKey: 'sb_publishable_juhiIJWl7qvSj4hL_7JQcA_wEoNVgi6',
+  // After a stocktake is exported with an UNVERIFIED export template, its ⋯
+  // sheet asks once "Did this file import cleanly into <POS>?" — the evidence
+  // that turns a venue-built (or not-yet-proven Gantry) template into an
+  // official one. On until we decide we have enough; set false to stop asking.
+  // Answers already given stay in export_template_submissions either way.
+  importFeedback: true,
   // Where the in-app upgrade buttons send people, keyed by currency (chosen
   // from the organisation's country — see COUNTRY_CURRENCY in app.html),
   // then by tier ('single' flat, 'multi' base+per-concurrent-seat), then by billing

@@ -216,6 +216,14 @@
   .eb-problems:empty { display: none; }
   .eb-warn { color: var(--warning); }
 
+  /* First-import feedback, at the foot of the ⋯ sheet. Set apart (its own
+     ground and border) so it reads as a question about the last file, not as
+     one more thing to do to the stocktake. */
+  .take-feedback { margin-top: 14px; padding: 12px; border-radius: 12px;
+    background: var(--bg); border: 1px solid var(--border); }
+  .take-feedback-q { font-size: 0.92rem; margin-bottom: 10px; color: var(--text); }
+  .take-feedback label { display: block; font-size: 0.8rem; color: var(--text-dim); margin: 10px 0 4px; }
+
   /* ---- Setup / Auth views ---- */
   #setup-view, #auth-view { justify-content: center; padding: 24px 20px; }
   .auth-card { background: var(--surface); border-radius: 16px; padding: 24px 20px; }
@@ -1462,6 +1470,29 @@
            Only offered from Ready for export. -->
       <button id="take-complete" style="display:none">Mark completed</button>
       <button id="take-clear" class="danger">Clear items</button>
+    </div>
+    <!-- First-import feedback. Shown only after an export with an UNVERIFIED
+         template, only to owner/manager, and only until it is answered (once,
+         anywhere — the database allows one answer per stocktake) or put off
+         with "Not now" (on this device). It is at the FOOT of the sheet so it
+         moves nothing above it: the Export / state-change spacing is the ST6
+         hit-area fix, and the sheet opens under the finger that tapped ⋯. Its
+         buttons are armed on the same delay as the state controls, for the
+         same ghost-click reason. Never touches the export itself. -->
+    <div id="take-feedback" class="take-feedback" style="display:none">
+      <div class="take-feedback-q" id="take-feedback-q"></div>
+      <div class="dialog-actions" id="take-feedback-yn">
+        <button id="take-feedback-yes" class="flex">Yes</button>
+        <button id="take-feedback-no" class="flex">No</button>
+      </div>
+      <div id="take-feedback-more" style="display:none">
+        <label for="take-feedback-failed">Roughly how many lines didn't match?</label>
+        <input id="take-feedback-failed" type="number" min="0" step="1" inputmode="numeric">
+        <label for="take-feedback-notes">Anything else we should know? (optional)</label>
+        <textarea id="take-feedback-notes" rows="2" maxlength="2000"></textarea>
+        <button id="take-feedback-send" class="primary" style="width:100%;margin-top:10px">Send</button>
+      </div>
+      <button id="take-feedback-later" class="link-btn" style="margin-top:8px">Not now</button>
     </div>
     <div class="dialog-actions" style="margin-top:12px">
       <button id="take-actions-cancel" class="flex">Cancel</button>
@@ -3691,6 +3722,147 @@
       notifyExportTemplate();
       toast('Thanks — sent to Gantry');
     }, function (err) { btn.disabled = false; fail(err, 'Could not send that'); });
+  };
+
+  // ---- First-import feedback --------------------------------------------
+  //
+  // The question that decides whether a template can become official: did the
+  // file it produced actually import? Asked on the ⋯ sheet of a stocktake whose
+  // last export used an UNVERIFIED template (a venue's own, or a Gantry one not
+  // yet proven against a real import), once.
+  //
+  //   once, anywhere  the unique index on export_template_submissions allows one
+  //                   import_feedback per stocktake; a second device finds it
+  //                   already answered and never shows the card
+  //   not now         remembered on this device only, and final for that
+  //                   stocktake — "don't nag" means not asking again
+  //   off             config.js importFeedback: false stops asking everywhere
+  //
+  // Four reads, each allowed to fail quietly: if any part of this can't be
+  // worked out, the answer is "don't ask", never an error over the sheet.
+  // last_export_template_id is read here rather than added to loadTakes(): a
+  // missing column there (the migration not yet run) would take Home down with
+  // it, and nothing about this question is worth that.
+  var FEEDBACK_DISMISS_PREFIX = 'gantry-import-feedback-dismissed:';
+  var feedbackTake = null;
+  var feedbackTemplate = null;
+
+  function importFeedbackOn() {
+    return !!(window.BARSCAN_CONFIG && window.BARSCAN_CONFIG.importFeedback === true);
+  }
+  function feedbackDismissed(takeId) {
+    try { return localStorage.getItem(FEEDBACK_DISMISS_PREFIX + takeId) === '1'; } catch (e) { return false; }
+  }
+  // The POS by name when the template says which; otherwise the template's own
+  // name (a Gantry template is named for its POS) — never a bare "your POS" if
+  // there is anything better to say.
+  function feedbackPosName(t) {
+    if (t && t.pos_system) return window.GANTRY_EXPORT_ENGINE.posLabel(t.pos_system, t.pos_other);
+    return (t && t.name) || 'your POS';
+  }
+
+  function hideImportFeedback() {
+    $('take-feedback').style.display = 'none';
+  }
+
+  function renderImportFeedback(t) {
+    hideImportFeedback();
+    feedbackTake = null;
+    feedbackTemplate = null;
+    var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
+    // Owner/manager only: they are who the database lets answer (the insert
+    // policy), and who acts on an import that didn't match.
+    if (!importFeedbackOn() || !canManage || !t || !t.id || feedbackDismissed(t.id)) return;
+    var stillThisSheet = function () {
+      return actionsTake === t && $('take-actions-overlay').classList.contains('open');
+    };
+    sb.from('stocktakes').select('last_export_template_id').eq('id', t.id).maybeSingle().then(function (res) {
+      var templateId = !res.error && res.data && res.data.last_export_template_id;
+      if (!templateId || !stillThisSheet()) return;
+      return sb.from('export_templates').select(BUILDER_COLUMNS).eq('id', templateId).maybeSingle()
+        .then(function (r2) {
+          var tmpl = !r2.error && r2.data;
+          // A verified template has already been proven; asking would be noise.
+          if (!tmpl || tmpl.verified || !stillThisSheet()) return;
+          return sb.from('export_template_submissions').select('id')
+            .eq('stocktake_id', t.id).eq('kind', 'import_feedback').limit(1)
+            .then(function (r3) {
+              if (r3.error || (r3.data && r3.data.length) || !stillThisSheet()) return;
+              feedbackTake = t;
+              feedbackTemplate = tmpl;
+              $('take-feedback-q').textContent = 'Did this file import cleanly into ' + feedbackPosName(tmpl) + '?';
+              $('take-feedback-yn').style.display = '';
+              $('take-feedback-more').style.display = 'none';
+              $('take-feedback-later').style.display = '';
+              $('take-feedback-failed').value = '';
+              $('take-feedback-notes').value = '';
+              $('take-feedback').style.display = '';
+            });
+        });
+    }, function (err) { console.error('import feedback check failed:', err); });
+  }
+
+  function sendImportFeedback(importOk, failedLines, notes) {
+    var take = feedbackTake, tmpl = feedbackTemplate;
+    if (!take || !tmpl || !currentOrg) return;
+    var btns = ['take-feedback-yes', 'take-feedback-no', 'take-feedback-send'];
+    btns.forEach(function (id) { $(id).disabled = true; });
+    sb.from('export_template_submissions').insert({
+      org_id: currentOrg.id,
+      kind: 'import_feedback',
+      stocktake_id: take.id,
+      template_id: tmpl.id,
+      import_ok: importOk,
+      failed_lines: importOk ? null : failedLines,
+      notes: notes || null,
+    }).then(function (res) {
+      btns.forEach(function (id) { $(id).disabled = false; });
+      // 23505: someone answered for this stocktake on another device a moment
+      // ago. The question has its answer — say thanks, ask nothing more.
+      if (res.error && res.error.code !== '23505') { fail(res.error, 'Could not send that'); return; }
+      if (!res.error) notifyExportTemplate();
+      $('take-feedback-q').textContent = importOk
+        ? 'Thanks — that helps us make this an official template.'
+        : 'Thanks — we\'ll look at what didn\'t match.';
+      $('take-feedback-yn').style.display = 'none';
+      $('take-feedback-more').style.display = 'none';
+      $('take-feedback-later').style.display = 'none';
+      feedbackTake = null;
+    }, function (err) {
+      btns.forEach(function (id) { $(id).disabled = false; });
+      fail(err, 'Could not send that');
+    });
+  }
+
+  // Every handler waits for the sheet's arming delay — see stateControlsArmed().
+  $('take-feedback-yes').onclick = function () {
+    if (!stateControlsArmed()) return;
+    sendImportFeedback(true, null, null);
+  };
+  $('take-feedback-no').onclick = function () {
+    if (!stateControlsArmed()) return;
+    $('take-feedback-yn').style.display = 'none';
+    $('take-feedback-more').style.display = '';
+    $('take-feedback-failed').focus();
+  };
+  $('take-feedback-send').onclick = function () {
+    if (!stateControlsArmed()) return;
+    var raw = $('take-feedback-failed').value.trim();
+    var n = Number(raw);
+    // The one number that makes a "No" useful — how bad was it — so it is
+    // required; the notes are not.
+    if (raw === '' || !(n >= 0) || n !== Math.floor(n)) {
+      toast('Enter roughly how many lines didn\'t match — 0 or more', '#b91c1c');
+      return;
+    }
+    sendImportFeedback(false, n, $('take-feedback-notes').value.trim());
+  };
+  $('take-feedback-later').onclick = function () {
+    if (!stateControlsArmed()) return;
+    if (feedbackTake) {
+      try { localStorage.setItem(FEEDBACK_DISMISS_PREFIX + feedbackTake.id, '1'); } catch (e) { /* best effort */ }
+    }
+    hideImportFeedback();
   };
 
   function openAccount() {
@@ -6301,6 +6473,7 @@
     // says plain "Export CSV" and is relabelled when it lands.
     renderExportButton();
     if (!(currentOrg && currentOrg.exportTemplate)) loadExportTemplate();
+    renderImportFeedback(t);
 
     $('take-actions-overlay').classList.add('open');
   }
@@ -6568,7 +6741,7 @@
       // operator is entitled to, and this RPC does not exist at all until the
       // migration runs.
       var rules = t.barcode_rules || {};
-      recordExport(take, template.name,
+      recordExport(take, template.name, template.id,
                    rules.leading_zero === 'strip_one' || rules.leading_zero === 'strip_all',
                    deliver);
       });
@@ -6582,7 +6755,7 @@
   // `next` always runs, exactly once, whatever happens. A stocktake that exported
   // but wasn't stamped is a gap in the log; a stocktake that didn't export because
   // the log was down is a venue that can't do its job.
-  function recordExport(take, templateName, stripLeadingZero, next) {
+  function recordExport(take, templateName, templateId, stripLeadingZero, next) {
     var done = false;
     var proceed = function () { if (!done) { done = true; next(); } };
     // A stamp that never settles must not strand the export either — the same
@@ -6600,6 +6773,9 @@
       p_stocktake_id: take.id,
       p_format: templateName,
       p_strip_leading_zero: stripLeadingZero,
+      // Which template — what lets this stocktake's ⋯ sheet ask "did that file
+      // import cleanly?" about exactly the file it produced (20261011_01).
+      p_template_id: templateId || null,
     }).then(function (res) { finish(res && res.error); }, finish);
   }
 
