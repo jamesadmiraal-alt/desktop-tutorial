@@ -413,6 +413,71 @@ eq(E.legacyMirror(Object.assign({}, own, { barcode_rules: { leading_zero: 'strip
      `round trip: picking ${c} and losing the id still resolves to ${c}`);
 });
 
+// ---------------------------------------------------------------------------
+// 8. KNOWN_POS — one list, restated in SQL (is_known_pos) and checked here.
+// ---------------------------------------------------------------------------
+console.log('KNOWN_POS');
+const posCodes = E.KNOWN_POS.map((p) => p.code);
+eq(posCodes, ['bepoz', 'hl', 'myob_exo', 'lightspeed_r', 'lightspeed_k', 'shopfront', 'tower',
+              'swiftpos', 'impos', 'square', 'other'], 'the agreed list, in order, Other last');
+eq(new Set(posCodes).size, posCodes.length, 'no duplicate codes');
+eq(E.KNOWN_POS.every((p) => p.label && p.label.trim()), true, 'every code has a label');
+function sqlPosCodes(file) {
+  const sql = fs.readFileSync(path.join(root, file), 'utf8');
+  const m = sql.match(/function public\.is_known_pos\(p text\)[\s\S]*?select p in \(([\s\S]*?)\)/);
+  if (!m) throw new Error('is_known_pos not found in ' + file);
+  return m[1].match(/'([^']+)'/g).map((q) => q.slice(1, -1));
+}
+eq(sqlPosCodes('supabase/migrations/20261011_01_export_template_builder.sql'), posCodes,
+   'is_known_pos() in the migration lists exactly KNOWN_POS');
+eq(sqlPosCodes('schema.sql'), posCodes, 'is_known_pos() in schema.sql lists exactly KNOWN_POS');
+eq([E.posLabel('hl'), E.posLabel('other', "  Fred's Stock  "), E.posLabel('other', ''), E.posLabel('nope')],
+   ['H&L', "Other: Fred's Stock", 'Other', 'nope'], 'posLabel: label, Other with its name, unknown passes through');
+eq(Object.keys(E.SOURCE_LABELS).sort(), Object.keys(E.SOURCES).sort(), 'every column source has a builder label');
+eq(E.LEADING_ZERO_RULES.map((r) => r.code), ['keep', 'strip_one', 'strip_all', 'pad'],
+   'the four zero rules, each the builder offers');
+eq(E.LEADING_ZERO_RULES.every((r) => r.help && r.label), true, 'each rule has a plain-English line');
+
+// ---------------------------------------------------------------------------
+// 9. Templates shaped the way the builder makes them, through buildExport.
+// ---------------------------------------------------------------------------
+console.log('builder-built templates');
+// What the builder saves: barcode identifier only (Phase 2 adds the others),
+// a POS, and whatever the venue chose for the rest.
+const built = (over) => Object.assign({
+  name: 'Our POS file', pos_system: 'swiftpos', identifier_type: 'barcode', identifier_fallback: null,
+  barcode_rules: { leading_zero: 'keep', trim: true }, include_header: true,
+  columns: [{ header: 'Barcode', source: 'identifier' }, { header: 'Qty', source: 'quantity' }],
+  delimiter: ',', file_extension: 'csv', file_name_pattern: null, bom: false,
+  import_behaviour: null, mode: 'generate',
+}, over);
+const lines = [
+  { barcode: '0797776409853', qty: '10.00' },
+  { barcode: '797776409853', qty: '1.00' },
+  { barcode: '00930072700123', qty: '2.00' },
+  { barcode: '95049809', qty: '0.50' },
+];
+const bctx = { stocktakeName: 'Cellar', locationName: 'Bar', dateStamp: FIXED_DATE };
+const body = (t) => E.buildExport(t, lines, bctx).text.split('\r\n').slice(t.include_header ? 1 : 0);
+
+eq(E.validateTemplate(built()), [], 'a builder template validates');
+eq(body(built()), ['0797776409853,10', '797776409853,1', '00930072700123,2', '95049809,0.5'], 'keep: as scanned');
+eq(body(built({ barcode_rules: { leading_zero: 'strip_one' } })),
+   ['797776409853,11', '0930072700123,2', '95049809,0.5'], 'strip_one: 13+12 merged, 14->13, 8 untouched');
+eq(body(built({ barcode_rules: { leading_zero: 'strip_all' } })),
+   ['797776409853,11', '930072700123,2', '95049809,0.5'], 'strip_all: every zero gone, then merged');
+eq(body(built({ barcode_rules: { leading_zero: 'pad', pad_length: 14 } })),
+   ['00797776409853,11', '00930072700123,2', '00000095049809,0.5'], 'pad to 14: all paddings converge');
+eq(E.buildExport(built({ delimiter: '\t' }), lines, bctx).text.split('\r\n')[0], 'Barcode\tQty', 'tab header');
+eq(body(built({ delimiter: '\t' }))[0], '0797776409853\t10', 'tab body');
+eq([E.buildExport(built({ bom: true }), lines, bctx).bom, E.buildExport(built(), lines, bctx).bom], [true, false],
+   'BOM on and off follow the template');
+eq(E.buildExport(built({ file_extension: 'txt', file_name_pattern: '{template}-{date}' }), lines, bctx).fileName,
+   'our-pos-file-20260929.txt', 'pattern and extension');
+eq(E.buildExport(built({ columns: [{ header: 'Code', source: 'identifier' }, { header: 'Count', source: 'quantity' },
+  { header: 'Store', source: 'fixed', value: 'PORT ADL' }] }), lines, bctx).text.split('\r\n')[1],
+   '0797776409853,10,PORT ADL', 'fixed value column');
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) {
   console.error(`${failures} FAILED`);

@@ -52,6 +52,73 @@ window.GANTRY_EXPORT_ENGINE = (function () {
     stocktake_name: true, first_scanned: true, last_scanned: true,
   };
 
+  // The POS systems a venue can say a template is for. ONE source of truth for
+  // the codes and their labels, restated in exactly two other places, both
+  // checked by scripts/test-export-engine.js:
+  //   * is_known_pos() in SQL (20261011_01), which the check constraints on
+  //     export_templates.pos_system and export_template_submissions.pos_system
+  //     call — so the database refuses a code this list doesn't have;
+  //   * POS_LABELS in supabase/functions/notify-export-template, which names
+  //     the POS in the email subject James filters on.
+  // Add a POS here, there and there together, and re-run the test.
+  //
+  // 'other' is last on purpose, and always needs the venue to type a name — an
+  // "Other" with no name tells us nothing about which system to build for.
+  var KNOWN_POS = [
+    { code: 'bepoz', label: 'Bepoz' },
+    { code: 'hl', label: 'H&L' },
+    { code: 'myob_exo', label: 'MYOB EXO' },
+    { code: 'lightspeed_r', label: 'Lightspeed Retail (R-Series)' },
+    { code: 'lightspeed_k', label: 'Lightspeed Restaurant (K-Series)' },
+    { code: 'shopfront', label: 'Shopfront' },
+    { code: 'tower', label: 'Tower Systems Retailer' },
+    { code: 'swiftpos', label: 'SwiftPOS' },
+    { code: 'impos', label: 'Impos' },
+    { code: 'square', label: 'Square' },
+    { code: 'other', label: 'Other' },
+  ];
+
+  // "Other: Fred's POS" rather than "Other" — the name typed is the information.
+  function posLabel(code, other) {
+    if (code === 'other') {
+      var o = String(other == null ? '' : other).trim();
+      return o ? 'Other: ' + o : 'Other';
+    }
+    for (var i = 0; i < KNOWN_POS.length; i++) if (KNOWN_POS[i].code === code) return KNOWN_POS[i].label;
+    return code ? String(code) : '';
+  }
+
+  // The builder's words for each column source, kept with SOURCES so a source
+  // can't be added without being named. The three Gantry doesn't record yet say
+  // so — a venue choosing "Reason" must not expect it to fill.
+  var SOURCE_LABELS = {
+    identifier: 'Barcode',
+    quantity: 'Count',
+    item_name: 'Item name',
+    location: 'Location',
+    stocktake_name: 'Stocktake name',
+    first_scanned: 'First scanned (date and time)',
+    last_scanned: 'Last scanned (date and time)',
+    reason: 'Reason (always blank — not recorded yet)',
+    description: 'Description (always blank — not recorded yet)',
+    batch_code: 'Batch code (always blank — not recorded yet)',
+    fixed: 'Fixed text (same on every line)',
+  };
+
+  // The four leading-zero rules, each with the one line a bar manager needs to
+  // choose between them. Codes are barcode_rules.leading_zero values; the
+  // explanations are deliberately about the POS, not the algorithm.
+  var LEADING_ZERO_RULES = [
+    { code: 'keep', label: 'Keep barcodes exactly as scanned',
+      help: 'Use this unless your POS rejects barcodes that start with 0.' },
+    { code: 'strip_one', label: 'Remove one leading zero',
+      help: 'For POS systems that store "0797776409853" as "797776409853". Only touches 13- and 14-digit barcodes.' },
+    { code: 'strip_all', label: 'Remove all leading zeros',
+      help: 'For POS systems that store barcodes as plain numbers, with no zeros at the front at all.' },
+    { code: 'pad', label: 'Pad with zeros to a fixed length',
+      help: 'For POS systems that always store barcodes at one length, e.g. 13 digits.' },
+  ];
+
   // Same as app.html's qtyText(): 0.4 not 0.40, 3 not 3.00. Bepoz accepted 0.15
   // on 2026-08-20, so decimals go out as counted and are never rounded to whole
   // bottles here.
@@ -379,6 +446,10 @@ window.GANTRY_EXPORT_ENGINE = (function () {
     fileNameFor: fileNameFor,
     escapeField: escapeField,
     SOURCES: SOURCES,
+    SOURCE_LABELS: SOURCE_LABELS,
     IDENTIFIER_TYPES: IDENTIFIER_TYPES,
+    KNOWN_POS: KNOWN_POS,
+    posLabel: posLabel,
+    LEADING_ZERO_RULES: LEADING_ZERO_RULES,
   };
 })();
