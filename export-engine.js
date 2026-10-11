@@ -112,7 +112,7 @@ window.GANTRY_EXPORT_ENGINE = (function () {
     { code: 'keep', label: 'Keep barcodes exactly as scanned',
       help: 'Use this unless your POS rejects barcodes that start with 0.' },
     { code: 'strip_one', label: 'Remove one leading zero',
-      help: 'For POS systems that store "0797776409853" as "797776409853". Only touches 13- and 14-digit barcodes.' },
+      help: 'For POS systems that store "0012345678905" as "012345678905". Only touches 13- and 14-digit barcodes.' },
     { code: 'strip_all', label: 'Remove all leading zeros',
       help: 'For POS systems that store barcodes as plain numbers, with no zeros at the front at all.' },
     { code: 'pad', label: 'Pad with zeros to a fixed length',

@@ -175,7 +175,7 @@
   button.flex { flex: 1; }
   button:disabled { opacity: 0.45; }
 
-  input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="search"], select {
+  input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="search"], select, textarea {
     border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg);
     color: var(--text); padding: 12px; font-size: 1rem; width: 100%;
   }
@@ -188,6 +188,33 @@
     display: flex; align-items: center; justify-content: center;
   }
   .pw-toggle.on { color: var(--accent); }
+  textarea { font-family: inherit; resize: vertical; line-height: 1.4; }
+
+  /* Same gutter and scrolling as #account-view, which the builder is reached
+     from — and which its .subheader's -16px -12px margin assumes. */
+  #export-builder-view { padding: 16px 12px; overflow-y: auto; }
+
+  /* ---- Export template builder ----
+     Every colour is a token: the builder is a normal Account-side screen and
+     has to read correctly in both themes. */
+  .eb-col { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px;
+    padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .eb-col:last-child { border-bottom: none; }
+  .eb-col-fields { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .eb-col-num { font-size: 0.75rem; color: var(--text-faint); }
+  .eb-col-tools { display: flex; gap: 4px; align-items: flex-start; }
+  .eb-col-tools button { width: auto; min-width: 38px; padding: 8px 10px; font-size: 0.85rem; }
+  /* The file exactly as it will be written, so it is monospace, unwrapped, and
+     scrolls sideways rather than reflowing a line into something it isn't. */
+  .eb-preview { background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px; margin: 8px 0 0; font-family: ui-monospace, Menlo, monospace; font-size: 0.8rem;
+    color: var(--text); white-space: pre; overflow-x: auto; min-height: 2.5em; }
+  /* Tabs, line ends and the BOM are invisible in the real file — which is
+     exactly why they get a visible stand-in here. */
+  .eb-mark { color: var(--warning); }
+  .eb-problems { margin: 8px 0 0; padding-left: 18px; color: var(--warning); font-size: 0.85rem; }
+  .eb-problems:empty { display: none; }
+  .eb-warn { color: var(--warning); }
 
   /* ---- Setup / Auth views ---- */
   #setup-view, #auth-view { justify-content: center; padding: 24px 20px; }
@@ -898,6 +925,16 @@
     <div class="plan-desc" style="margin-top:4px">Pick the one for the system you import into — the wrong shape or
       barcode form imports as “no product match” rather than failing outright. Scanned data is never altered.</div>
     <div class="plan-desc" id="acct-export-note" style="margin-top:8px;display:none">Only an owner or manager can change this.</div>
+    <!-- The custom template builder. Owner and manager only — staff see
+         nothing new here, the same rule as editing barcode names: building the
+         file a POS imports is a decision about the business, not a counting
+         task. Every plan gets it, trial included: the venues with the most
+         unusual POS systems are often the smallest. -->
+    <div id="acct-export-custom" style="display:none;margin-top:14px">
+      <div id="acct-export-own"></div>
+      <button id="acct-export-build" class="acct-nav-btn">Build a custom export</button>
+      <button id="acct-export-request" class="link-btn" style="margin-top:8px">My system needs something the builder can't do</button>
+    </div>
   </div>
   <div class="acct-card">
     <h3>Organisation</h3>
@@ -1096,6 +1133,138 @@
       Only an owner or manager can add or change names. You'll still see them while counting.</p>
     <input id="barcodes-search" type="search" autocomplete="off" placeholder="Search barcode or name…">
     <div id="barcodes-list" style="margin-top:10px"></div>
+  </div>
+</div>
+
+<!-- ===== Custom export template builder =====
+     Information gathering as much as a feature: a venue builds the file its
+     POS wants and says which POS that is, and every save is recorded
+     (export_template_submissions, by trigger) and sent to Gantry — so the
+     templates that prove themselves can become official ones. A builder-made
+     template is always unverified; only Gantry can change that.
+
+     Two steps, because the POS is required and is the information that
+     matters most: nothing else can be filled in until it is answered.
+
+     Identifier is barcode only. SKU / stock code / system id need the POS
+     product list (Phase 2) and are deliberately not offered until it exists —
+     a template that can't fill its identifier column would import as nothing. -->
+<div id="export-builder-view" class="view">
+  <div class="subheader" style="margin:-16px -12px 14px">
+    <button id="eb-back">‹ Back</button>
+    <div class="name" id="eb-title">Build a custom export</div>
+  </div>
+
+  <div class="acct-card" id="eb-step1">
+    <h3>Which system are you importing into?</h3>
+    <select id="eb-pos" aria-label="Which system are you importing into?"></select>
+    <label for="eb-pos-other" id="eb-pos-other-label" style="display:none">Name of the POS or stock system</label>
+    <input id="eb-pos-other" type="text" maxlength="80" autocomplete="off" style="display:none">
+    <div class="plan-desc" style="margin-top:8px">This is the most useful thing you can tell us — it's how we learn
+      which systems need an official Gantry export.</div>
+    <button id="eb-continue" class="primary acct-nav-btn" disabled>Continue</button>
+  </div>
+
+  <div id="eb-step2" style="display:none">
+    <div class="acct-card">
+      <h3>The file</h3>
+      <div class="acct-country-row">
+        <span id="eb-pos-summary"></span>
+        <button id="eb-pos-change" class="link-btn">Change</button>
+      </div>
+      <label for="eb-name">Template name</label>
+      <input id="eb-name" type="text" maxlength="60" autocomplete="off" placeholder="e.g. SwiftPOS stocktake">
+
+      <label>Columns, in the order they appear in the file</label>
+      <div id="eb-columns"></div>
+      <button id="eb-add-col" class="link-btn">+ Add a column</button>
+
+      <label class="checkbox-row" style="margin-top:14px">
+        <input type="checkbox" id="eb-header">
+        <span>The first line is a header row (column names)</span>
+      </label>
+
+      <label for="eb-delimiter">Separator between columns</label>
+      <select id="eb-delimiter">
+        <option value=",">Comma</option>
+        <option value="tab">Tab</option>
+      </select>
+
+      <label for="eb-zero">Barcodes that start with 0</label>
+      <select id="eb-zero"></select>
+      <div class="plan-desc" id="eb-zero-help" style="margin-top:4px"></div>
+      <div id="eb-pad-row" style="display:none">
+        <label for="eb-pad">Pad to how many digits? (8 to 14)</label>
+        <input id="eb-pad" type="number" min="8" max="14" step="1" inputmode="numeric">
+      </div>
+
+      <label for="eb-ext">File type</label>
+      <select id="eb-ext">
+        <option value="csv">.csv</option>
+        <option value="txt">.txt</option>
+      </select>
+
+      <label class="checkbox-row" style="margin-top:14px">
+        <input type="checkbox" id="eb-bom">
+        <span>Add a byte-order mark (BOM) at the start of the file</span>
+      </label>
+      <div class="plan-desc" id="eb-bom-help" style="margin-top:4px"></div>
+
+      <label for="eb-pattern">File name (optional)</label>
+      <input id="eb-pattern" type="text" maxlength="120" autocomplete="off" placeholder="gantry-{location}-{stocktake}-{date}">
+      <div class="plan-desc" style="margin-top:4px">You can use {location}, {stocktake}, {date} and {template}.</div>
+
+      <label for="eb-behaviour">When your POS imports a stocktake, does it…</label>
+      <select id="eb-behaviour">
+        <option value="">Not sure</option>
+        <option value="add">Add to the counts it already has</option>
+        <option value="replace">Replace its counts with the file's</option>
+      </select>
+    </div>
+
+    <div class="acct-card">
+      <h3>Preview</h3>
+      <div class="plan-desc" id="eb-preview-source"></div>
+      <ul class="eb-problems" id="eb-problems"></ul>
+      <pre class="eb-preview" id="eb-preview" aria-label="Preview of the export file"></pre>
+      <div class="plan-desc" id="eb-preview-name" style="margin-top:6px"></div>
+      <div class="plan-desc" style="margin-top:4px"><span class="eb-mark">⇥</span> is a tab,
+        <span class="eb-mark">↵</span> is a line break, <span class="eb-mark">[BOM]</span> is the byte-order mark —
+        shown here so you can see them. The file has the real characters.</div>
+    </div>
+
+    <button id="eb-save" class="primary" style="width:100%">Save template</button>
+    <div class="acct-card" id="eb-saved" style="display:none;margin-top:14px">
+      <div id="eb-saved-text"></div>
+      <button id="eb-use-now" class="primary acct-nav-btn">Use this for exports now</button>
+      <button id="eb-done" class="acct-nav-btn">Done</button>
+    </div>
+    <button id="eb-request" class="link-btn" style="margin-top:12px">My system needs something the builder can't do</button>
+  </div>
+</div>
+
+<!-- ===== "My system needs something the builder can't do" =====
+     A request, recorded as an export_template_submissions row and sent to
+     Gantry. Up to five pasted lines from the POS's own import file: enough to
+     see the shape, little enough that we aren't collecting a stock list. -->
+<div id="export-request-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Tell us what your system needs</div>
+    <label for="er-pos" style="display:block;font-size:0.8rem;color:var(--text-dim);margin:12px 0 4px">Which system are you importing into?</label>
+    <select id="er-pos"></select>
+    <label for="er-pos-other" id="er-pos-other-label" style="display:none;font-size:0.8rem;color:var(--text-dim);margin:10px 0 4px">Name of the POS or stock system</label>
+    <input id="er-pos-other" type="text" maxlength="80" autocomplete="off" style="display:none">
+    <label for="er-desc" style="display:block;font-size:0.8rem;color:var(--text-dim);margin:10px 0 4px">What does it need?</label>
+    <textarea id="er-desc" rows="4" maxlength="2000" placeholder="e.g. it needs the item's SKU, not the barcode"></textarea>
+    <label for="er-sample" style="display:block;font-size:0.8rem;color:var(--text-dim);margin:10px 0 4px">Paste up to 5 lines from your POS's own import file (optional)</label>
+    <textarea id="er-sample" rows="4" maxlength="2000" spellcheck="false"
+      style="font-family:ui-monospace,Menlo,monospace;font-size:0.8rem;white-space:pre;overflow-x:auto"></textarea>
+    <div class="plan-desc" id="er-sample-count" style="margin-top:4px"></div>
+    <div class="plan-desc" style="margin-top:6px">This is sent to Gantry so we can build it. See our privacy policy.</div>
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="er-cancel" class="flex">Cancel</button>
+      <button id="er-send" class="primary flex" disabled>Send</button>
+    </div>
   </div>
 </div>
 
@@ -1864,6 +2033,9 @@
     // Same reason as the others: it holds one optional field, and leaving it
     // stranded over another view would swallow every tap behind it.
     $('barcode-name-overlay').classList.remove('open');
+    // Holds typed text, but stranded over another view it would swallow every
+    // tap behind it — and a navigation away is the operator leaving it.
+    $('export-request-overlay').classList.remove('open');
     if (wasOpen) shieldGhostClicks();
   }
 
@@ -1873,7 +2045,7 @@
     // stocktake, Home after a save — so this is the one place that reliably
     // catches a dialog left open by any of them.
     closeTransientOverlays();
-    ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view', 'team-view', 'barcodes-view'].forEach(function (id) {
+    ['setup-view', 'auth-view', 'home-view', 'scan-view', 'account-view', 'team-view', 'barcodes-view', 'export-builder-view'].forEach(function (id) {
       $(id).classList.toggle('active', id === name + '-view');
     });
     var signedInAndUsable = !!(currentUser && !needsOrgSetup && !paymentPending && !seatsFull);
@@ -2903,7 +3075,7 @@
   function loadAccountExportTemplates() {
     if (!currentOrg) return;
     var org = currentOrg;
-    sb.from('export_templates').select(TEMPLATE_COLUMNS)
+    sb.from('export_templates').select(BUILDER_COLUMNS)
       .order('is_system', { ascending: false }).order('name')
       .then(function (res) {
         if (currentOrg !== org) return;
@@ -2943,6 +3115,88 @@
     sel.disabled = !canManage;
     $('acct-export-template-detail').textContent = ENGINE.templateDetail(eff);
     $('acct-export-note').style.display = canManage ? 'none' : '';
+    renderOwnExportTemplates(canManage);
+  }
+
+  // The org's own templates, each with Edit and Delete, above the builder's
+  // entry points. Owner/manager only — for staff the whole block stays hidden.
+  function renderOwnExportTemplates(canManage) {
+    var ENGINE = window.GANTRY_EXPORT_ENGINE;
+    $('acct-export-custom').style.display = canManage ? '' : 'none';
+    var list = $('acct-export-own');
+    list.innerHTML = '';
+    if (!canManage) return;
+    acctExportTemplates.filter(function (t) { return !t.is_system; }).forEach(function (t) {
+      var row = document.createElement('div');
+      row.className = 'barcode-row';
+      var who = document.createElement('div');
+      who.className = 'who';
+      var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = t.name;
+      var sub = document.createElement('div'); sub.className = 'bc';
+      sub.textContent = ENGINE.posLabel(t.pos_system, t.pos_other)
+        + (currentOrg && currentOrg.exportTemplateId === t.id ? ' · in use' : '');
+      who.appendChild(nm); who.appendChild(sub);
+      row.appendChild(who);
+      var edit = document.createElement('button');
+      edit.className = 'link-btn'; edit.textContent = 'Edit';
+      edit.onclick = function () { openExportBuilder(t); };
+      var del = document.createElement('button');
+      del.className = 'link-btn'; del.textContent = 'Delete';
+      del.onclick = function () { deleteOwnExportTemplate(t); };
+      row.appendChild(edit); row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+
+  function deleteOwnExportTemplate(t) {
+    var inUse = !!(currentOrg && currentOrg.exportTemplateId === t.id);
+    // Say where exports go if this is the one in use. The FK is ON DELETE SET
+    // NULL, so the org falls back to the Gantry template its legacy columns
+    // map to (Standard, or Bepoz if that was its setting) — never to nothing.
+    if (!confirm('Delete the template "' + t.name + '"?'
+        + (inUse ? '\n\nExports use it right now. They will go back to a Gantry template until you choose another.' : '')
+        + '\n\nFiles already exported are not affected.')) return;
+    sb.from('export_templates').delete().eq('id', t.id).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not delete the template'); return; }
+      if (inUse) {
+        currentOrg.exportTemplateId = null;
+        currentOrg.exportTemplate = null;
+        loadExportTemplate();
+      }
+      toast('Template deleted');
+      loadAccountExportTemplates();
+    }, function (err) { fail(err, 'Could not delete the template'); });
+  }
+
+  // One place that turns "this template" into the org's default, for both the
+  // Account picker and the builder's "Use this for exports now". Mirrors what
+  // set_export_template() writes, and re-points the cached template the Export
+  // button reads, so nothing needs a reload to agree.
+  function chooseExportTemplate(id, list, done) {
+    var ENGINE = window.GANTRY_EXPORT_ENGINE;
+    sb.rpc('set_export_template', { p_template_id: id }).then(function (res) {
+      if (res.error) { fail(res.error, 'Could not change the export template'); done(false); return; }
+      currentOrg.exportTemplateId = res.data;
+      var t = ENGINE.effectiveTemplate(list, currentOrg);
+      var mirror = ENGINE.legacyMirror(t);
+      currentOrg.exportFormat = mirror.exportFormat;
+      currentOrg.stripLeadingZero = mirror.stripLeadingZero;
+      if (t) currentOrg.exportTemplate = t;
+      // What the NEXT file will be — the question this is reached for.
+      toast('Exports will now use the ' + (t ? t.name : 'chosen') + ' template');
+      done(true, t);
+    }, function (err) { fail(err, 'Could not change the export template'); done(false); });
+  }
+
+  // Fire-and-forget. The submission row is already saved (by trigger, or by the
+  // insert that preceded this), so nothing about the venue's action depends on
+  // this call — it only asks the function to email whatever is unsent.
+  function notifyExportTemplate() {
+    try {
+      sb.functions.invoke('notify-export-template', { body: {} }).then(function (res) {
+        if (res && res.error) console.error('notify-export-template:', res.error);
+      }, function (err) { console.error('notify-export-template:', err); });
+    } catch (e) { console.error('notify-export-template:', e); }
   }
 
   $('acct-export-template').onchange = function () {
@@ -2952,30 +3206,491 @@
     var previous = ENGINE.effectiveTemplate(acctExportTemplates, currentOrg);
     if (!id || !currentOrg) return;
     sel.disabled = true;
-    sb.rpc('set_export_template', { p_template_id: id }).then(function (res) {
+    chooseExportTemplate(id, acctExportTemplates, function (ok, t) {
       sel.disabled = false;
+      if (!ok) { sel.value = previous ? previous.id : ''; return; }
+      $('acct-export-template-detail').textContent = ENGINE.templateDetail(t);
+      renderOwnExportTemplates(true);
+    });
+  };
+
+  // ---- Custom export template builder --------------------------------------
+  //
+  // See the comment above #export-builder-view for what this is for. All the
+  // rules about what a valid file is live in export-engine.js
+  // (validateTemplate, buildExport) — the builder only gathers choices and
+  // shows the engine's verdict, so a template that previews cleanly here is
+  // exactly one that exports.
+
+  // The export path's TEMPLATE_COLUMNS plus the builder's two. Kept separate so
+  // the export itself never depends on a column only the builder needs.
+  var BUILDER_COLUMNS = TEMPLATE_COLUMNS + ',pos_system,pos_other';
+
+  // Ordered for a person choosing, not alphabetically: the two every import
+  // needs, then the useful ones, then the three Gantry doesn't record yet.
+  // Anything added to SOURCES later is appended, never silently dropped.
+  var BUILDER_SOURCE_ORDER = ['identifier', 'quantity', 'item_name', 'location', 'stocktake_name',
+    'first_scanned', 'last_scanned', 'fixed', 'reason', 'description', 'batch_code'];
+  function builderSources() {
+    var all = Object.keys(window.GANTRY_EXPORT_ENGINE.SOURCES);
+    return BUILDER_SOURCE_ORDER.filter(function (k) { return all.indexOf(k) !== -1; })
+      .concat(all.filter(function (k) { return BUILDER_SOURCE_ORDER.indexOf(k) === -1; }));
+  }
+
+  // What the preview runs on when the org has no stocktake yet. Generic codes,
+  // one with a leading zero so the zero rules visibly do something.
+  var BUILDER_SAMPLE_LINES = [
+    { barcode: '9300000000016', qty: '12', first_scanned: '2026-01-01T09:00:00+00:00', last_scanned: '2026-01-01T09:05:00+00:00' },
+    { barcode: '0012345678905', qty: '0.5', first_scanned: '2026-01-01T09:01:00+00:00', last_scanned: '2026-01-01T09:01:00+00:00' },
+    { barcode: '95049809', qty: '3', first_scanned: '2026-01-01T09:02:00+00:00', last_scanned: '2026-01-01T09:02:00+00:00' },
+  ];
+
+  var eb = { editing: null, columns: [], dirty: false, items: null, ctx: null, savedId: null };
+
+  function canBuildTemplates() {
+    return !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
+  }
+
+  // Shared by the builder and the request form: the POS list, and the rule that
+  // "Other" needs a name.
+  function fillPosSelect(sel) {
+    sel.innerHTML = '';
+    var ph = document.createElement('option');
+    ph.value = ''; ph.textContent = 'Choose…';
+    sel.appendChild(ph);
+    window.GANTRY_EXPORT_ENGINE.KNOWN_POS.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p.code; o.textContent = p.label;
+      sel.appendChild(o);
+    });
+  }
+  function posAnswered(code, other) {
+    return !!code && (code !== 'other' || !!String(other || '').trim());
+  }
+  function showPosOther(prefix) {
+    var on = $(prefix + '-pos').value === 'other';
+    $(prefix + '-pos-other-label').style.display = on ? '' : 'none';
+    $(prefix + '-pos-other').style.display = on ? '' : 'none';
+  }
+
+  function openExportBuilder(t) {
+    if (!canBuildTemplates()) return;
+    var ENGINE = window.GANTRY_EXPORT_ENGINE;
+    eb.editing = t || null;
+    eb.savedId = t ? t.id : null;
+    eb.dirty = false;
+    fillPosSelect($('eb-pos'));
+    $('eb-pos').value = (t && t.pos_system) || '';
+    $('eb-pos-other').value = (t && t.pos_other) || '';
+    $('eb-name').value = t ? t.name : '';
+    eb.columns = ((t && t.columns) || [
+      { header: 'Barcode', source: 'identifier' },
+      { header: 'Count', source: 'quantity' },
+    ]).map(function (c) {
+      return { header: c.header == null ? '' : String(c.header), source: c.source,
+               value: c.value == null ? '' : String(c.value) };
+    });
+    $('eb-header').checked = t ? !!t.include_header : true;
+    $('eb-delimiter').value = (t && t.delimiter === '\t') ? 'tab' : ',';
+    var zero = $('eb-zero');
+    zero.innerHTML = '';
+    ENGINE.LEADING_ZERO_RULES.forEach(function (r) {
+      var o = document.createElement('option');
+      o.value = r.code; o.textContent = r.label;
+      zero.appendChild(o);
+    });
+    var rules = (t && t.barcode_rules) || {};
+    zero.value = rules.leading_zero || 'keep';
+    $('eb-pad').value = rules.pad_length || 13;
+    $('eb-ext').value = (t && t.file_extension === 'txt') ? 'txt' : 'csv';
+    $('eb-bom').checked = !!(t && t.bom);
+    $('eb-pattern').value = (t && t.file_name_pattern) || '';
+    $('eb-behaviour').value = (t && t.import_behaviour) || '';
+    $('eb-title').textContent = t ? 'Edit export template' : 'Build a custom export';
+    $('eb-saved').style.display = 'none';
+    $('eb-save').style.display = '';
+    showPosOther('eb');
+    renderBuilderColumns();
+    showView('export-builder');
+    // An edit already has its POS; a new template has to answer it first.
+    showBuilderStep(t ? 2 : 1);
+    loadBuilderPreviewLines();
+  }
+
+  function showBuilderStep(n) {
+    $('eb-step1').style.display = n === 1 ? '' : 'none';
+    $('eb-step2').style.display = n === 2 ? '' : 'none';
+    $('eb-continue').disabled = !posAnswered($('eb-pos').value, $('eb-pos-other').value);
+    $('eb-pos-summary').textContent = 'For: ' + window.GANTRY_EXPORT_ENGINE.posLabel($('eb-pos').value, $('eb-pos-other').value);
+    if (n === 2) renderBuilder();
+  }
+
+  function onPosInput() {
+    showPosOther('eb');
+    eb.dirty = true;
+    $('eb-continue').disabled = !posAnswered($('eb-pos').value, $('eb-pos-other').value);
+  }
+  $('eb-pos').onchange = onPosInput;
+  $('eb-pos-other').addEventListener('input', onPosInput);
+  $('eb-continue').onclick = function () {
+    // The button is disabled until this holds; checked again because a
+    // disabled button is a hint, not a guarantee.
+    if (!posAnswered($('eb-pos').value, $('eb-pos-other').value)) {
+      toast('Choose a system — or type its name if it is Other', '#b91c1c');
+      return;
+    }
+    showBuilderStep(2);
+  };
+  $('eb-pos-change').onclick = function () { showBuilderStep(1); };
+
+  function renderBuilderColumns() {
+    var ENGINE = window.GANTRY_EXPORT_ENGINE;
+    var wrap = $('eb-columns');
+    wrap.innerHTML = '';
+    eb.columns.forEach(function (c, i) {
+      var row = document.createElement('div');
+      row.className = 'eb-col';
+      var fields = document.createElement('div');
+      fields.className = 'eb-col-fields';
+      var num = document.createElement('div');
+      num.className = 'eb-col-num';
+      num.textContent = 'Column ' + (i + 1);
+      fields.appendChild(num);
+
+      var src = document.createElement('select');
+      src.setAttribute('aria-label', 'Column ' + (i + 1) + ' contains');
+      builderSources().forEach(function (k) {
+        var o = document.createElement('option');
+        o.value = k; o.textContent = ENGINE.SOURCE_LABELS[k] || k;
+        src.appendChild(o);
+      });
+      src.value = c.source;
+      src.onchange = function () { c.source = src.value; renderBuilderColumns(); onBuilderChange(); };
+      fields.appendChild(src);
+
+      var head = document.createElement('input');
+      head.type = 'text'; head.maxLength = 60; head.autocomplete = 'off';
+      head.placeholder = 'Header text, e.g. Barcode';
+      head.setAttribute('aria-label', 'Column ' + (i + 1) + ' header');
+      head.value = c.header;
+      head.addEventListener('input', function () { c.header = head.value; onBuilderChange(); });
+      fields.appendChild(head);
+
+      if (c.source === 'fixed') {
+        var val = document.createElement('input');
+        val.type = 'text'; val.maxLength = 60; val.autocomplete = 'off';
+        val.placeholder = 'Text for every line';
+        val.setAttribute('aria-label', 'Column ' + (i + 1) + ' fixed text');
+        val.value = c.value;
+        val.addEventListener('input', function () { c.value = val.value; onBuilderChange(); });
+        fields.appendChild(val);
+      }
+      row.appendChild(fields);
+
+      var tools = document.createElement('div');
+      tools.className = 'eb-col-tools';
+      var mk = function (label, aria, disabled, fn) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.textContent = label; b.setAttribute('aria-label', aria);
+        b.disabled = disabled; b.onclick = fn;
+        tools.appendChild(b);
+      };
+      mk('↑', 'Move column ' + (i + 1) + ' up', i === 0, function () {
+        eb.columns.splice(i - 1, 0, eb.columns.splice(i, 1)[0]); renderBuilderColumns(); onBuilderChange();
+      });
+      mk('↓', 'Move column ' + (i + 1) + ' down', i === eb.columns.length - 1, function () {
+        eb.columns.splice(i + 1, 0, eb.columns.splice(i, 1)[0]); renderBuilderColumns(); onBuilderChange();
+      });
+      mk('✕', 'Remove column ' + (i + 1), eb.columns.length === 1, function () {
+        eb.columns.splice(i, 1); renderBuilderColumns(); onBuilderChange();
+      });
+      row.appendChild(tools);
+      wrap.appendChild(row);
+    });
+  }
+  $('eb-add-col').onclick = function () {
+    eb.columns.push({ header: '', source: 'fixed', value: '' });
+    renderBuilderColumns();
+    onBuilderChange();
+  };
+
+  ['eb-name', 'eb-pattern', 'eb-pad'].forEach(function (id) { $(id).addEventListener('input', onBuilderChange); });
+  ['eb-header', 'eb-delimiter', 'eb-zero', 'eb-ext', 'eb-bom', 'eb-behaviour'].forEach(function (id) {
+    $(id).addEventListener('change', onBuilderChange);
+  });
+
+  function onBuilderChange() {
+    eb.dirty = true;
+    renderBuilder();
+  }
+
+  // The template exactly as it would be saved — and exactly what the preview
+  // builds, so the preview can't show a file the save wouldn't produce.
+  function collectBuilderTemplate() {
+    var pos = $('eb-pos').value;
+    var zero = $('eb-zero').value || 'keep';
+    var rules = { leading_zero: zero, trim: true };
+    if (zero === 'pad') rules.pad_length = Number($('eb-pad').value);
+    return {
+      name: $('eb-name').value.trim(),
+      pos_system: pos || null,
+      pos_other: pos === 'other' ? $('eb-pos-other').value.trim() : null,
+      identifier_type: 'barcode',
+      identifier_fallback: null,
+      barcode_rules: rules,
+      include_header: $('eb-header').checked,
+      columns: eb.columns.map(function (c) {
+        var o = { header: String(c.header || '').trim(), source: c.source };
+        if (c.source === 'fixed') o.value = c.value;
+        return o;
+      }),
+      delimiter: $('eb-delimiter').value === 'tab' ? '\t' : ',',
+      file_extension: $('eb-ext').value === 'txt' ? 'txt' : 'csv',
+      file_name_pattern: $('eb-pattern').value.trim() || null,
+      bom: $('eb-bom').checked,
+      import_behaviour: $('eb-behaviour').value || null,
+      mode: 'generate',
+    };
+  }
+
+  // The engine's own verdict first (it is what refuses to export), then the
+  // builder's: things the engine tolerates but a POS import won't — no name, a
+  // header row with blank names, fixed text with no text.
+  function builderProblems(t) {
+    var problems = window.GANTRY_EXPORT_ENGINE.validateTemplate(t).slice();
+    if (!t.name) problems.unshift('Give the template a name.');
+    var clash = t.name && acctExportTemplates.filter(function (x) {
+      return !x.is_system && x.name.trim().toLowerCase() === t.name.toLowerCase()
+        && !(eb.editing && x.id === eb.editing.id);
+    }).length;
+    if (clash) problems.push('You already have a template called "' + t.name + '".');
+    if (!posAnswered(t.pos_system, t.pos_other)) problems.push('Choose which system this is for.');
+    var pad = t.barcode_rules.pad_length;
+    if (t.barcode_rules.leading_zero === 'pad' && !(pad === Math.floor(pad) && pad >= 8 && pad <= 14)) {
+      problems.push('The pad length must be a whole number from 8 to 14.');
+    }
+    t.columns.forEach(function (c, i) {
+      if (c.source === 'fixed' && !String(c.value || '').trim()) {
+        problems.push('Column ' + (i + 1) + ' is fixed text, but has no text.');
+      }
+      if (t.include_header && !c.header) {
+        problems.push('Column ' + (i + 1) + ' needs header text — the file has a header row.');
+      }
+    });
+    return problems;
+  }
+
+  function renderBuilder() {
+    var ENGINE = window.GANTRY_EXPORT_ENGINE;
+    var zero = $('eb-zero').value || 'keep';
+    var rule = ENGINE.LEADING_ZERO_RULES.filter(function (r) { return r.code === zero; })[0];
+    $('eb-zero-help').textContent = rule ? rule.help : '';
+    $('eb-pad-row').style.display = zero === 'pad' ? '' : 'none';
+    // The BOM warning is the specific one: on a file with no header row the BOM
+    // is glued to the FIRST BARCODE, and a strict importer silently fails to
+    // match it — the original Bepoz failure mode. With a header it lands on a
+    // column name instead, which is what Excel actually wants it for.
+    var bomHelp = $('eb-bom-help');
+    if ($('eb-bom').checked && !$('eb-header').checked) {
+      bomHelp.textContent = 'Warning: with no header row, the BOM sits in front of the first barcode and most POS imports will fail to match it. Only turn this on if your POS asks for it.';
+      bomHelp.classList.add('eb-warn');
+    } else {
+      bomHelp.textContent = 'Excel uses it to read accented letters correctly. Most POS systems don\'t want it — leave it off unless yours asks for it.';
+      bomHelp.classList.remove('eb-warn');
+    }
+
+    var t = collectBuilderTemplate();
+    var problems = builderProblems(t);
+    var ul = $('eb-problems');
+    ul.innerHTML = '';
+    problems.forEach(function (msg) {
+      var li = document.createElement('li');
+      li.textContent = msg;
+      ul.appendChild(li);
+    });
+    $('eb-save').disabled = problems.length > 0;
+
+    var pre = $('eb-preview');
+    // The engine refuses to build an invalid template; show nothing rather than
+    // a file it would never produce. Builder-only problems (no name, etc.) still
+    // preview — the file is real, it just can't be saved yet.
+    if (ENGINE.validateTemplate(t).length) {
+      pre.textContent = '';
+      $('eb-preview-name').textContent = '';
+      return;
+    }
+    var out = ENGINE.buildExport(t, eb.items || BUILDER_SAMPLE_LINES, eb.ctx || {
+      stocktakeName: 'Sample stocktake', locationName: 'Bar', dateStamp: takeDateStamp(null), names: {},
+    });
+    renderMarkedFile(pre, out.text, out.bom);
+    $('eb-preview-name').textContent = 'File name: ' + out.fileName;
+  }
+
+  // The file, character for character, with stand-ins for what can't be seen.
+  // DOM nodes, never innerHTML: the text includes venue-typed headers and
+  // stocktake names.
+  function renderMarkedFile(el, text, bom) {
+    el.textContent = '';
+    var mark = function (s) {
+      var span = document.createElement('span');
+      span.className = 'eb-mark';
+      span.textContent = s;
+      el.appendChild(span);
+    };
+    if (bom) mark('[BOM]');
+    var lines = text.split('\r\n');
+    lines.forEach(function (line, i) {
+      line.split('\t').forEach(function (part, j) {
+        if (j) mark('⇥');
+        el.appendChild(document.createTextNode(part));
+      });
+      if (i < lines.length - 1) { mark('↵'); el.appendChild(document.createTextNode('\n')); }
+    });
+  }
+
+  // The first five lines of the org's most recent stocktake: the preview a venue
+  // trusts is the one made from its own bottles. Falls back to three sample
+  // lines when there is no stocktake (or no lines) yet.
+  function loadBuilderPreviewLines() {
+    eb.items = null; eb.ctx = null;
+    $('eb-preview-source').textContent = 'Sample lines — you have no stocktakes yet.';
+    sb.from('stocktakes').select('id,name,created_at,locations(name)')
+      .order('created_at', { ascending: false }).limit(1)
+      .then(function (res) {
+        var take = !res.error && res.data && res.data[0];
+        if (!take) { renderBuilder(); return; }
+        return sb.from('stocktake_items').select('barcode,qty,first_scanned,last_scanned')
+          .eq('stocktake_id', take.id).order('first_scanned', { ascending: true }).limit(5)
+          .then(function (r2) {
+            if (!r2.error && r2.data && r2.data.length) {
+              eb.items = r2.data;
+              eb.ctx = {
+                stocktakeName: take.name,
+                locationName: take.locations && take.locations.name,
+                dateStamp: takeDateStamp(take),
+                names: barcodeNames,
+              };
+              $('eb-preview-source').textContent = 'The first ' + r2.data.length
+                + ' line' + (r2.data.length === 1 ? '' : 's') + ' of your latest stocktake, "' + take.name + '".';
+            }
+            renderBuilder();
+          });
+      }, function () { renderBuilder(); });
+  }
+
+  $('eb-save').onclick = function () {
+    var t = collectBuilderTemplate();
+    if (builderProblems(t).length) { renderBuilder(); return; }
+    var editing = eb.editing;
+    var btn = $('eb-save');
+    btn.disabled = true;
+    // org_id is sent on insert (the column defaults to my_org_id() anyway, and
+    // the policy pins it). Never on update — it is not this form's to move.
+    var q = editing
+      ? sb.from('export_templates').update(t).eq('id', editing.id)
+      : sb.from('export_templates').insert(Object.assign({ org_id: currentOrg.id }, t));
+    q.select(BUILDER_COLUMNS).single().then(function (res) {
+      btn.disabled = false;
       if (res.error) {
-        sel.value = previous ? previous.id : '';
-        fail(res.error, 'Could not change the export template');
+        if (res.error.code === '23505') toast('You already have a template called "' + t.name + '"', '#b91c1c');
+        else fail(res.error, 'Could not save the template');
         return;
       }
-      currentOrg.exportTemplateId = res.data;
-      var t = ENGINE.effectiveTemplate(acctExportTemplates, currentOrg);
-      // Mirror locally what set_export_template() mirrored in the database, and
-      // re-point the cached template the Export button reads, so the very next
-      // export sheet already names the new one.
-      var mirror = ENGINE.legacyMirror(t);
-      currentOrg.exportFormat = mirror.exportFormat;
-      currentOrg.stripLeadingZero = mirror.stripLeadingZero;
-      if (t) currentOrg.exportTemplate = t;
-      $('acct-export-template-detail').textContent = ENGINE.templateDetail(t);
-      // What the NEXT file will be — the question this setting is reached for.
-      toast('Exports will now use the ' + (t ? t.name : 'chosen') + ' template');
-    }, function (err) {
-      sel.disabled = false;
-      sel.value = previous ? previous.id : '';
-      fail(err, 'Could not change the export template');
+      // Saved — and recorded: the trigger on export_templates wrote the
+      // created/updated submission in the same transaction. This only asks for
+      // it to be emailed.
+      notifyExportTemplate();
+      eb.editing = res.data;
+      eb.savedId = res.data.id;
+      eb.dirty = false;
+      var inUse = currentOrg.exportTemplateId === res.data.id;
+      if (inUse) currentOrg.exportTemplate = res.data;
+      $('eb-title').textContent = 'Edit export template';
+      $('eb-saved-text').textContent = inUse
+        ? 'Saved. Exports already use this template, so the next file follows these changes.'
+        : 'Saved. It won\'t be used until you choose it.';
+      $('eb-use-now').style.display = inUse ? 'none' : '';
+      $('eb-saved').style.display = '';
+      toast('Template saved');
+      loadAccountExportTemplates();
+    }, function (err) { btn.disabled = false; fail(err, 'Could not save the template'); });
+  };
+
+  $('eb-use-now').onclick = function () {
+    if (!eb.savedId) return;
+    var btn = $('eb-use-now');
+    btn.disabled = true;
+    // The freshly saved row may not be in the Account list yet; make sure the
+    // mirror is computed from it.
+    var list = acctExportTemplates.filter(function (x) { return x.id !== eb.savedId; }).concat([eb.editing]);
+    chooseExportTemplate(eb.savedId, list, function (ok) {
+      btn.disabled = false;
+      if (ok) openAccount();
     });
+  };
+  $('eb-done').onclick = function () { openAccount(); };
+
+  $('eb-back').onclick = function () {
+    if (eb.dirty && !confirm('Leave without saving? Your changes to this template will be lost.')) return;
+    eb.dirty = false;
+    openAccount();
+  };
+
+  $('acct-export-build').onclick = function () { openExportBuilder(null); };
+
+  // ---- "My system needs something the builder can't do" ----
+  function erSampleLines() {
+    var raw = $('er-sample').value.replace(/^[\r\n]+|[\r\n]+$/g, '');
+    return raw ? raw.split(/\r?\n/) : [];
+  }
+  // Same rule as the database's sample_lines check (at most 5 lines, 2,000
+  // characters), so the operator finds out here rather than from a refusal.
+  function renderExportRequest() {
+    showPosOther('er');
+    var n = erSampleLines().length;
+    $('er-sample-count').textContent = n ? n + ' of 5 lines' + (n > 5 ? ' — remove ' + (n - 5) : '') : '';
+    $('er-sample-count').classList.toggle('eb-warn', n > 5);
+    $('er-send').disabled = !(posAnswered($('er-pos').value, $('er-pos-other').value)
+      && $('er-desc').value.trim() && n <= 5);
+  }
+  function openExportRequest() {
+    if (!canBuildTemplates()) return;
+    fillPosSelect($('er-pos'));
+    // Starting from the builder: whatever POS is already chosen there.
+    $('er-pos').value = currentView === 'export-builder' ? $('eb-pos').value : '';
+    $('er-pos-other').value = currentView === 'export-builder' ? $('eb-pos-other').value : '';
+    $('er-desc').value = '';
+    $('er-sample').value = '';
+    renderExportRequest();
+    $('export-request-overlay').classList.add('open');
+  }
+  $('acct-export-request').onclick = openExportRequest;
+  $('eb-request').onclick = openExportRequest;
+  $('er-pos').onchange = renderExportRequest;
+  ['er-pos-other', 'er-desc', 'er-sample'].forEach(function (id) { $(id).addEventListener('input', renderExportRequest); });
+  $('er-cancel').onclick = function () { $('export-request-overlay').classList.remove('open'); };
+  $('export-request-overlay').addEventListener('click', function (e) { e.stopPropagation(); });
+  $('er-send').onclick = function () {
+    renderExportRequest();
+    if ($('er-send').disabled) return;
+    var btn = $('er-send');
+    btn.disabled = true;
+    var pos = $('er-pos').value;
+    var sample = erSampleLines().join('\n');
+    sb.from('export_template_submissions').insert({
+      org_id: currentOrg.id,
+      kind: 'request',
+      pos_system: pos,
+      pos_other: pos === 'other' ? $('er-pos-other').value.trim() : null,
+      notes: $('er-desc').value.trim(),
+      sample_lines: sample || null,
+    }).then(function (res) {
+      btn.disabled = false;
+      if (res.error) { fail(res.error, 'Could not send that'); return; }
+      $('export-request-overlay').classList.remove('open');
+      notifyExportTemplate();
+      toast('Thanks — sent to Gantry');
+    }, function (err) { btn.disabled = false; fail(err, 'Could not send that'); });
   };
 
   function openAccount() {
@@ -5985,6 +6700,7 @@
       else if (currentView === 'account') $('acct-back').onclick();
       else if (currentView === 'team') $('team-back').onclick();
       else if (currentView === 'barcodes') $('barcodes-back').onclick();
+      else if (currentView === 'export-builder') $('eb-back').onclick();
       // org-setup/payment-pending/seats-full are shown inside 'auth' —
       // without this, hardware back exits the app entirely from a screen
       // the user can't otherwise escape except via the logout button.
