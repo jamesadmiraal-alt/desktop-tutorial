@@ -196,6 +196,28 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   server-only column) are labelled in the picker and under the Export button, as is
   `import_behaviour = 'replace'`. Fill mode (`mode = 'fill'`) is refused by both the RPC
   and the engine until Phase 4.
+- **The custom template builder is information gathering.** Account → Exports, owner/manager,
+  every plan: a venue builds its own template (barcode identifier only until the Phase 2
+  product list), and **must say which POS it is for** — `export_templates.pos_system`, from
+  `KNOWN_POS` in export-engine.js, `'other'` requiring `pos_other`. That one list is restated
+  in exactly two places, both checked by `test-export-engine.js`: SQL `is_known_pos()` (which
+  both tables' check constraints call) and `POS_LABELS` in `notify-export-template`. Add a POS
+  in all three. Org templates are always unverified; `verified` stays server-only.
+  **`export_template_submissions` is the record, email is not**: template saves write
+  `created`/`updated` rows **by trigger** (`record_export_template_change`, same transaction
+  — don't add a client insert for those), requests and first-import feedback are client
+  inserts (owner/manager, those two kinds only, 30/org/hour), and a guard trigger fills
+  `template_snapshot` from the real row. `notify-export-template` (JWT ON) emails the
+  caller's org's UNSENT rows — RLS on the caller's JWT is its membership check — 10/org/hour,
+  stamping `emailed_at` only on a real send, so with no provider configured (true as of
+  2026-10-11) rows wait and go out later. Until then, read them with the query in
+  20261011_01's Verify block. The first-import question shows on the ⋯ sheet after an export
+  with any **unverified** template, once per stocktake (unique index), owner/manager only,
+  armed like the state controls, and is switched by `config.js` `importFeedback`.
+  `record_stocktake_export()` takes an optional 4th `p_template_id` — the old 3-arg version
+  was DROPPED, because two versions make a 3-arg call ambiguous (PGRST203). Never read
+  `last_export_template_id` in `loadTakes()`: a missing column there takes Home down.
+  privacy.html says template samples (up to 5 lines) come to Gantry; keep it true.
 - **Barcodes are stored exactly as scanned and normalised only on export.** Nothing in this
   repo pads or trims a digit at capture, and nothing should: the decoders disagree with each
   other (native `BarcodeDetector` on Android Chrome vs the zxing-wasm ponyfill elsewhere), so

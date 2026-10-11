@@ -230,6 +230,20 @@ window.__T = {
 That exercises the shipping code instead of a re-implementation of it. Never
 commit the instrumented copy.
 
+For flows that write (the export template builder, the request form, the
+first-import feedback card), swap `sb` for a small fake client that answers
+selects from an in-page `window.__db` and pushes every insert/update/delete/rpc/
+`functions.invoke` onto a `window.__log` — then assert on the exact payloads.
+Two things to wire through the hook: `openAccount` (stub it — the real one calls
+`refreshOrgStatus()`, which a fake with no memberships turns into "no org"), and
+anything gated on `stateControlsArmed()` (wait out `STATE_ARM_MS`, 350ms, after
+opening the ⋯ sheet before clicking).
+
+Trap that cost a debugging round: if the fake query builder has a method called
+`single()`, do NOT also use a property called `single` as its flag — assigning the
+method overwrites the flag with a (truthy) function, every select then comes back
+as one row instead of a list, and the page under test looks broken when it isn't.
+
 ## Flows worth driving
 
 - Manual entry path (`#manual-input` + `#manual-add`) exercises the same

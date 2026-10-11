@@ -23,6 +23,11 @@ A phone-friendly web app for hospitality stocktaking, backed by [Supabase](https
   sets the identifier, column order, header row, delimiter, file type and how leading zeros
   are handled. Barcodes are stored exactly as the camera read them; templates only change the
   file. Lines that become the same identifier are merged and their quantities added.
+- **Custom export templates**: owners and managers on any plan can build their own template
+  for a POS Gantry doesn't have one for — choosing the POS first, then the columns, header,
+  separator, leading-zero rule and file type, with a live preview of the exact file. Each
+  template, each "my system needs something else" request, and each answer to "did this file
+  import cleanly?" is recorded and sent to Gantry, so templates that work can become official.
 
 ## Files
 
