@@ -431,6 +431,12 @@ function sqlPosCodes(file) {
 eq(sqlPosCodes('supabase/migrations/20261011_01_export_template_builder.sql'), posCodes,
    'is_known_pos() in the migration lists exactly KNOWN_POS');
 eq(sqlPosCodes('schema.sql'), posCodes, 'is_known_pos() in schema.sql lists exactly KNOWN_POS');
+// And the edge function's copy — it names the POS in the subject James filters on.
+const fnSrc = fs.readFileSync(path.join(root, 'supabase/functions/notify-export-template/index.ts'), 'utf8');
+const fnLabels = fnSrc.match(/const POS_LABELS: Record<string, string> = \{([\s\S]*?)\};/);
+eq(fnLabels && Array.from(fnLabels[1].matchAll(/^\s*(\w+): "([^"]*)",/gm)).map((m) => ({ code: m[1], label: m[2] })),
+   E.KNOWN_POS.map((p) => ({ code: p.code, label: p.label })),
+   'notify-export-template POS_LABELS == KNOWN_POS, codes and labels');
 eq([E.posLabel('hl'), E.posLabel('other', "  Fred's Stock  "), E.posLabel('other', ''), E.posLabel('nope')],
    ['H&L', "Other: Fred's Stock", 'Other', 'nope'], 'posLabel: label, Other with its name, unknown passes through');
 eq(Object.keys(E.SOURCE_LABELS).sort(), Object.keys(E.SOURCES).sort(), 'every column source has a builder label');

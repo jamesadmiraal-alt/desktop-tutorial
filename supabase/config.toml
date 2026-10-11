@@ -2,3 +2,8 @@
 # without a signed-in JWT. Other functions keep the platform default (JWT on).
 [functions.submit-contact]
 verify_jwt = false
+
+# JWT ON — stated explicitly because it is modelled on submit-contact above,
+# which has it OFF. This one's RLS scoping depends on knowing the caller.
+[functions.notify-export-template]
+verify_jwt = true
