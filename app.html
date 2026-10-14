@@ -1892,6 +1892,36 @@
   })();
   var SLOW_CALL_MS = 5000;
   window.__gantryTimings = [];
+  // In the console: gantryTimings() — the recorded calls as a table, slowest
+  // first. Always available; the recording is cheap and capped at 200.
+  window.gantryTimings = function () {
+    var rows = window.__gantryTimings.slice().sort(function (a, b) { return b.ms - a.ms; });
+    if (console.table) console.table(rows); else console.log(rows);
+    return rows.length + ' calls recorded';
+  };
+
+  // ?debug=1 ONLY — fault injection for the lost-reply path, which DevTools
+  // can't produce on demand (the 14 Oct retest couldn't verify fix 1 without
+  // it). Set in the console, applies to the NEXT item save, then clears:
+  //
+  //   window.__gantryFail = 'drop-reply-once'
+  //     the save REACHES the server and is applied, then its reply is thrown
+  //     away as if the connection died — expect "saved" after the app checks,
+  //     and re-saving the same thing: "Your earlier save … did go through".
+  //   window.__gantryFail = 'no-send-once'
+  //     the save never leaves the device — expect "Couldn't confirm that save.
+  //     Check the line before re-entering.", and a re-save that lands once.
+  //
+  // Read only when DEBUG_TIMINGS is on, so it does nothing for real users even
+  // if something sets the variable.
+  function takeInjectedFault() {
+    if (!DEBUG_TIMINGS) return null;
+    var f = window.__gantryFail;
+    if (f !== 'drop-reply-once' && f !== 'no-send-once') return null;
+    window.__gantryFail = null;
+    console.info('[gantry debug] injected fault: ' + f);
+    return f;
+  }
   function startTiming(label) {
     var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
     var ended = false;
@@ -5683,6 +5713,8 @@
         ? 'synced ' + Math.round((Date.now() - lastItemsSyncAt) / 1000) + 's ago'
           + (itemsPollInFlight ? ' · refreshing' : '') + (navigator.onLine === false ? ' · offline' : '')
         : 'not synced yet';
+      el.title = 'Console: gantryTimings() for call timings; window.__gantryFail = '
+        + "'drop-reply-once' or 'no-send-once' to test a lost save.";
     }, 1000);
   }
 
@@ -6011,7 +6043,15 @@
       cb(outcome);
     };
     var timer = setTimeout(function () { finish({ lost: true }); }, ITEM_WRITE_TIMEOUT_MS);
+    var fault = takeInjectedFault();
+    if (fault === 'no-send-once') {
+      // As if the request died before reaching the server.
+      setTimeout(function () { finish({ lost: true }); }, 50);
+      return;
+    }
     sb.rpc(rpc, args).then(function (res) {
+      // Applied on the server; the reply is discarded as if it was lost.
+      if (fault === 'drop-reply-once') { finish({ lost: true }); return; }
       // The database half not applied yet (PGRST202: no function takes
       // p_request_id). Nothing ran — the call was refused before reaching any
       // function — so send it once more without the id, exactly as before
