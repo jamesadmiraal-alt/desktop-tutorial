@@ -1405,6 +1405,7 @@
   <!-- Text set by applyTakeReadOnly(): the way out differs — a Ready count goes
        back to In Progress from ⋯; a Completed one needs a manager to reopen. -->
   <div id="readonly-note" style="display:none"></div>
+  <div id="sync-debug" style="display:none;font-size:0.72rem;color:var(--text-faint);text-align:center;padding:2px 0"></div>
   <div id="reader-wrap">
     <div id="reader"></div>
     <div id="scanner-off">Camera is off. Tap <b><span class="ico" style="--i:url(icons/camera.svg)"></span> Scan</b> to begin scanning.<br>
@@ -5295,6 +5296,11 @@
     if (!currentTake) return;
     var takeId = currentTake.id;
     var token = ++itemsRequestToken;
+    // A background refresh holds the poll until it settles — see
+    // itemsPollInFlight. Released on reply, rejection or timeout, superseded or
+    // not, so it can never wedge the poll the way itemsLoading once did.
+    if (quiet) itemsPollInFlight = token;
+    var releasePoll = function () { if (itemsPollInFlight === token) itemsPollInFlight = 0; };
     if (!quiet) {
       itemsLoading = true;
       itemsLoadFailed = false;
@@ -5302,7 +5308,7 @@
     }
     var settled = false;
     var endTiming = startTiming('loadItems' + (quiet ? ' (poll)' : ''));
-    var timer = setTimeout(function () { onFailure({ message: 'The request timed out' }); }, ITEMS_LOAD_TIMEOUT_MS);
+    var timer = setTimeout(function () { releasePoll(); onFailure({ message: 'The request timed out' }); }, ITEMS_LOAD_TIMEOUT_MS);
     // THE NEWEST REQUEST OWNS THE LOADING STATE, quiet or not.
     //
     // This used to clear itemsLoading only for a non-quiet reply. A quiet
@@ -5318,11 +5324,13 @@
       .eq('stocktake_id', takeId)
       .order('last_scanned', { ascending: false })
       .then(function (res) {
+        releasePoll();
         if (!current()) return;   // superseded: the newer request will settle the state
         if (res.error) { onFailure(res.error); return; }
         settled = true;
         clearTimeout(timer);
         endTiming('ok');
+        lastItemsSyncAt = Date.now();
         var stateChanged = itemsLoading || itemsLoadFailed;
         itemsLoading = false;
         itemsLoadFailed = false;
@@ -5337,7 +5345,7 @@
         // the next full loadTakes() — "inside 6/275 vs Home 13/366".
         syncTakeSnapshot(takeById(takeId), fresh);
         if (cb) cb();
-      }, function (err) { if (current()) onFailure(err); });
+      }, function (err) { releasePoll(); if (current()) onFailure(err); });
 
     function onFailure(err) {
       if (!current()) return;
@@ -5376,6 +5384,18 @@
   // request and touches no DOM.
   var ITEMS_POLL_MS = 7000;
   var itemsPollTimer = null;
+  // The token of the background refresh still out, or 0.
+  //
+  // 14 Oct: one phone (Coolroom) only saw other phones' adds after a reload,
+  // another (Cellar) within seconds. Every tick used to start a fresh request
+  // and supersede the one before. When replies take longer than the interval —
+  // they took 10–25s that evening — EVERY reply arrives already superseded and
+  // is thrown away, so the slow phone's list never updates at all, while a
+  // phone on a better connection is fine. Now a tick is skipped while the
+  // previous one is still out: on a slow connection the list updates every
+  // reply instead of never.
+  var itemsPollInFlight = 0;
+  var lastItemsSyncAt = 0;
 
   function startItemsPolling() {
     stopItemsPolling();
@@ -5393,6 +5413,7 @@
       // the screen would sit on "Loading…" for good. A slow first fetch plus one
       // tick is all that takes.
       if (itemsLoading) return;
+      if (itemsPollInFlight) return;   // the last one is still out — let it land
       loadItems(null, true);
       // Status too: Mark ready on another phone must lock this one within one
       // tick, not at its next refused write.
@@ -5413,7 +5434,7 @@
     // itemsLoading guard for the same reason as the poll: never supersede a load
     // that is still running, or its reply is discarded and the loading flag
     // never clears.
-    if (currentView === 'scan' && currentTake && !dialogOpen && !itemsLoading) {
+    if (currentView === 'scan' && currentTake && !dialogOpen && !itemsLoading && !itemsPollInFlight) {
       loadItems(null, true);
       refreshTakeStatus();
     } else if (currentView === 'home' && !document.querySelector('.overlay.open')) {
@@ -5425,6 +5446,24 @@
   }
   document.addEventListener('visibilitychange', refreshOnReturn);
   window.addEventListener('focus', refreshOnReturn);
+  // Back online after a drop: catch up now, not at the next tick. A
+  // background refresh stuck on the dead connection is released by its own
+  // timeout, so this never waits behind it for long.
+  window.addEventListener('online', refreshOnReturn);
+
+  // ?debug=1 only: how long since the open take last matched the server.
+  // For checking sync between phones by eye — invisible otherwise.
+  if (DEBUG_TIMINGS) {
+    setInterval(function () {
+      var el = $('sync-debug');
+      if (!el) return;
+      el.style.display = (currentView === 'scan' && currentTake) ? '' : 'none';
+      el.textContent = lastItemsSyncAt
+        ? 'synced ' + Math.round((Date.now() - lastItemsSyncAt) / 1000) + 's ago'
+          + (itemsPollInFlight ? ' · refreshing' : '') + (navigator.onLine === false ? ' · offline' : '')
+        : 'not synced yet';
+    }, 1000);
+  }
 
   $('back-btn').onclick = function () {
     // Invalidate any in-flight items request, or its reply can arrive after the
