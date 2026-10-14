@@ -6603,7 +6603,14 @@
   }
 
   function rejectBarcodeInQty() {
+    var typed = $('qty-input').value.trim();
     $('qty-input').value = '';
+    // Another product's barcode (a wedge scan with the pad open) says so — it
+    // was not added, and the operator needs to know to scan it again.
+    if (/^\d{8,14}$/.test(typed) && typed !== pendingCode) {
+      toast('That’s another barcode — finish or cancel this count first. ' + typed + ' was not added', '#b91c1c');
+      return;
+    }
     toast('That’s a barcode, not a quantity — enter how many', '#b91c1c');
   }
 
@@ -6933,8 +6940,23 @@
     return document.activeElement === el || el.value.trim() !== '';
   }
 
+  // A different code while the pad is open. Not added — the pad's entry hasn't
+  // been confirmed, and committing it on a stray decode would save a quantity
+  // nobody finished typing — but never ignored silently either. Retest, 15 Oct:
+  // Coolroom scanned an existing line with the pad open, nothing changed, and
+  // nothing said why. The pad's own code (the camera still decoding the same
+  // bottle) stays silent; a repeat of one other code is said once per 2.5s.
+  var padBlockedScan = { code: null, at: 0 };
+  function sayPadIsOpen(code, always) {
+    if (!code || code === pendingCode) return;
+    var now = Date.now();
+    if (!always && code === padBlockedScan.code && now - padBlockedScan.at < 2500) return;
+    padBlockedScan = { code: code, at: now };
+    toast('Finish or cancel this count first — ' + code + ' was not added', '#b91c1c');
+  }
+
   function onScan(decodedText) {
-    if (dialogOpen) return; // ignore scans while entering a qty
+    if (dialogOpen) { sayPadIsOpen(String(decodedText || '').trim(), false); return; }
     if (manualEntryInProgress()) return;
     var code = String(decodedText || '').trim();
     // A decode long enough to be two barcodes is a misread, not a product. Beep
@@ -7095,7 +7117,7 @@
   // IS the operator saying "another one of these". Everything else onScan()
   // does — plausibility, beep, quantity pad — happens the same way.
   function captureScan() {
-    if (dialogOpen) return;
+    if (dialogOpen) { if (armedIsFresh()) sayPadIsOpen(armed.code, true); return; }
     if (!scanning) { toast('Tap Scan to turn the camera on first', '#b91c1c'); return; }
     if (!armedIsFresh()) {
       toast('No barcode in the box yet — line it up and tap again', '#b91c1c');
