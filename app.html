@@ -3305,8 +3305,19 @@
   // shows the engine's verdict, so a template that previews cleanly here is
   // exactly one that exports.
 
-  // The export path's TEMPLATE_COLUMNS plus the builder's two. Kept separate so
-  // the export itself never depends on a column only the builder needs.
+  // The export_templates columns the export path reads, and the builder's two
+  // extra. Kept separate so the export itself never depends on a column only
+  // the builder needs.
+  //
+  // DEFINED HERE, TOGETHER, AND ABOVE BOTH USES — and that order is the bug fix.
+  // BUILDER_COLUMNS is computed once, when the script runs. It used to be built
+  // from a TEMPLATE_COLUMNS assigned ~3,700 lines further down, which at this
+  // point was still undefined (a hoisted var), so every builder query asked
+  // PostgREST for "undefined,pos_system,pos_other" and got a 400 (42703) — the
+  // custom template builder never loaded on the live site (retest, 14 Oct).
+  var TEMPLATE_COLUMNS = 'id,org_id,is_system,code,name,description,verified,'
+    + 'identifier_type,identifier_fallback,barcode_rules,include_header,columns,'
+    + 'delimiter,file_extension,file_name_pattern,bom,import_behaviour,mode';
   var BUILDER_COLUMNS = TEMPLATE_COLUMNS + ',pos_system,pos_other';
 
   // Ordered for a person choosing, not alphabetically: the two every import
@@ -6985,9 +6996,7 @@
       org && org.exportFormat, !!(org && org.stripLeadingZero));
   }
 
-  var TEMPLATE_COLUMNS = 'id,org_id,is_system,code,name,description,verified,'
-    + 'identifier_type,identifier_fallback,barcode_rules,include_header,columns,'
-    + 'delimiter,file_extension,file_name_pattern,bom,import_behaviour,mode';
+  // TEMPLATE_COLUMNS is defined with BUILDER_COLUMNS, further up — see there.
 
   // Fetches the org's template (or the legacy mapping's, when it has none) and
   // caches it on currentOrg for the button label. cb(template) on success,
