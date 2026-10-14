@@ -4552,6 +4552,30 @@
   //   * the refresh is bounded (HOME_TIMEOUT_MS); if it fails, the list on
   //     screen stays and the line under New stocktake says so, tap to retry.
   var HOME_TIMEOUT_MS = 20000;
+  // Home keeps itself current while it's on screen. It only used to refetch on
+  // focus, so a phone sitting on Home never saw a colleague's adds — the card
+  // read 41 while the take had 44 (14 Oct). Cheap now: stocktake_totals() is
+  // one row per stocktake.
+  var HOME_POLL_MS = 15000;
+  var homeRefreshInFlight = 0;
+  // What Home shows, as a comparable string — a refresh that finds nothing new
+  // leaves the DOM alone.
+  function homeSignature(list) {
+    return (list || []).map(function (t) {
+      var tot = t.totals || {};
+      return [t.id, t.status, t.name, t.updated_at, tot.lines, tot.qty, t.created_by].join('~');
+    }).sort().join('|');
+  }
+  function homePollTick() {
+    if (currentView !== 'home' || document.hidden || !currentUser || !currentOrg) return;
+    // Never under an open dialog or sheet: nothing should move beneath it.
+    if (document.querySelector('.overlay.open')) return;
+    // One at a time, for the same reason as the item poll: a slow reply must
+    // land rather than be superseded by the next tick, forever.
+    if (homeRefreshInFlight || homeFromCache) return;
+    loadTakes(false, true);
+  }
+  setInterval(homePollTick, HOME_POLL_MS);
   var HOME_CACHE_PREFIX = 'gantry-home-cache:';
   var homeLoadToken = 0;
   // True while Home is showing the cached copy and no fresh list has arrived.
@@ -4659,8 +4683,13 @@
     }, function (e) { cb(e); });
   }
 
-  function loadTakes(navigate) {
-    if (navigate || currentView === 'home') showView('home');
+  // `quiet`: the background refresh. It must not move the view (showView would
+  // close an open ⋯ sheet under the operator's finger), must not say
+  // "Updating…" every 15 seconds, and must not repaint unless something
+  // changed — rebuilding every card under a thumb is how a tap lands on the
+  // wrong row. Failures are silent; the next tick tries again.
+  function loadTakes(navigate, quiet) {
+    if (!quiet && (navigate || currentView === 'home')) showView('home');
     var scroller = $('home-view');
     var keepScroll = scroller.scrollTop;
     var token = ++homeLoadToken;
@@ -4677,10 +4706,11 @@
         renderHome();
       }
     }
-    if (!document.querySelector('#home-view .stocktake')) {
+    if (!quiet && !document.querySelector('#home-view .stocktake')) {
       $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
     }
-    setHomeStatus(takes.length ? 'Updating…' : '');
+    if (!quiet) setHomeStatus(takes.length ? 'Updating…' : '');
+    if (quiet) homeRefreshInFlight = token;
 
     var endTiming = startTiming('loadTakes');
     var settled = false;
@@ -4688,7 +4718,9 @@
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (homeRefreshInFlight === token) homeRefreshInFlight = 0;
       if (token !== homeLoadToken) return;   // a newer load owns the screen
+      if (err && quiet) { endTiming('error (background)'); return; }
       if (err) {
         endTiming('error');
         // The list on screen — fresh, cached, or none — stays. Stale but
@@ -4705,9 +4737,11 @@
         return;
       }
       endTiming('ok');
+      var unchanged = quiet && homeSignature(rows) === homeSignature(takes);
       takes = rows;
       homeFromCache = false;
       setHomeStatus('');
+      if (unchanged) { saveHomeCache(); return; }
       loadCreatorNames(function () {
         if (token !== homeLoadToken) return;
         renderHome();
@@ -4721,7 +4755,9 @@
         // run (or if we're not actually looking at Home), so this is the one
         // place that covers both "just landed on Home after signing in" and
         // "reopen the app already signed in" without a separate hook.
-        maybeAutoStartTutorial();
+        // Not from the 15-second background refresh: a tick must never be what
+        // starts the tour.
+        if (!quiet) maybeAutoStartTutorial();
       });
     };
     var timer = setTimeout(function () { finish({ message: 'timed out' }); }, HOME_TIMEOUT_MS);
@@ -5146,6 +5182,9 @@
   // slow response could still land and repaint B's screen with A's lines, under
   // B's name. Each request carries a token and only the newest one may render.
   var itemsRequestToken = 0;
+  // Which take's FULL list `items` holds (set when a load succeeds). Anything
+  // else in `items` is at best a fragment.
+  var itemsLoadedTakeId = null;
 
   function openTake(t) {
     var sameTake = !!(currentTake && currentTake.id === t.id);
@@ -5159,6 +5198,7 @@
     // is far worse than a moment of "Loading…".
     if (!sameTake) {
       items = [];
+      itemsLoadedTakeId = null;
       $('badge').textContent = '';
     }
     // Pending taps are keyed by take, so another take's can't show here; this
@@ -5331,6 +5371,7 @@
         clearTimeout(timer);
         endTiming('ok');
         lastItemsSyncAt = Date.now();
+        itemsLoadedTakeId = takeId;
         var stateChanged = itemsLoading || itemsLoadFailed;
         itemsLoading = false;
         itemsLoadFailed = false;
@@ -5482,7 +5523,7 @@
     // than a round trip later. loadTakes(true) below then confirms it.
     if (currentTake) syncTakeSnapshot(currentTake, items);
     var leavingTakeId = currentTake ? currentTake.id : null;
-    currentTake = null; items = []; filterQuery = '';
+    currentTake = null; items = []; itemsLoadedTakeId = null; filterQuery = '';
     // navigate: true — ‹ Back is the operator asking for Home, so this is one of
     // the few callers that should move the view. showView('home') then closes
     // the quantity, name and actions dialogs, so leaving mid-entry can't strand
@@ -5539,9 +5580,14 @@
     var qty = items.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0);
     // Same rule as the empty state below: don't assert "0 items · 0 total qty"
     // for a take whose lines simply haven't arrived. Blank claims nothing.
-    $('badge').textContent = (!items.length && (itemsLoading || itemsLoadFailed))
-      ? ''
-      : items.length + ' items · ' + qtyText(qty) + ' total qty';
+    // Only once THIS take's full list has arrived. Before that, `items` can be a
+    // fragment — a save's reply merged in while the first load was still out —
+    // and the header read "1 items · 14 total qty" over a 44-line count (14 Oct).
+    // "…" claims nothing.
+    var fullyLoaded = !!(currentTake && itemsLoadedTakeId === currentTake.id);
+    $('badge').textContent = !fullyLoaded
+      ? (itemsLoadFailed && !items.length ? '' : '…')
+      : itemCountText(items.length) + ' · ' + qtyText(qty) + ' total qty';
     if (!items.length) {
       // Three different reasons for an empty list, and they must not look alike.
       // "No scans yet" is a factual claim about the stocktake, so it is only
@@ -6992,6 +7038,17 @@
       lines: takeItems.length,
       qty: qtyRound(takeItems.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0)),
     };
+    // "Updated" too, from the same lines: the newest scan. The card's
+    // updated_at is from whenever Home last loaded, so it lagged behind what
+    // the take itself showed (14 Oct). Only ever moves forward.
+    var newest = 0;
+    takeItems.forEach(function (it) {
+      var ms = it.last_scanned ? new Date(it.last_scanned).getTime() : 0;
+      if (ms > newest) newest = ms;
+    });
+    if (newest && (!take.updated_at || newest > new Date(take.updated_at).getTime())) {
+      take.updated_at = new Date(newest).toISOString();
+    }
     // Also update the row in `takes`, which is what renderHome() actually reads.
     // `take` is usually the same object, but not always: actionsTake and
     // currentTake can be pointers into a list that a background refresh has
@@ -7000,6 +7057,7 @@
       for (var i = 0; i < takes.length; i++) {
         if (takes[i].id === take.id && takes[i] !== take) {
           takes[i].totals = take.totals;
+          takes[i].updated_at = take.updated_at;
           break;
         }
       }
