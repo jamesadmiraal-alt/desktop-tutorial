@@ -278,6 +278,12 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - **± taps are queued per line** (`stepQueues`): one request in flight per line, later taps
   summed and sent as one request with its own id. Never drop a tap; the double-fire guard is
   30ms — 120ms dropped real taps.
+- **The open take's rows never move under a thumb.** `displayOrder` is set by the first full
+  load (newest first); after that a poll never reorders, other devices' new lines join at the
+  bottom, and only this device's own new scan (`mergeItem`) goes on top. `renderItems()`
+  patches rows in place (`rowCache`, one node per barcode) — never `innerHTML = ''` and rebuild.
+  Re-sorting by `last_scanned` on each poll sent 9 of 10 taps to the wrong line (15 Oct): a
+  + tap bumps `last_scanned`, so the next poll moved that line to the top.
 - **Never navigate away from an open take** in `loadTakes()` (late post-login chains did).
   The open take lives in the URL as `#take=<id>` (`replaceState`, no history entries) and is
   reopened after a reload once the fresh list arrives.

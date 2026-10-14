@@ -5408,6 +5408,8 @@
     if (!sameTake) {
       items = [];
       itemsLoadedTakeId = null;
+      displayOrder = [];
+      clearRows();
       $('badge').textContent = '';
     }
     // Pending taps are keyed by take, so another take's can't show here; this
@@ -5581,6 +5583,9 @@
         clearTimeout(timer);
         endTiming('ok');
         lastItemsSyncAt = Date.now();
+        // The first full load of a take sets its order (newest first). After
+        // that the order is kept — see "Row order and row identity".
+        if (itemsLoadedTakeId !== takeId) displayOrder = (res.data || []).map(function (r) { return r.barcode; });
         itemsLoadedTakeId = takeId;
         var stateChanged = itemsLoading || itemsLoadFailed;
         itemsLoading = false;
@@ -5735,7 +5740,7 @@
     // than a round trip later. loadTakes(true) below then confirms it.
     if (currentTake) syncTakeSnapshot(currentTake, items);
     var leavingTakeId = currentTake ? currentTake.id : null;
-    currentTake = null; items = []; itemsLoadedTakeId = null; filterQuery = '';
+    currentTake = null; items = []; itemsLoadedTakeId = null; displayOrder = []; clearRows(); filterQuery = '';
     // navigate: true — ‹ Back is the operator asking for Home, so this is one of
     // the few callers that should move the view. showView('home') then closes
     // the quantity, name and actions dialogs, so leaving mid-entry can't strand
@@ -5789,11 +5794,157 @@
   }
 
   // ---- Items in current stocktake ----
+  // ---- Row order and row identity ----------------------------------------
+  //
+  // Retest, 15 Oct: during a burst of + taps on one line, Coolroom's taps
+  // landed on ANOTHER line — 10 taps gave +1 to the intended line and +9 to
+  // 9342007000890 — and screen and server agreed, so the wrong line really
+  // got the count. Two causes, both here:
+  //
+  //   * ORDER. Lines load newest-scanned first, and every poll re-sorted the
+  //     list. A + tap updates that line's last_scanned, so the next poll moved
+  //     it to the TOP — and the row under the operator's thumb was suddenly a
+  //     different line. The handlers were right to read the barcode from the
+  //     row at tap time; it was the wrong row by then.
+  //   * IDENTITY. Every render rebuilt every row. A press that starts on one
+  //     node and ends on its replacement is no click at all — the "taps under
+  //     ~65ms collapse" in the same report.
+  //
+  // So, while a take is open, its order is STABLE: the first full load sets
+  // it (newest first, as before); after that a poll never moves an existing
+  // row, lines from other devices join at the BOTTOM (nothing above the
+  // thumb shifts), and only this device's own new scan goes on top — made
+  // through the keypad, never mid-tap. And rows are patched in place: the
+  // same DOM node per barcode for as long as it is shown, with only its text
+  // and states updated. A node moves only when the order genuinely changes.
+  var displayOrder = [];   // barcodes, in the order the open take shows them
+  var rowCache = {};       // barcode -> its row element, while shown
+
+  // `items` in display order. Lines displayOrder doesn't know yet are added at
+  // the end; lines that are gone drop out.
+  function orderedItems() {
+    var byBc = {};
+    items.forEach(function (it) { byBc[it.barcode] = it; });
+    var out = [], seen = {};
+    displayOrder.forEach(function (bc) {
+      if (byBc[bc] && !seen[bc]) { out.push(byBc[bc]); seen[bc] = true; }
+    });
+    items.forEach(function (it) {
+      if (!seen[it.barcode]) { out.push(it); seen[it.barcode] = true; }
+    });
+    displayOrder = out.map(function (it) { return it.barcode; });
+    return out;
+  }
+
+  function clearRows() { rowCache = {}; }
+
+  // Built once per barcode. Every handler reads the barcode from the row at tap
+  // time — never an index, never the object captured when the row was drawn.
+  function buildItemRow(barcode) {
+    var row = document.createElement('div');
+    row.className = 'item';
+    row.dataset.barcode = barcode;
+
+    var info = document.createElement('div');
+    info.className = 'info';
+    var code = document.createElement('div');
+    code.className = 'code'; code.textContent = barcode;
+    info.appendChild(code);
+    // Under the barcode, never instead of it — see .item .prod-name in the
+    // stylesheet. textContent, not innerHTML: this string is typed by an
+    // operator and stored in the database.
+    var nameEl = document.createElement('div');
+    nameEl.className = 'prod-name';
+    info.appendChild(nameEl);
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+    info.appendChild(meta);
+
+    var qc = document.createElement('div');
+    qc.className = 'qty-controls';
+    var minus = document.createElement('button'); minus.textContent = '−';
+    var val = document.createElement('div'); val.className = 'qty-val';
+    var plus = document.createElement('button'); plus.textContent = '+';
+    // Step stays 1 even though qty is decimal now: the common case is whole
+    // bottles, and a ± that moved by 0.25 would make counting 12 of something
+    // tedious. Part bottles are typed on the keypad instead. Deltas, not totals
+    // — see stepItemQty(); the real floor is in the database.
+    function lineFromRow() {
+      var bc = row.dataset.barcode;
+      for (var i = 0; i < items.length; i++) if (items[i].barcode === bc) return items[i];
+      return null;
+    }
+    minus.onclick = function (e) {
+      if (e) e.stopPropagation();
+      if (isDoubleFire(row.dataset.barcode + '|-')) return;
+      var line = lineFromRow();
+      // Floor check against what the operator SEES (stored + pending), so a run
+      // of − taps on a slow connection can't queue more decrements than exist.
+      if (line && qtyNum(line.qty) + pendingStepFor(line.barcode) > 0) stepItemQty(line, -1);
+    };
+    plus.onclick = function (e) {
+      if (e) e.stopPropagation();
+      if (isDoubleFire(row.dataset.barcode + '|+')) return;
+      var line = lineFromRow();
+      if (line) stepItemQty(line, 1);
+    };
+    val.onclick = function (e) {
+      // stopPropagation matters here specifically: without it a tap that grazes
+      // the chip could be handled further up and end with focus somewhere else
+      // entirely — the reported "qty chip tap jumped to Filter".
+      if (e) e.stopPropagation();
+      openQtyDialog(row.dataset.barcode, true);
+    };
+    qc.appendChild(minus); qc.appendChild(val); qc.appendChild(plus);
+
+    var del = document.createElement('button');
+    del.className = 'del'; del.textContent = '✕';
+    del.onclick = function (e) {
+      if (e) e.stopPropagation();
+      var line = lineFromRow();
+      if (!line) { toast('That line has changed — try again', '#b91c1c'); renderItems(); return; }
+      if (!confirm('Remove ' + line.barcode + '?')) return;
+      // RPC, not a direct .delete(): DELETE on stocktake_items is revoked from
+      // `authenticated` (schema.sql), so every removal lands in the activity
+      // log with its barcode and quantity. Array-shaped because the RPC logs
+      // one row per user action — a future multi-select removal is one call.
+      sb.rpc('delete_stocktake_items', { p_item_ids: [line.id] }).then(function (res) {
+        if (res.error) { fail(res.error, 'Delete failed'); return; }
+        var at = items.indexOf(line);
+        if (at !== -1) items.splice(at, 1);
+        renderItems();
+      });
+    };
+
+    row.appendChild(info); row.appendChild(qc); row.appendChild(del);
+    row._els = { name: nameEl, meta: meta, val: val, minus: minus, plus: plus, del: del };
+    return row;
+  }
+
+  // Text and states only — the node, its buttons and their handlers stay put.
+  function updateItemRow(row, it, readOnly) {
+    var el = row._els;
+    var savedName = barcodeNameFor(it.barcode);
+    if (el.name.textContent !== savedName) el.name.textContent = savedName;
+    el.name.style.display = savedName ? '' : 'none';
+    var meta = 'Last: ' + new Date(it.last_scanned).toLocaleTimeString();
+    if (el.meta.textContent !== meta) el.meta.textContent = meta;
+    var pend = pendingStepFor(it.barcode);
+    var shown = qtyText(Math.max(qtyNum(it.qty) + pend, 0));
+    if (el.val.textContent !== shown) el.val.textContent = shown;
+    el.val.classList.toggle('pending', !!pend);
+    // A completed or ready count is read-only — the database refuses these
+    // writes, so the ± and ✕ are disabled. The qty chip stays wired:
+    // openQtyDialog() refuses and says why, which reads better than a dead tap.
+    el.minus.disabled = readOnly;
+    el.plus.disabled = readOnly;
+    el.del.disabled = readOnly;
+  }
+
+  // ---- Items in current stocktake ----
   function renderItems() {
     var listEl = $('list');
     var qty = items.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0);
-    // Same rule as the empty state below: don't assert "0 items · 0 total qty"
-    // for a take whose lines simply haven't arrived. Blank claims nothing.
     // Only once THIS take's full list has arrived. Before that, `items` can be a
     // fragment — a save's reply merged in while the first load was still out —
     // and the header read "1 items · 14 total qty" over a 44-line count (14 Oct).
@@ -5803,6 +5954,7 @@
       ? (itemsLoadFailed && !items.length ? '' : '…')
       : itemCountText(items.length) + ' · ' + qtyText(qty) + ' total qty';
     if (!items.length) {
+      clearRows();
       // Three different reasons for an empty list, and they must not look alike.
       // "No scans yet" is a factual claim about the stocktake, so it is only
       // allowed once the server has actually said so.
@@ -5819,10 +5971,12 @@
       }
       return;
     }
+    var ordered = orderedItems();
     var filtered = filterQuery
-      ? items.filter(function (it) { return it.barcode.toLowerCase().indexOf(filterQuery) !== -1; })
-      : items;
+      ? ordered.filter(function (it) { return it.barcode.toLowerCase().indexOf(filterQuery) !== -1; })
+      : ordered;
     if (!filtered.length) {
+      clearRows();
       listEl.innerHTML = '';
       var noMatch = document.createElement('div');
       noMatch.className = 'empty';
@@ -5830,117 +5984,26 @@
       listEl.appendChild(noMatch);
       return;
     }
-    listEl.innerHTML = '';
+    // Anything that isn't a line (a "Loading…" or "No match" message) goes.
+    Array.prototype.slice.call(listEl.children).forEach(function (ch) {
+      if (!ch.dataset || !ch.dataset.barcode || rowCache[ch.dataset.barcode] !== ch) listEl.removeChild(ch);
+    });
     var readOnly = takeIsReadOnly();
-    filtered.forEach(function (it) {
-      var row = document.createElement('div');
-      row.className = 'item';
-
-      var info = document.createElement('div');
-      info.className = 'info';
-      var code = document.createElement('div');
-      code.className = 'code'; code.textContent = it.barcode;
-      info.appendChild(code);
-      // Under the barcode, never instead of it — see .item .prod-name in the
-      // stylesheet. textContent, not innerHTML: this string is typed by an
-      // operator and stored in the database.
-      var savedName = barcodeNameFor(it.barcode);
-      if (savedName) {
-        var nameEl = document.createElement('div');
-        nameEl.className = 'prod-name'; nameEl.textContent = savedName;
-        info.appendChild(nameEl);
-      }
-      var meta = document.createElement('div');
-      meta.className = 'meta';
-      meta.textContent = 'Last: ' + new Date(it.last_scanned).toLocaleTimeString();
-      info.appendChild(meta);
-
-      var qc = document.createElement('div');
-      qc.className = 'qty-controls';
-      var minus = document.createElement('button'); minus.textContent = '−';
-      var val = document.createElement('div'); val.className = 'qty-val';
-      var pend = pendingStepFor(it.barcode);
-      val.textContent = qtyText(Math.max(qtyNum(it.qty) + pend, 0));
-      if (pend) val.classList.add('pending');
-      var plus = document.createElement('button'); plus.textContent = '+';
-      // Step stays 1 even though qty is decimal now: the common case is whole
-      // bottles, and a ± that moved by 0.25 would make counting 12 of something
-      // tedious. Part bottles are typed on the keypad instead. Floor is 0 rather
-      // than 1 — a line can legitimately be walked down to "none left".
-      // Deltas, not totals — see stepItemQty(). The `n > 0` check just avoids a
-      // pointless round-trip on a line already at zero; the real floor is in the
-      // database, since the on-screen value can be out of date.
-      // Every handler resolves its line from the ROW's data-barcode at click
-      // time, never from the `it` captured when the row was drawn.
-      //
-      // The list now refreshes in the background, so a captured `it` can be an
-      // object that is no longer in `items` — detached, with a stale qty, and
-      // pointing at a line the operator is not looking at. That is how
-      // 9342007000890 drifted 6 -> 9 -> 10 with nobody touching Coolroom: the
-      // taps were landing on the right ROW and the wrong OBJECT.
-      row.dataset.barcode = it.barcode;
-      function lineFromRow() {
-        var bc = row.dataset.barcode;
-        for (var i = 0; i < items.length; i++) if (items[i].barcode === bc) return items[i];
-        return null;
-      }
-      minus.onclick = function (e) {
-        if (e) e.stopPropagation();
-        if (isDoubleFire(row.dataset.barcode + '|-')) return;
-        var line = lineFromRow();
-        // Floor check against what the operator SEES (stored + pending), so a run
-        // of − taps on a slow connection can't queue more decrements than exist.
-        if (line && qtyNum(line.qty) + pendingStepFor(line.barcode) > 0) stepItemQty(line, -1);
-      };
-      plus.onclick = function (e) {
-        if (e) e.stopPropagation();
-        if (isDoubleFire(row.dataset.barcode + '|+')) return;
-        var line = lineFromRow();
-        if (line) stepItemQty(line, 1);
-      };
-      val.onclick = function (e) {
-        // stopPropagation matters here specifically: without it a tap that grazes
-        // the chip could be handled further up and end with focus somewhere else
-        // entirely — the reported "qty chip tap jumped to Filter".
-        if (e) e.stopPropagation();
-        openQtyDialog(row.dataset.barcode, true);
-      };
-      // A completed count is read-only — the database refuses these writes, so
-      // offering the controls would only produce refusals. The qty stays visible
-      // and readable; it just can't be moved.
-      //
-      // The ± buttons are disabled, which is self-explanatory. The qty chip is a
-      // div and cannot look disabled, so its handler stays wired: openQtyDialog()
-      // refuses and says why. Nulling it made the tap do nothing at all, which
-      // reads as the app being broken rather than the count being finished.
-      if (readOnly) { minus.disabled = true; plus.disabled = true; }
-      qc.appendChild(minus); qc.appendChild(val); qc.appendChild(plus);
-
-      var del = document.createElement('button');
-      del.className = 'del'; del.textContent = '✕';
-      del.onclick = function (e) {
-        if (e) e.stopPropagation();
-        // Same rule as the steppers: resolve the line now, from the row, so a
-        // background refresh between drawing and tapping can't delete a
-        // different barcode than the one on screen.
-        var line = lineFromRow();
-        if (!line) { toast('That line has changed — try again', '#b91c1c'); renderItems(); return; }
-        it = line;
-        if (!confirm('Remove ' + it.barcode + '?')) return;
-        // RPC, not a direct .delete(): DELETE on stocktake_items is revoked from
-        // `authenticated` (schema.sql), so every removal lands in the activity
-        // log with its barcode and quantity. Array-shaped because the RPC logs
-        // one row per user action — a future multi-select removal is one call.
-        sb.rpc('delete_stocktake_items', { p_item_ids: [it.id] }).then(function (res) {
-          if (res.error) { fail(res.error, 'Delete failed'); return; }
-          items.splice(items.indexOf(it), 1);
-          renderItems();
-        });
-      };
-      if (readOnly) del.disabled = true;
-
-      row.appendChild(info); row.appendChild(qc); row.appendChild(del);
-      listEl.appendChild(row);
+    var wanted = {};
+    filtered.forEach(function (it, idx) {
+      wanted[it.barcode] = true;
+      var row = rowCache[it.barcode] || (rowCache[it.barcode] = buildItemRow(it.barcode));
+      updateItemRow(row, it, readOnly);
+      // Moved only if it isn't already where it should be — in steady state
+      // (polls, taps) nothing moves at all.
+      var at = listEl.children[idx];
+      if (at !== row) listEl.insertBefore(row, at || null);
+    });
+    Object.keys(rowCache).forEach(function (bc) {
+      if (wanted[bc]) return;
+      var r = rowCache[bc];
+      if (r.parentNode) r.parentNode.removeChild(r);
+      delete rowCache[bc];
     });
   }
 
@@ -5961,10 +6024,12 @@
     for (var i = 0; i < items.length; i++) {
       if (items[i].barcode === row.barcode) { items[i] = row; return; }
     }
-    // Not held locally at all — this is the other scanner's line arriving. It
-    // has to appear immediately, or the operator carries on believing the
-    // barcode is uncounted.
+    // Not held locally at all — a new line this device just saved (or the other
+    // scanner's line arriving through a save's reply). It has to appear
+    // immediately, or the operator carries on believing the barcode is
+    // uncounted. On top: it comes from the keypad, never mid-tap.
     items.unshift(row);
+    displayOrder.unshift(row.barcode);
   }
 
   // ---- Item writes: one action, applied once, reported truthfully ----------
