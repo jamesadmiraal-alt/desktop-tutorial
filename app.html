@@ -5538,7 +5538,23 @@
       for (var i = 0; i < takes.length; i++) {
         if (takes[i].id === id) { takes[i].status = status; break; }
       }
+      // An entry on the pad can't be saved now. Close the pad and say exactly
+      // what wasn't saved, so it can be added once the count is reopened —
+      // never discarded without a word. Always said, quiet or not: a refused
+      // save's own message doesn't name the entry.
+      var lost = '';
+      var nowLocked = status !== 'in_progress';
+      // Not while its Save is in flight: that save's own reply says how it went.
+      if (nowLocked && dialogOpen && !commitInFlight && $('qty-overlay').classList.contains('open') && pendingCode) {
+        var typed = $('qty-input').value.trim();
+        var editing = $('qty-overlay').dataset.mode === 'edit';
+        lost = ' Not saved: ' + pendingCode + (typed ? (editing ? ' → ' : ' × ') + typed : ' (no quantity entered yet)') + '.';
+        closeQtyDialog();
+      }
       applyTakeReadOnly();
+      // The banner is above the camera, and the view may be scrolled down the
+      // list — bring it into view rather than letting the scan box just vanish.
+      if (nowLocked) { try { $('scan-view').scrollTop = 0; } catch (e) {} }
       // Refetch rather than trust what is on screen: whatever changed the
       // status may have changed the lines too, and this is the moment the
       // operator is looking for the truth.
@@ -5546,9 +5562,9 @@
       // Said when it changed under this screen (another phone, or an export):
       // the operator needs to know why the controls just stopped working — or
       // started again.
-      if (!quiet) {
-        if (status === 'completed') toast('This count has been completed — it is now read-only', '#b45309');
-        else if (status === 'ready_for_export') toast('This count was marked ready — counting is locked', '#b45309');
+      if (!quiet || lost) {
+        if (status === 'completed') toast('This count has been completed — it is now read-only.' + lost, '#b45309');
+        else if (status === 'ready_for_export') toast('This count was marked ready — counting is locked.' + lost, '#b45309');
         else if (status === 'in_progress') toast('This count is back in progress — you can keep counting');
       }
     });
@@ -5720,7 +5736,12 @@
       // the dialog's "Already scanned (qty N)" hint was written when it opened,
       // and changing the number underneath mid-entry is worse than being a few
       // seconds behind. The close path refreshes immediately.
-      if (dialogOpen) return;
+      //
+      // The STATUS is still checked. Retest, 15 Oct: another phone marked the
+      // take Ready while Coolroom had the pad open; the pad sat there accepting
+      // a quantity that could only be refused, and when it closed the barcode
+      // box was simply gone, with no warning.
+      if (dialogOpen) { refreshTakeStatus(); return; }
       // Not while the first load is still going. Every call bumps
       // itemsRequestToken, so a tick landing mid-load would invalidate that
       // load's own reply — it would return early, never clear itemsLoading, and
