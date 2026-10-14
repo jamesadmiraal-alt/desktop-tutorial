@@ -2206,9 +2206,35 @@
   var rememberMe = (function () {
     try { return localStorage.getItem('barscan-remember') !== '0'; } catch (e) { return true; }
   })();
+  // Signed out IN THIS TAB, until this tab's login form is submitted.
+  //
+  // Retest, 15 Oct: two testers shared one Chrome profile, so their tabs
+  // shared localStorage — and one session key. After Main Bar logged out,
+  // Cellar's tab kept refreshing ITS token into that key, and Main Bar's tab
+  // came back signed in as +cellar; other times it ended on "Already signed in
+  // elsewhere". Removing the key at logout can't win that race: another tab
+  // writes it straight back. So while this flag is set, this tab's storage
+  // adapter neither sees a stored session nor writes one — whatever another
+  // tab (or a refresh still in flight here) puts in the shared key. It lives
+  // in sessionStorage: per tab, and it survives this tab's reload, which is
+  // exactly when a stored session would otherwise be adopted.
+  var SIGNED_OUT_KEY = 'gantry-signed-out';
+  function tabSignedOut() { try { return sessionStorage.getItem(SIGNED_OUT_KEY) === '1'; } catch (e) { return false; } }
+  function setTabSignedOut(on) {
+    try { if (on) sessionStorage.setItem(SIGNED_OUT_KEY, '1'); else sessionStorage.removeItem(SIGNED_OUT_KEY); } catch (e) {}
+  }
+  // An auth link (signup confirmation, password reset) arriving in this tab is
+  // the operator signing in — the client must be able to store that session.
+  if (/access_token=|[?&#]code=|type=recovery|type=signup/.test(location.hash + location.search)) setTabSignedOut(false);
   var dynamicStorage = {
-    getItem: function (k) { try { return (rememberMe ? localStorage : sessionStorage).getItem(k); } catch (e) { return null; } },
-    setItem: function (k, v) { try { (rememberMe ? localStorage : sessionStorage).setItem(k, v); } catch (e) {} },
+    getItem: function (k) {
+      if (tabSignedOut()) return null;
+      try { return (rememberMe ? localStorage : sessionStorage).getItem(k); } catch (e) { return null; }
+    },
+    setItem: function (k, v) {
+      if (tabSignedOut()) return;
+      try { (rememberMe ? localStorage : sessionStorage).setItem(k, v); } catch (e) {}
+    },
     removeItem: function (k) { try { (rememberMe ? localStorage : sessionStorage).removeItem(k); } catch (e) {} }
   };
   // ONE client for the life of the page. Logout signs it out by removing its
@@ -2507,6 +2533,8 @@
     var pw = $('auth-pass').value;
     if (!email || !pw) { toast('Enter an email and password', '#b91c1c'); return; }
     $('auth-submit').disabled = true;
+    // The operator is signing in on purpose: this tab may hold a session again.
+    setTabSignedOut(false);
     var done = function () { $('auth-submit').disabled = false; };
     if (authMode === 'signup') {
       var name = $('auth-name').value.trim();
@@ -2848,6 +2876,8 @@
   // mid-count — even though their scans are already saved — is the kind of thing
   // an operator should be told they're doing.
   function showTakeoverPrompt(onGranted, cb) {
+    // Never over a logout — there is nobody whose login this screen is about.
+    if (!currentUser || loggingOut || tabSignedOut()) return;
     seatsFull = true; // reuse the gate flag so Account/back-nav stay locked down
     $('auth-credentials').style.display = 'none';
     $('auth-heading').textContent = 'Already signed in elsewhere';
@@ -4554,7 +4584,7 @@
       });
   }
 
-  function doLogout(reason) {
+  function doLogout(reason, opts) {
     // A second tap while the first is running does nothing — and neither does a
     // late extra tap once it's done (the button-triggered call has no message,
     // and there is nobody left to log out), so it can't reset a login form
@@ -4562,6 +4592,10 @@
     if (loggingOut) return;
     if (!currentUser && typeof reason !== 'string') return;
     loggingOut = true;
+    // First, before anything can await: from here on this tab neither reads nor
+    // writes a stored session — see SIGNED_OUT_KEY.
+    var token = (opts && opts.notOurs) ? null : storedAccessToken(sb);
+    setTabSignedOut(true);
     var message = typeof reason === 'string' ? reason : '';
     var btn = $('logout-btn');
     if (btn) btn.disabled = true;
@@ -4573,9 +4607,12 @@
       homeFromCache = false;
       stopSeatHeartbeat();
       stopItemsPolling();
-      var token = storedAccessToken(sb);
-      forgetStoredSession(sb);
-      backgroundSignOut(token);
+      // The stored session is someone else's when another tab replaced it —
+      // removing it would sign THEM out too. Ours is already gone.
+      if (!(opts && opts.notOurs)) {
+        forgetStoredSession(sb);
+        backgroundSignOut(token);
+      }
       // takes too: the next person to sign in on this phone must not see the
       // last one's list while theirs loads.
       currentUser = null; currentOrg = null; currentTake = null; items = []; locations = []; takes = [];
@@ -4592,6 +4629,27 @@
       if (btn) btn.disabled = false;
     }
   }
+  // Another tab in the same browser profile changed the stored session under
+  // this one. A different account signing in there, or a logout there, ends
+  // this tab's session HERE, with a reason — rather than this tab carrying on
+  // as nobody (every request quietly unauthenticated) or, worse, as the other
+  // account. A token refresh for the same account changes nothing.
+  window.addEventListener('storage', function (e) {
+    var key = sb.auth && sb.auth.storageKey;
+    if (!key || e.key !== key || !currentUser || loggingOut) return;
+    if (!rememberMe || e.storageArea !== localStorage) return;   // ours lives in sessionStorage
+    var uid = null;
+    try {
+      var obj = JSON.parse(e.newValue || 'null');
+      uid = obj && ((obj.user && obj.user.id) || (obj.currentSession && obj.currentSession.user && obj.currentSession.user.id));
+    } catch (err) {}
+    if (uid === currentUser.id) return;
+    doLogout(uid
+      ? 'A different account signed in on this browser, in another tab. Log in again to carry on here.'
+      : 'You were logged out in another tab. Your scans are saved — log in to carry on.',
+      { notOurs: true });
+  });
+
   // A wrapper, not `onclick = doLogout` — that passed the click event in as
   // the "reason" and printed "[object PointerEvent]" on the login screen.
   $('logout-btn').onclick = function () { doLogout(); };

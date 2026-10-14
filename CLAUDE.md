@@ -275,6 +275,13 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   draw UI or touch `currentUser` (org refresh, seat claim, heartbeat, Home load) must
   capture `sessionEpoch` and drop itself if it changed — that's what stops a late reply
   showing "Already signed in elsewhere" over the login screen.
+- **A logout is per tab and sticks** (`gantry-signed-out` in sessionStorage): while set, the
+  client's storage adapter neither reads nor writes a stored session, so another tab in the
+  same browser profile refreshing ITS token into the shared key can't sign this tab back in,
+  even across a reload. Only submitting the login form (or an auth link arriving) clears it. A
+  `storage` listener ends this tab's session if another tab swaps in a different account or
+  logs out — with `notOurs`, so it doesn't wipe the other tab's session. Testers sharing one
+  Chrome profile hit this on 15 Oct.
 - **± taps are queued per line** (`stepQueues`): one request in flight per line, later taps
   summed and sent as one request with its own id. Never drop a tap; the double-fire guard is
   30ms — 120ms dropped real taps.
