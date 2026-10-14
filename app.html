@@ -4845,22 +4845,82 @@
       return;
     }
 
-    $('name-ok').disabled = true;
-    // Re-enabled on every outcome including a rejected promise — otherwise a
-    // dropped connection leaves Create greyed out with nothing said.
-    var done = function () { $('name-ok').disabled = false; };
+    // One create at a time. The disabled button stops a second tap, but not
+    // the Enter key in the name field, which calls straight in here.
+    if (createInFlight) return;
+    createInFlight = true;
+    var btn = $('name-ok');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    var settled = false;
+    // Released on EVERY outcome — success, refusal, a rejected promise, the
+    // timeout — so Create can never be left greyed out with nothing said.
+    // That stuck state is what was reported on 14 Oct.
+    var finish = function () {
+      settled = true;
+      clearTimeout(timer);
+      createInFlight = false;
+      btn.disabled = false;
+      btn.textContent = 'Create';
+    };
+    var created = function (take) {
+      finish();
+      $('name-overlay').classList.remove('open');
+      openTake(take);
+    };
+    // The insert's reply went missing or was slow, or the server said a take
+    // with this name is already open — any of which can mean an EARLIER attempt
+    // landed (14 Oct: the dialog hung, yet the take existed). Look for it before
+    // saying anything, so nobody taps again into a duplicate.
+    var recover = function () {
+      findJustCreatedTake(name, locationId, function (take) {
+        if (take) { created(take); toast('Created'); return; }
+        finish();
+        // The dialog stays open with the name still in it. Retrying is safe:
+        // if the first attempt lands late, the server's one-open-name rule
+        // (enforce_unique_open_stocktake_name) refuses the retry as "already in
+        // progress", and recover() then finds and opens the first one.
+        toast('Couldn’t confirm the stocktake was created. Tap Create to try again — it won’t make a second one.', '#b45309');
+      });
+    };
+    var timer = setTimeout(function () { if (!settled) recover(); }, CREATE_TIMEOUT_MS);
     sb.from('stocktakes').insert({ name: name, location_id: locationId }).select().single().then(
       function (res) {
-        done();
-        if (res.error) { fail(res.error, 'Could not create stocktake'); return; }
-        $('name-overlay').classList.remove('open');
-        openTake(res.data);
+        if (settled) return;
+        if (!res.error) { created(res.data); return; }
+        if (replyWasLost(res) || res.error.code === '23505' || /already in progress/i.test(res.error.message || '')) {
+          clearTimeout(timer);
+          recover();
+          return;
+        }
+        finish();
+        fail(res.error, 'Could not create stocktake');
       },
-      function (err) {
-        done();
-        fail({ message: (err && err.message) || 'request failed' }, 'Could not create stocktake');
-      }
+      function () { if (!settled) { clearTimeout(timer); recover(); } }
     );
+  }
+
+  // How long Create waits before checking whether the take was made anyway.
+  var CREATE_TIMEOUT_MS = 15000;
+  var createInFlight = false;
+
+  // An OPEN take with this exact name and location, started by THIS user in the
+  // last few minutes — i.e. the one their own earlier tap created. Not "any take
+  // with this name": a colleague's take that happens to share it must not be
+  // opened as if it were yours. cb(take | null).
+  function findJustCreatedTake(name, locationId, cb) {
+    var since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    var settled = false;
+    var done = function (t) { if (!settled) { settled = true; clearTimeout(timer); cb(t); } };
+    var timer = setTimeout(function () { done(null); }, 10000);
+    sb.from('stocktakes').select('*')
+      .eq('name', name).eq('location_id', locationId)
+      .eq('created_by', currentUser && currentUser.id)
+      .in('status', OPEN_STATUSES)
+      .gte('created_at', since)
+      .order('created_at', { ascending: false }).limit(1)
+      .then(function (res) { done(!res.error && res.data && res.data[0] ? res.data[0] : null); },
+            function () { done(null); });
   }
   $('name-ok').onclick = createTake;
   $('name-input').addEventListener('keydown', function (e) { if (e.key === 'Enter') createTake(); });
