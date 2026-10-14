@@ -151,8 +151,8 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   policy); raising one without the other means the server accepts what the app rejects.
 - Email: `supabase/functions/_shared/email.ts` is a provider-agnostic sender chosen by
   which secret exists, and it returns `{sent:false}` rather than throwing when none is
-  configured — so **every caller must treat a failed send as non-fatal**, and all five
-  do (the Stripe webhook especially: Stripe retries a non-2xx, so a bounced email must
+  configured — so **every caller must treat a failed send as non-fatal**, and all of
+  them do (the Stripe webhook especially: Stripe retries a non-2xx, so a bounced email must
   never re-run a payment handler). The same module owns `brandedHtml()` and the
   customer-facing URLs (`SITE`/`APP_URL`/`ADMIN_URL`) — import them, don't re-declare a
   URL in a function. Auth email (confirm signup, password reset) is separate and comes
@@ -239,6 +239,15 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   because a re-export is a no-op on `status` and would otherwise leave no trace at all.
   Evidence: Colac Port Adelaide, 2026-09-29 — ~50 of ~600 lines unmatched in Bepoz, the
   non-missing ones all one leading zero away.
+- **In-app support** (`openHelp()` in app.html → `contact-support`, JWT ON → support@ with
+  Reply-To = the caller). Entry points: Account → Get help, the ⋯ sheet's "Get help with this
+  count", and a "Get help" link that `fail()` adds to red toasts for a signed-in user. Org, plan
+  and role are looked up **server-side**; the client only adds what it can see, and the form
+  lists it ("We'll include: …") — keep that line true if you add a field. The function saves
+  to `support_requests` (service key only, no client access, NOT in schema.sql) **before**
+  emailing, throttles 5/user/hour from that table, and never 500s on a mail failure.
+  `help.html` holds the Quick answers; each question has an id anchor — keep the ids stable,
+  replies and the app link to them.
 - Quantity precision is 2 dp in THREE places — the numpad's input guard, `QTY_DP` in
   app.html, and `qty numeric(12,2)` in schema.sql. Anything finer needs all three.
 

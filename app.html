@@ -152,6 +152,21 @@
   }
   .link-btn:active { opacity: 0.7; }
 
+  /* Help & support. The context line is shown, not hidden: the operator sees
+     exactly what is sent with their message. */
+  .help-include { font-size: 0.78rem; color: var(--text-dim); line-height: 1.45; margin-top: 10px;
+    overflow-wrap: anywhere; }
+  .help-fallback { font-size: 0.8rem; color: var(--text-dim); margin-top: 12px; text-align: center; }
+  .help-fallback a { color: var(--link); }
+  #help-overlay .dialog-actions button { min-height: 48px; }
+  .acct-help-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .acct-help-row button.primary { width: auto; padding: 10px 18px; }
+  /* A red toast from fail() carries a "Get help" link, so it has to take taps
+     while that link is there — and only then. */
+  #toast.actionable { pointer-events: auto; }
+  #toast .toast-help { background: transparent; color: inherit; font: inherit; font-weight: 700;
+    text-decoration: underline; padding: 0 0 0 8px; width: auto; display: inline; }
+
   .acct-footer-note { margin-top: 24px; padding: 0 4px; }
   .acct-footer-text { font-size: 0.75rem; color: var(--text-faint); line-height: 1.5; margin-bottom: 4px; }
 
@@ -848,6 +863,15 @@
     <div class="name">Account</div>
   </div>
   <div class="acct-card">
+    <div class="acct-help-row">
+      <div>
+        <h3 style="margin:0">Help &amp; support</h3>
+        <button id="acct-quick-answers" class="link-btn">Quick answers</button>
+      </div>
+      <button id="acct-help-btn" class="primary">Get help</button>
+    </div>
+  </div>
+  <div class="acct-card">
     <h3>Signed in as</h3>
     <div class="acct-email" id="acct-email"></div>
     <!-- Your own display name. The roster's ✎ button (both #team-view here and
@@ -1349,6 +1373,30 @@
   </div>
 </div>
 
+<!-- ===== Help & support =====
+     One form, opened by openHelp() from Account, the ⋯ sheet, and the "Get help"
+     link on a red error toast. Sent by the contact-support Edge Function, which
+     looks up the org, plan and role itself; what the app adds is listed under
+     the form so nothing is sent that the operator can't see. -->
+<div id="help-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">Help &amp; support</div>
+    <label for="help-subject" style="margin-top:12px">What do you need help with? <small style="color:var(--text-dim)">(optional)</small></label>
+    <input id="help-subject" type="text" maxlength="120" placeholder="e.g. Export won't open in Bepoz">
+    <label for="help-message" style="margin-top:10px">Message</label>
+    <textarea id="help-message" rows="6" maxlength="4000" placeholder="What happened, and what were you trying to do?"></textarea>
+    <div class="help-include" id="help-include"></div>
+    <div class="dialog-actions" style="margin-top:14px">
+      <button id="help-cancel" class="flex">Cancel</button>
+      <button id="help-send" class="primary flex">Send</button>
+    </div>
+    <div class="help-fallback">
+      <button id="help-quick-answers" class="link-btn">Quick answers</button><br>
+      Or email <a href="mailto:support@gantrystocktake.com">support@gantrystocktake.com</a>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Home: stocktake list ===== -->
 <div id="home-view" class="view">
   <button id="new-stocktake" class="primary">＋ New stocktake</button>
@@ -1464,6 +1512,9 @@
            template, or a POS that REPLACES its counts with the file. Set by
            renderExportButton(); empty and hidden for the verified templates. -->
       <div id="take-export-note" class="hint" style="display:none;margin-top:6px"></div>
+      <!-- Sends this stocktake's name, status and line count with the message,
+           so support doesn't have to ask which count. -->
+      <button id="take-help">Get help with this count</button>
     </div>
     <!-- The heading is not decoration. Before it, both halves of this sheet were
          an identical stack of buttons, so "Export CSV" and "Mark ready for
@@ -1842,9 +1893,14 @@
   // naming a table and a privilege is two lines of prose, and 2 seconds of it is
   // the same as not showing it — there is no way to ask for it again.
   var TOAST_MS = 2000, TOAST_MS_LONG = 6000, TOAST_LONG_CHARS = 60;
+  // The last error the operator was shown, for openHelp() to include — so a
+  // Help sent a minute after a failure still says what failed.
+  var lastErrorText = '';
   function toast(msg, bg) {
     var t = $('toast');
     t.textContent = msg;
+    t.classList.remove('actionable');
+    if (bg === '#b91c1c') lastErrorText = String(msg || '');
     t.style.background = bg || '#059669';
     t.classList.add('show');
     clearTimeout(t._h);
@@ -1949,7 +2005,26 @@
     // Deliberately the raw message rather than failHint(): failHint maps every
     // "permission denied" to "this login may now be in use on another device",
     // which is true of a scan write mid-count and was actively misleading here.
-    toast((what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed'), '#b91c1c');
+    var text = (what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed');
+    toast(text, '#b91c1c');
+    // "Get help" on the error itself, for a signed-in operator — the message
+    // arrives with this exact text attached. Held on screen longer, since it
+    // now has something to tap.
+    if (currentUser) {
+      var t = $('toast');
+      var link = document.createElement('button');
+      link.className = 'toast-help';
+      link.textContent = 'Get help';
+      link.onclick = function (e) {
+        if (e) e.stopPropagation();
+        t.classList.remove('show', 'actionable');
+        openHelp({ error: text, what: what || '' });
+      };
+      t.appendChild(link);
+      t.classList.add('actionable');
+      clearTimeout(t._h);
+      t._h = setTimeout(function () { t.classList.remove('show', 'actionable'); }, TOAST_MS_LONG);
+    }
   }
 
   // For sb.functions.invoke() results specifically. Our Edge Functions report
@@ -3064,6 +3139,124 @@
   $('open-admin-btn').onclick = function () { openExternal(ADMIN_URL); };
   $('open-terms-btn').onclick = function () { openExternal(SITE_URL + 'terms.html'); };
   $('open-privacy-btn').onclick = function () { openExternal(SITE_URL + 'privacy.html'); };
+  // ---- Help & support ----------------------------------------------------
+  //
+  // Which build sent a message. No build step means no commit hash to embed,
+  // so: a date bumped by hand on notable releases, plus the page's
+  // Last-Modified — which GitHub Pages sets to the deploy time, so it moves on
+  // every push without anyone remembering to.
+  var APP_VERSION = '2026-10-15';
+  function appVersionText() {
+    var lm = '';
+    try { lm = document.lastModified ? ' · page ' + document.lastModified : ''; } catch (e) {}
+    return APP_VERSION + lm + (isNative ? ' · native' : ' · web');
+  }
+  var HELP_STATUS_WORDS = { in_progress: 'In progress', ready_for_export: 'Ready for export', completed: 'Completed' };
+  var helpContext = null;
+
+  // prefill: { take, error, what } — all optional.
+  function openHelp(prefill) {
+    prefill = prefill || {};
+    if (!currentUser) {
+      toast('Log in first — or email support@gantrystocktake.com', '#b45309');
+      return;
+    }
+    // The count this is about: the one passed in (⋯ sheet), else the one open.
+    var t = prefill.take || ((currentView === 'scan' && currentTake) ? currentTake : null);
+    var takeText = '';
+    if (t) {
+      var lines = null;
+      if (currentTake && t.id === currentTake.id && itemsLoadedTakeId === t.id) lines = items.length;
+      else if (t.totals && typeof t.totals.lines === 'number') lines = t.totals.lines;
+      takeText = '"' + (t.name || 'Untitled') + '" · ' + (HELP_STATUS_WORDS[t.status] || t.status || '?')
+        + (lines === null ? '' : ' · ' + lines + ' line' + (lines === 1 ? '' : 's'));
+    }
+    var error = prefill.error || lastErrorText || '';
+    helpContext = {
+      version: appVersionText(),
+      screen: currentView,
+      take: takeText ? takeText + (t.id ? ' · ' + t.id : '') : '',
+      error: error,
+      what: prefill.what || '',
+      userAgent: navigator.userAgent,
+    };
+    // Said plainly, so nothing goes that the operator can't see.
+    var parts = ['your account and venue (' + ((currentOrg && currentOrg.name) || 'no organisation yet') + ')'];
+    if (takeText) parts.push('this count: ' + takeText);
+    if (error) parts.push('the last error: “' + error + '”');
+    parts.push('your device and app version');
+    $('help-include').textContent = 'We’ll include: ' + parts.join('; ') + '.';
+    $('help-subject').value = prefill.error ? 'Error: ' + (prefill.what || prefill.error).slice(0, 100) : '';
+    $('help-message').value = '';
+    $('help-send').disabled = false;
+    $('help-send').textContent = 'Send';
+    $('help-overlay').classList.add('open');
+    setTimeout(function () { try { $('help-message').focus(); } catch (e) {} }, 50);
+  }
+  function closeHelp() {
+    $('help-overlay').classList.remove('open');
+    shieldGhostClicks();
+  }
+  $('help-cancel').onclick = closeHelp;
+  $('acct-help-btn').onclick = function () { openHelp(); };
+  $('take-help').onclick = function () {
+    var t = actionsTake;
+    closeTakeActions();
+    openHelp({ take: t });
+  };
+  function openQuickAnswers() { openExternal(SITE_URL + 'help.html'); }
+  $('acct-quick-answers').onclick = openQuickAnswers;
+  $('help-quick-answers').onclick = openQuickAnswers;
+
+  var HELP_SEND_TIMEOUT_MS = 20000;
+  $('help-send').onclick = function () {
+    var message = $('help-message').value.trim();
+    if (!message) { toast('Write a message first', '#b91c1c'); $('help-message').focus(); return; }
+    var btn = $('help-send');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    var email = currentUser ? currentUser.email : '';
+    var settled = false;
+    var finish = function () {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      btn.disabled = false;
+      btn.textContent = 'Send';
+      return true;
+    };
+    // Bounded like every other request. No answer is not "failed": the message
+    // may well have arrived, so it says that rather than inviting a duplicate.
+    var timer = setTimeout(function () {
+      if (!finish()) return;
+      toast('No answer yet — it may still have arrived. If you don’t hear back, email support@gantrystocktake.com', '#b45309');
+    }, HELP_SEND_TIMEOUT_MS);
+    var showError = function (msg) {
+      if (!finish()) return;
+      toast(msg || 'Couldn’t send that — email support@gantrystocktake.com instead', '#b91c1c');
+    };
+    sb.functions.invoke('contact-support', {
+      body: { subject: $('help-subject').value.trim(), message: message, context: helpContext || {} }
+    }).then(function (res) {
+      if (res.error) {
+        // Our function's own words (e.g. the hourly limit) live in the body.
+        var ctx = res.error.context;
+        if (ctx && typeof ctx.json === 'function') {
+          ctx.json().then(function (b) { showError(b && b.error); }, function () { showError(); });
+        } else showError();
+        return;
+      }
+      var d = res.data || {};
+      if (!d.saved && !d.sent) { showError(d.error); return; }
+      if (!finish()) return;
+      $('help-overlay').classList.remove('open');
+      shieldGhostClicks();
+      lastErrorText = '';
+      if (d.sent) toast('Sent. We reply by email to ' + email + ', usually within one business day.');
+      else toast('Saved — we’ll still see it, and reply by email to ' + email + '.');
+    }, function () { showError(); });
+  };
+
   function goUpgrade(plan) {
     var url = upgradeLink(plan);
     // On a real checkout link (Stripe Payment Link), identify the paying org
@@ -6977,6 +7170,7 @@
   }
 
   function onScan(decodedText) {
+    if ($('help-overlay').classList.contains('open')) return;
     if (dialogOpen) { sayPadIsOpen(String(decodedText || '').trim(), false); return; }
     if (manualEntryInProgress()) return;
     var code = String(decodedText || '').trim();
@@ -7138,6 +7332,7 @@
   // IS the operator saying "another one of these". Everything else onScan()
   // does — plausibility, beep, quantity pad — happens the same way.
   function captureScan() {
+    if ($('help-overlay').classList.contains('open')) return;
     if (dialogOpen) { if (armedIsFresh()) sayPadIsOpen(armed.code, true); return; }
     if (!scanning) { toast('Tap Scan to turn the camera on first', '#b91c1c'); return; }
     if (!armedIsFresh()) {

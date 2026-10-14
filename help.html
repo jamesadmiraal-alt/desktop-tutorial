@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#111827">
+<meta name="description" content="Gantry help — quick answers on counting, fixing quantities, exporting to your POS, staff and billing.">
+<title>Help — Gantry</title>
+<link rel="icon" type="image/svg+xml" href="icons/favicon.svg">
+<link rel="stylesheet" href="styles.css">
+<!-- Same small stylesheet as privacy.html/terms.html, trimmed to what a Q&A
+     page needs. Shared tokens from styles.css, so both themes come for free.
+     Every question has an id so the app (and support replies) can link straight
+     to one: help.html#export. Keep answers to 2–4 short sentences, and keep them
+     true — check the app's wording before changing one. -->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text-body); line-height: 1.65;
+  }
+  .doc { max-width: 68ch; margin: 0 auto; padding: 0 20px 72px; }
+
+  nav { display: flex; align-items: center; justify-content: space-between;
+        padding: 16px 20px; max-width: 68ch; margin: 0 auto; }
+  nav .brand { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.02em;
+               display: inline-flex; align-items: center; color: var(--text); text-decoration: none; }
+  nav a.plain { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; padding: 8px 10px; }
+  nav a.plain:hover { color: var(--text); }
+  .brand-mark { flex: none; margin-right: 8px; vertical-align: -4px; }
+
+  h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.02em; color: var(--text);
+       margin: 24px 0 8px; text-wrap: balance; }
+  .lede { color: var(--text-dim); margin-bottom: 20px; }
+  p { margin-bottom: 10px; }
+  a { color: var(--link); }
+  strong, b { color: var(--text); }
+
+  .toc { background: var(--surface); border: 1px solid var(--border);
+         border-radius: 12px; padding: 14px 18px; margin: 16px 0 8px; }
+  .toc ol { padding-left: 1.3em; }
+  .toc li { margin-bottom: 4px; }
+
+  .qa { background: var(--surface); border: 1px solid var(--border);
+        border-radius: 12px; padding: 16px 18px; margin: 14px 0;
+        scroll-margin-top: 16px; }
+  .qa h2 { font-size: 1.08rem; color: var(--text); margin-bottom: 8px; letter-spacing: -0.01em; }
+  .qa p:last-child { margin-bottom: 0; }
+  /* A linked question is the one someone was sent to — make it findable. */
+  .qa:target { border-color: var(--warning); }
+
+  footer { border-top: 1px solid var(--border); margin-top: 48px; padding: 24px 20px;
+           color: var(--text-faint); font-size: 0.9rem; text-align: center; }
+  footer a { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="brand" href="index.html">
+    <svg class="brand-mark" viewBox="0 0 40 40" width="20" height="20" aria-hidden="true">
+      <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+      <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+      <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+      <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+      <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+    </svg>
+    Gantry
+  </a>
+  <a class="plain" href="app.html">Open the app</a>
+</nav>
+
+<main class="doc">
+  <h1>Help</h1>
+  <p class="lede">Quick answers. Still stuck? Tap <b>Get help</b> in the app and we'll reply by email.</p>
+
+  <div class="toc">
+    <ol>
+      <li><a href="#start">How do I start a count?</a></li>
+      <li><a href="#wont-scan">A barcode won't scan. What do I do?</a></li>
+      <li><a href="#fix-qty">How do I fix a wrong quantity?</a></li>
+      <li><a href="#two-counters">Two of us are counting the same area. Is that OK?</a></li>
+      <li><a href="#export">How do I finish and export?</a></li>
+      <li><a href="#custom-export">My POS needs a different file layout</a></li>
+      <li><a href="#staff-login">Why can't my staff log in?</a></li>
+      <li><a href="#add-staff">How do I add staff?</a></li>
+      <li><a href="#billing">Billing and plans</a></li>
+      <li><a href="#still-stuck">Still stuck?</a></li>
+    </ol>
+  </div>
+
+  <section class="qa" id="start">
+    <h2>How do I start a count?</h2>
+    <p>Open the app and tap <b>＋ New stocktake</b>. Pick the area you're counting and give it a name.</p>
+    <p>Tap <b>Scan</b> to turn the camera on, point it at a barcode, then type how many and tap Save.</p>
+  </section>
+
+  <section class="qa" id="wont-scan">
+    <h2>A barcode won't scan. What do I do?</h2>
+    <p>Type it into the <b>Or type a barcode…</b> box under the camera. Check the digits against the bottle as you go.</p>
+    <p>If the number looks wrong (too short, or the last digit doesn't check out), the app asks <b>"Count it anyway?"</b>. Check it once more. If it matches the bottle, say OK and it's counted.</p>
+  </section>
+
+  <section class="qa" id="fix-qty">
+    <h2>How do I fix a wrong quantity?</h2>
+    <p>Use <b>−</b> and <b>+</b> on the line to change it by one. To set an exact number, tap the number itself and type the right amount.</p>
+    <p>To remove a line completely, tap <b>✕</b>. Once a count is marked ready, it's locked. Move it back to In Progress first.</p>
+  </section>
+
+  <section class="qa" id="two-counters">
+    <h2>Two of us are counting the same area. Is that OK?</h2>
+    <p>Yes. Open the same stocktake on both phones. If you both scan the same product, the counts add together. Nothing is overwritten.</p>
+    <p>Each phone picks up the other's lines within a few seconds.</p>
+  </section>
+
+  <section class="qa" id="export">
+    <h2>How do I finish and export?</h2>
+    <p>On the stocktake list, tap <b>⋯</b> on the count, then <b>Mark ready for export</b>. This locks the counts so nothing changes while the file is made.</p>
+    <p>Then tap <b>Export CSV</b>. The file downloads to your phone or computer. Import it into your POS, or attach it to an email.</p>
+    <p>When you're done with it, tap <b>Mark completed</b>.</p>
+  </section>
+
+  <section class="qa" id="custom-export">
+    <h2>My POS needs a different file layout</h2>
+    <p>Owners and managers can pick a different export, or build their own, in <b>Account → Exports</b>. Choose your POS, set the columns, and preview the file before you save.</p>
+    <p>If your system needs something the builder can't do, tell us from the same screen.</p>
+  </section>
+
+  <section class="qa" id="staff-login">
+    <h2>Why can't my staff log in?</h2>
+    <p>Your plan sets how many people can be counting <b>at the same time</b>. If that many are already counting, the next person has to wait, or the owner adds more.</p>
+    <p>One login works on one phone at a time. Logging in on a second phone asks whether to move it there. Single-venue is for one person; Multi-venue is for a team.</p>
+  </section>
+
+  <section class="qa" id="add-staff">
+    <h2>How do I add staff?</h2>
+    <p>On Multi-venue, the owner goes to <b>Account → Admin</b> and adds a team member. You set their email and a starting password, and they can change it later.</p>
+    <p>You can set up as many people as you like. You only pay for how many count at the same time.</p>
+  </section>
+
+  <section class="qa" id="billing">
+    <h2>Billing and plans</h2>
+    <p>Try it free first: 5 products per stocktake, exports included, no card needed. Plans and prices are on our <a href="index.html#pricing">pricing page</a>.</p>
+    <p>To change or cancel, the owner goes to <b>Account → Manage subscription</b>.</p>
+  </section>
+
+  <section class="qa" id="still-stuck">
+    <h2>Still stuck?</h2>
+    <p>In the app, go to <b>Account → Get help</b>, or tap <b>Get help</b> on an error message. It sends us what you were doing, so you don't have to explain it.</p>
+    <p>Or email <a href="mailto:support@gantrystocktake.com">support@gantrystocktake.com</a>. We reply by email, usually within one business day.</p>
+  </section>
+</main>
+
+<footer>
+  Gantry — stocktaking for hospitality ·
+  <a href="index.html">Home</a> ·
+  <a href="privacy.html">Privacy Policy</a> ·
+  <a href="terms.html">Terms &amp; Conditions</a> ·
+  <a href="app.html">Open the app</a>
+</footer>
+
+</body>
+</html>
