@@ -82,6 +82,7 @@ end $$;
 -- be lost here.
 drop table if exists public.export_template_submissions cascade;
 drop table if exists public.export_templates cascade;
+drop table if exists public.stocktake_item_requests cascade;
 drop table if exists public.stocktake_items cascade;
 drop table if exists public.stocktakes cascade;
 drop table if exists public.memberships cascade;
@@ -1790,10 +1791,31 @@ grant execute on function public.clear_stocktake_items(uuid) to authenticated;
 -- would otherwise turn a decrement race (two devices each stepping the last unit
 -- down) into a raw constraint error in the middle of a count, and "you can't go
 -- below zero" is a clamp, not an error worth interrupting someone for.
+-- Every save carries a client request id (p_request_id), recorded in
+-- stocktake_item_requests in the same transaction as the write; seeing an id
+-- again means "already applied" and nothing is added twice. Added 2026-10-14
+-- after a lost reply plus an honest retry turned 2 into 4 — see
+-- supabase/migrations/20261014_01 for the full story. The three-argument
+-- version is dropped, not kept: two versions make a 3-arg call ambiguous
+-- (PGRST203), and p_request_id defaults to NULL so that call still works.
+create table if not exists public.stocktake_item_requests (
+  request_id uuid primary key,
+  stocktake_id uuid not null references public.stocktakes(id) on delete cascade,
+  barcode text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists stocktake_item_requests_created_idx
+  on public.stocktake_item_requests (created_at);
+
+alter table public.stocktake_item_requests enable row level security;
+revoke all on public.stocktake_item_requests from anon, authenticated;
+
+drop function if exists public.add_stocktake_item(uuid, text, numeric);
 create or replace function public.add_stocktake_item(
   p_stocktake_id uuid,
   p_barcode text,
-  p_qty numeric
+  p_qty numeric,
+  p_request_id uuid default null
 )
 returns public.stocktake_items
 language plpgsql security definer set search_path = public as $$
@@ -1813,28 +1835,36 @@ begin
   if p_qty is null then
     raise exception 'A quantity is required.';
   end if;
-  -- numeric accepts 'NaN', and `'NaN' >= 0` is true, so neither the range check
-  -- below nor the column's own `check (qty >= 0)` would stop it — it would just
-  -- turn the line's total into NaN permanently.
   if p_qty = 'NaN'::numeric then
     raise exception 'Quantity must be a number.';
   end if;
-  -- No lower bound on the DELTA — negatives are how the − stepper works. The
-  -- RESULT is clamped at 0 below.
   v_qty := round(p_qty, 2);   -- matches numeric(12,2) and QTY_DP in app.html
 
-  -- security definer bypasses RLS, so re-implement the scoping the insert policy
-  -- would have done. Same message whether the stocktake is missing or belongs to
-  -- another org, so this cannot be used to probe for UUIDs.
   select s.org_id into v_take_org from public.stocktakes s where s.id = p_stocktake_id;
   if v_take_org is null or v_take_org is distinct from v_org then
     raise exception 'Stocktake not found.';
   end if;
 
+  -- The retry guard. First caller with this id records it and carries on; any
+  -- later caller (the same action, retried because its reply was lost) finds it
+  -- taken and gets the line as it stands — nothing added twice. Two copies
+  -- arriving at once serialise on the primary key: the second waits for the
+  -- first to commit, then sees the conflict.
+  if p_request_id is not null then
+    insert into public.stocktake_item_requests (request_id, stocktake_id, barcode)
+    values (p_request_id, p_stocktake_id, v_code)
+    on conflict (request_id) do nothing;
+    if not found then
+      select * into v_row from public.stocktake_items
+       where stocktake_id = p_stocktake_id and barcode = v_code;
+      return v_row;
+    end if;
+    if random() < 0.01 then
+      delete from public.stocktake_item_requests where created_at < now() - interval '7 days';
+    end if;
+  end if;
+
   loop
-    -- `qty + v_qty` is evaluated by Postgres against the committed row under a
-    -- row lock, so two devices adding at once serialise and both counts land.
-    -- Computing the total in the client is what made this last-writer-wins.
     update public.stocktake_items
        set qty = greatest(qty + v_qty, 0),
            last_scanned = now(),
@@ -1847,23 +1877,17 @@ begin
     end if;
 
     begin
-      -- A negative delta against a line that doesn't exist yet lands at 0, not a
-      -- constraint error. Reachable when the last unit is stepped off on one
-      -- device while another removes the line entirely.
       insert into public.stocktake_items (stocktake_id, org_id, barcode, qty)
       values (p_stocktake_id, v_org, v_code, greatest(v_qty, 0))
       returning * into v_row;
       return v_row;
     exception when unique_violation then
-      -- Another device inserted this exact barcode between our UPDATE finding
-      -- nothing and our INSERT. Go round again; the UPDATE will now find their
-      -- row and add to it. This is the race the old client-side branch lost.
       null;
     end;
   end loop;
 end $$;
 
-grant execute on function public.add_stocktake_item(uuid, text, numeric) to authenticated;
+grant execute on function public.add_stocktake_item(uuid, text, numeric, uuid) to authenticated;
 
 -- Absolute set, for the keypad's Edit mode and the −/+ steppers. Keyed on
 -- (stocktake_id, barcode) rather than the row id the client happens to be
@@ -1874,10 +1898,12 @@ grant execute on function public.add_stocktake_item(uuid, text, numeric) to auth
 -- This one CAN lower a quantity, so log_item_qty_reduced_audit fires for it and
 -- the reduction is recorded. That is intended: an edit walking a 247-unit line
 -- down to 1 is exactly what that trigger exists to catch.
+drop function if exists public.set_stocktake_item_qty(uuid, text, numeric);
 create or replace function public.set_stocktake_item_qty(
   p_stocktake_id uuid,
   p_barcode text,
-  p_qty numeric
+  p_qty numeric,
+  p_request_id uuid default null
 )
 returns public.stocktake_items
 language plpgsql security definer set search_path = public as $$
@@ -1910,6 +1936,23 @@ begin
     raise exception 'Stocktake not found.';
   end if;
 
+  -- Same guard as add_stocktake_item(). An absolute set looks naturally
+  -- idempotent, but it isn't once there are two devices: a retried "set to 6"
+  -- arriving after a colleague's +1 would quietly undo their tap.
+  if p_request_id is not null then
+    insert into public.stocktake_item_requests (request_id, stocktake_id, barcode)
+    values (p_request_id, p_stocktake_id, v_code)
+    on conflict (request_id) do nothing;
+    if not found then
+      select * into v_row from public.stocktake_items
+       where stocktake_id = p_stocktake_id and barcode = v_code;
+      return v_row;
+    end if;
+    if random() < 0.01 then
+      delete from public.stocktake_item_requests where created_at < now() - interval '7 days';
+    end if;
+  end if;
+
   update public.stocktake_items
      set qty = v_qty,
          last_scanned = now(),
@@ -1921,9 +1964,6 @@ begin
     return v_row;
   end if;
 
-  -- Line isn't there — removed on another device while this one still showed it.
-  -- Recreate it at the requested quantity rather than failing: the operator
-  -- asked for this barcode to read this number.
   begin
     insert into public.stocktake_items (stocktake_id, org_id, barcode, qty)
     values (p_stocktake_id, v_org, v_code, v_qty)
@@ -1941,7 +1981,24 @@ begin
   end;
 end $$;
 
-grant execute on function public.set_stocktake_item_qty(uuid, text, numeric) to authenticated;
+grant execute on function public.set_stocktake_item_qty(uuid, text, numeric, uuid) to authenticated;
+
+-- "Did that save land?" — asked by app.html after a lost reply, before it says
+-- anything. Own org only; a "no" is not proof (the request may be in flight),
+-- which is why the app says "couldn't confirm", never "nothing was recorded".
+create or replace function public.stocktake_item_request_applied(p_request_id uuid)
+returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1
+      from public.stocktake_item_requests r
+      join public.stocktakes s on s.id = r.stocktake_id
+     where r.request_id = p_request_id
+       and s.org_id = public.my_org_id()
+  )
+$$;
+
+grant execute on function public.stocktake_item_request_applied(uuid) to authenticated;
 
 -- ==========================================================================
 -- A completed stocktake stops accepting counts.

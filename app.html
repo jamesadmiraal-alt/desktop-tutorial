@@ -5295,6 +5295,177 @@
     items.unshift(row);
   }
 
+  // ---- Item writes: one action, applied once, reported truthfully ----------
+  //
+  // Stress test, 14 Oct 2026: a save's reply was lost, the app announced
+  // "Nothing was recorded" / "NOT saved. TypeError: Failed to fetch", the write
+  // had in fact landed, the operator saved again — and 9300675010119 went 2 -> 4.
+  // A lost reply says nothing about whether the request arrived, so the app was
+  // guessing, and guessing wrong in the most expensive direction.
+  //
+  // Now every user action carries a request id (crypto.randomUUID()), and the
+  // save RPCs apply an id at most once (20261014_01). Three rules follow:
+  //
+  //   1. A reply that never came — timeout, Failed to fetch, a gateway 5xx — is
+  //      UNKNOWN, not failed. The app asks the server whether that request id
+  //      landed (stocktake_item_request_applied), re-reads the line, and reports
+  //      what is true: "saved", or "couldn't confirm — check the line".
+  //   2. "Nothing was recorded" is never said. Even a "no" from the server isn't
+  //      proof: the original request may still be in flight.
+  //   3. An unconfirmed action stays PENDING under its key (take, barcode, kind,
+  //      amount). Repeating that same action first re-asks about the pending id:
+  //      if it did land, the repeat is stopped and the operator told so — that
+  //      is the double count this exists to prevent; if it didn't, the repeat
+  //      REUSES the id, so whichever copy arrives, it counts once.
+  //
+  // An answer the server actually gave (a 4xx with a Postgres/PostgREST code —
+  // trial cap, closed count, refused permission) is definitive and reported as
+  // before: nothing was applied, because the transaction rolled back.
+
+  var ITEM_WRITE_TIMEOUT_MS = 15000;
+  var ITEM_CHECK_TIMEOUT_MS = 10000;
+  // How long an unconfirmed action is remembered. Past this, the original
+  // request is certainly not in flight, so a re-check is a reliable answer and
+  // there is no reason to hold the key.
+  var PENDING_WRITE_TTL_MS = 10 * 60 * 1000;
+  var pendingWrites = {};
+
+  function newRequestId() {
+    if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    // Older WebViews: an RFC 4122 v4 from getRandomValues. Math.random() is not
+    // an option — a collision would silently swallow someone's save.
+    var b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    var h = Array.prototype.map.call(b, function (x) { return (x + 0x100).toString(16).slice(1); }).join('');
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+  }
+
+  // Did the server answer, or did the reply go missing? supabase-js reports a
+  // fetch that never got a response as status 0 (checked against the vendored
+  // build). A 5xx/408 is a gateway or upstream giving up — the request may well
+  // have reached Postgres behind it. Everything else carrying an HTTP status
+  // is the server's own answer.
+  function replyWasLost(res) {
+    var st = res && res.status;
+    return !st || st >= 500 || st === 408;
+  }
+
+  function writeKey(takeId, barcode, kind, amount) {
+    return takeId + '|' + barcode + '|' + kind + '|' + qtyText(amount);
+  }
+
+  // Sends one item write. cb({ row }) | cb({ error }) — definitive refusal |
+  // cb({ lost: true }) — no reliable answer. Settles exactly once, within
+  // ITEM_WRITE_TIMEOUT_MS; a reply arriving after that is dropped here, and
+  // the confirm step below finds out what it did.
+  function sendItemWrite(rpc, args, cb) {
+    var settled = false;
+    var finish = function (outcome) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cb(outcome);
+    };
+    var timer = setTimeout(function () { finish({ lost: true }); }, ITEM_WRITE_TIMEOUT_MS);
+    sb.rpc(rpc, args).then(function (res) {
+      // The database half not applied yet (PGRST202: no function takes
+      // p_request_id). Nothing ran — the call was refused before reaching any
+      // function — so send it once more without the id, exactly as before
+      // 20261014_01. Keeps saving working if app.html is ever pushed first.
+      if (res.error && res.error.code === 'PGRST202' && args.p_request_id) {
+        var legacy = {};
+        Object.keys(args).forEach(function (k) { if (k !== 'p_request_id') legacy[k] = args[k]; });
+        sb.rpc(rpc, legacy).then(function (r2) { handle(r2); }, function () { finish({ lost: true }); });
+        return;
+      }
+      handle(res);
+    }, function () { finish({ lost: true }); });
+
+    function handle(res) {
+      if (res.error) { finish(replyWasLost(res) ? { lost: true } : { error: res.error }); return; }
+      var row = Array.isArray(res.data) ? res.data[0] : res.data;
+      // A reply with no line in it is not a confirmation of anything — treat it
+      // like a lost reply and go and look, rather than declaring a failure.
+      finish(row && row.barcode ? { row: row } : { lost: true });
+    }
+  }
+
+  // cb(true | false | null): landed / not (yet) / couldn't ask.
+  function checkItemRequest(requestId, cb) {
+    var settled = false;
+    var finish = function (v) { if (!settled) { settled = true; clearTimeout(timer); cb(v); } };
+    var timer = setTimeout(function () { finish(null); }, ITEM_CHECK_TIMEOUT_MS);
+    sb.rpc('stocktake_item_request_applied', { p_request_id: requestId }).then(function (res) {
+      finish(res.error ? null : res.data === true);
+    }, function () { finish(null); });
+  }
+
+  // The line as the server holds it now. cb(row) — or cb(null) if the line
+  // isn't there or the read failed; either way the caller has nothing newer.
+  function readLine(takeId, barcode, cb) {
+    var settled = false;
+    var finish = function (row) { if (!settled) { settled = true; clearTimeout(timer); cb(row); } };
+    // Same bound as the check: on a dead connection this must not be what keeps
+    // the operator waiting for an answer.
+    var timer = setTimeout(function () { finish(null); }, ITEM_CHECK_TIMEOUT_MS);
+    sb.from('stocktake_items').select('*').eq('stocktake_id', takeId).eq('barcode', barcode).maybeSingle()
+      .then(function (res) { finish(!res.error && res.data ? res.data : null); }, function () { finish(null); });
+  }
+
+  // Show the server's line, if it is still the take on screen.
+  function showServerLine(takeId, row) {
+    if (!row || !currentTake || currentTake.id !== takeId) return;
+    mergeItem(row);
+    renderItems();
+  }
+
+  // The id to send for this action — or null, meaning "don't send: the earlier
+  // identical action you're repeating already landed" (cb is told which).
+  function requestIdFor(key, takeId, barcode, cb) {
+    var pend = pendingWrites[key];
+    if (pend && Date.now() - pend.at > PENDING_WRITE_TTL_MS) { delete pendingWrites[key]; pend = null; }
+    if (!pend) { cb(newRequestId()); return; }
+    checkItemRequest(pend.requestId, function (applied) {
+      if (applied === true) {
+        // The earlier save DID land; its reply was what went missing. This
+        // repeat is the retry that turned 2 into 4 — don't send it.
+        delete pendingWrites[key];
+        readLine(takeId, barcode, function (row) {
+          showServerLine(takeId, row);
+          toast('Your earlier save of ' + barcode + ' did go through'
+            + (row ? ' — the line is ' + qtyText(row.qty) : '') + '. Nothing more was added.');
+          cb(null);
+        });
+        return;
+      }
+      // Not landed, or couldn't ask: reuse the id. If the original turns up
+      // after all, the server counts it once either way.
+      cb(pend.requestId);
+    });
+  }
+
+  // After a lost reply: ask, re-read, then report what is true.
+  // onConfirmed(row) — the write landed. onUnconfirmed() — we couldn't find out;
+  // the action stays pending so a repeat can't double it.
+  function resolveLostWrite(key, requestId, takeId, barcode, onConfirmed, onUnconfirmed) {
+    pendingWrites[key] = { requestId: requestId, at: Date.now() };
+    checkItemRequest(requestId, function (applied) {
+      readLine(takeId, barcode, function (row) {
+        showServerLine(takeId, row);
+        if (applied === true) {
+          delete pendingWrites[key];
+          onConfirmed(row);
+        } else {
+          onUnconfirmed();
+        }
+      });
+    });
+  }
+
+  var COULD_NOT_CONFIRM = "Couldn't confirm that save. Check the line before re-entering.";
+
   // The −/+ steppers. Sends the DELTA (±1), never a computed absolute.
   //
   // This used to read the on-screen qty, add one in JavaScript, and write the
@@ -5308,26 +5479,39 @@
   // column's `check (qty >= 0)`. Keyed on (stocktake_id, barcode), not `it.id`,
   // which goes stale as soon as the line is removed and rescanned elsewhere.
   function stepItemQty(it, delta) {
-    sb.rpc('add_stocktake_item', {
-      p_stocktake_id: currentTake.id, p_barcode: it.barcode, p_qty: qtyRound(delta)
-    }).then(function (res) {
-      // Only reachable if the line was deleted on another device between the
-      // render and this tap, so add_stocktake_item() has to re-create it and
-      // meets the cap. Showing the plans is still the right answer — the count
-      // genuinely has no room for this line any more.
-      if (res.error && isTrialLimit(res.error)) { showTrialLimit(); return; }
-      if (res.error) { fail({ message: it.barcode + ' was NOT saved. ' + failHint(res.error) }, ''); return; }
-      var row = Array.isArray(res.data) ? res.data[0] : res.data;
-      // No row means nothing was written. Saying nothing here would leave the
-      // operator believing a tap counted when it didn't.
-      if (!row) { fail({ message: it.barcode + ' was NOT saved. The server did not confirm the write.' }, ''); return; }
-      // The line and the badge both re-derive from this server row, so what's on
-      // screen is what's stored — including any change another device made
-      // between this tap and its reply.
-      mergeItem(row);
-      renderItems();
-    }, function (err) {
-      fail({ message: it.barcode + ' was NOT saved. ' + failHint(err) }, '');
+    var takeId = currentTake.id;
+    var amount = qtyRound(delta);
+    var key = writeKey(takeId, it.barcode, 'step', amount);
+    requestIdFor(key, takeId, it.barcode, function (requestId) {
+      if (!requestId) return; // the earlier identical tap landed — told above
+      sendItemWrite('add_stocktake_item', {
+        p_stocktake_id: takeId, p_barcode: it.barcode, p_qty: amount, p_request_id: requestId
+      }, function (out) {
+        if (out.row) {
+          delete pendingWrites[key];
+          // The line and the badge both re-derive from this server row, so
+          // what's on screen is what's stored — including any change another
+          // device made between this tap and its reply.
+          showServerLine(takeId, out.row);
+          return;
+        }
+        if (out.error) {
+          delete pendingWrites[key];
+          // Only reachable if the line was deleted on another device between
+          // the render and this tap and re-creating it meets the trial cap.
+          if (isTrialLimit(out.error)) { showTrialLimit(); return; }
+          // The server answered and refused: the transaction rolled back, so
+          // this one IS known not to have been applied.
+          fail({ message: it.barcode + ' was not changed. ' + failHint(out.error) }, '');
+          return;
+        }
+        resolveLostWrite(key, requestId, takeId, it.barcode,
+          function () { /* landed: the line is already redrawn from the server */ },
+          function () {
+            toast("Couldn't confirm that change to " + it.barcode + '. Check the line before tapping again.',
+                  '#b45309');
+          });
+      });
     });
   }
 
@@ -5624,7 +5808,9 @@
   // A request that never settles must not wedge Save forever. 20s is far longer
   // than any real round trip on venue wifi, so reaching this means the request
   // is gone, not slow.
-  var COMMIT_TIMEOUT_MS = 20000;
+  // Longer than ITEM_WRITE_TIMEOUT_MS plus a confirm round trip: sendItemWrite()
+  // always settles first, so this is only a backstop for the lock itself.
+  var COMMIT_TIMEOUT_MS = 40000;
 
   function beginCommit() {
     commitInFlight = true;
@@ -5633,7 +5819,9 @@
     commitWatchdog = setTimeout(function () {
       if (!commitInFlight) return;
       endCommit();
-      fail({ message: 'That save did not come back. Nothing was recorded — check the count and try again.' }, '');
+      // Never "nothing was recorded": a request that didn't answer may still
+      // have landed. That claim is what made the operator re-save 2 into 4.
+      fail({ message: COULD_NOT_CONFIRM }, '');
     }, COMMIT_TIMEOUT_MS);
   }
   function endCommit() {
@@ -5730,63 +5918,74 @@
     beginCommit();
     // Released on EVERY outcome, including a rejected promise and the watchdog.
     var done = function () { endCommit(); };
+    var takeId = currentTake.id;
+    var key = writeKey(takeId, code, isEdit ? 'edit' : 'add', qty);
 
-    sb.rpc(rpc, { p_stocktake_id: currentTake.id, p_barcode: code, p_qty: qty }).then(
-      function (res) {
-        done();
-        // This is the one moment a scan can genuinely be lost: if the login was
-        // taken over on another device a heartbeat ago, this write fails and the
-        // number the operator just typed is gone. A bare "Save failed" would
-        // leave them re-scanning blind, so name the barcode and the likely cause.
-        // The trial cap is not a failure to report — it is the moment the
-        // product asks to be bought. Show the plans instead of a red toast, and
-        // close the keypad so the dialog isn't stacked behind it.
-        if (res.error && isTrialLimit(res.error)) { closeQtyDialog(); showTrialLimit(); return; }
-        if (res.error) {
-          fail({ message: code + ' was NOT saved. ' + failHint(res.error) }, '');
-          // "This stocktake is completed" while the Home card still said In
-          // Progress is what ST5 reported, and the operator has no way to tell
-          // which of the two is lying. The server is, by definition, right —
-          // so go and read the real status instead of leaving a stale card
-          // inviting them to keep counting into a closed take.
-          if (/completed/i.test((res.error && res.error.message) || '')) refreshTakeStatus(true);
-          return;
-        }
-        var row = Array.isArray(res.data) ? res.data[0] : res.data;
-        if (!row) { fail({ message: code + ' was NOT saved. The server did not confirm the write.' }, ''); return; }
-        mergeItem(row);
-        renderItems();
-
-        // Say the resulting TOTAL whenever it isn't just what they typed. That
-        // sentence is how the second scanner discovers a colleague had already
-        // counted this barcode — the case that previously showed a raw Postgres
-        // error, and before that silently overwrote their count.
-        var total = qtyNum(row.qty);
-        if (isEdit) {
-          toast(code + '  set to ' + qtyText(total));
-        } else if (beforeQty === null && total !== qty) {
-          // The client had never seen this line, yet the total came back higher
-          // than what was typed — so another device had already counted it. Say
-          // how much was there, because that is the number the operator is about
-          // to be surprised by, and it is derivable: total minus what they typed.
-          toast(code + '  ×' + qtyText(qty) + ' added to ' + qtyText(qtyRound(total - qty))
-                + ' already counted — now ' + qtyText(total));
-        } else if (total !== qty) {
-          toast(code + '  ×' + qtyText(qty) + ' added — now ' + qtyText(total));
-        } else {
-          toast(code + '  ×' + qtyText(qty) + ' saved');
-        }
-        closeQtyDialog();
-      },
-      function (err) {
-        done();
-        // Same branch as above. supabase-js surfaces a Postgres exception as
-        // res.error rather than a rejection, so this arm is belt-and-braces —
-        // but the operator must never see the cap as "network problem".
-        if (isTrialLimit(err)) { closeQtyDialog(); showTrialLimit(); return; }
-        fail({ message: code + ' was NOT saved. ' + failHint(err) }, '');
+    // The resulting TOTAL, said whenever it isn't just what they typed. That
+    // sentence is how the second scanner discovers a colleague had already
+    // counted this barcode — the case that previously showed a raw Postgres
+    // error, and before that silently overwrote their count.
+    var announceSaved = function (row) {
+      var total = qtyNum(row.qty);
+      if (isEdit) {
+        toast(code + '  set to ' + qtyText(total));
+      } else if (beforeQty === null && total !== qty) {
+        // The client had never seen this line, yet the total came back higher
+        // than what was typed — so another device had already counted it.
+        toast(code + '  ×' + qtyText(qty) + ' added to ' + qtyText(qtyRound(total - qty))
+              + ' already counted — now ' + qtyText(total));
+      } else if (total !== qty) {
+        toast(code + '  ×' + qtyText(qty) + ' added — now ' + qtyText(total));
+      } else {
+        toast(code + '  ×' + qtyText(qty) + ' saved');
       }
-    );
+    };
+
+    requestIdFor(key, takeId, code, function (requestId) {
+      if (!requestId) { done(); closeQtyDialog(); return; } // the earlier save landed — told above
+      sendItemWrite(rpc, { p_stocktake_id: takeId, p_barcode: code, p_qty: qty, p_request_id: requestId },
+        function (out) {
+          if (out.row) {
+            done();
+            delete pendingWrites[key];
+            showServerLine(takeId, out.row);
+            announceSaved(out.row);
+            closeQtyDialog();
+            return;
+          }
+          if (out.error) {
+            done();
+            delete pendingWrites[key];
+            // The trial cap is not a failure to report — it is the moment the
+            // product asks to be bought. Show the plans, and close the keypad so
+            // the dialog isn't stacked behind it.
+            if (isTrialLimit(out.error)) { closeQtyDialog(); showTrialLimit(); return; }
+            // The server answered and refused, so the transaction rolled back:
+            // this one genuinely was not saved, and saying so is accurate.
+            fail({ message: code + ' was NOT saved. ' + failHint(out.error) }, '');
+            // "This stocktake is completed" while the Home card still said In
+            // Progress is what ST5 reported. The server is, by definition, right
+            // — so go and read the real status.
+            if (/completed|ready/i.test((out.error && out.error.message) || '')) refreshTakeStatus(true);
+            return;
+          }
+          // The reply went missing. Find out before saying anything.
+          resolveLostWrite(key, requestId, takeId, code,
+            function (row) {
+              done();
+              if (row) announceSaved(row); else toast(code + ' saved');
+              closeQtyDialog();
+            },
+            function () {
+              done();
+              // Close the keypad so the line behind it — just re-read from the
+              // server — can be checked. Repeating this exact save re-asks first
+              // and reuses the id, so it can't count twice.
+              closeQtyDialog();
+              toast(COULD_NOT_CONFIRM, '#b45309');
+            });
+        });
+    });
   }
 
   $('qty-ok').onclick = commitQty;
