@@ -6938,6 +6938,45 @@
   }
 
   // ---- Manual entry ----
+  //
+  // Is this all-digit code plausibly a COMPLETE retail barcode? Returns why not,
+  // or null. Retest, 14 Oct: 9300675024235 went into a count as 00675024235 —
+  // its first two digits lost on the way into the field. That couldn't be
+  // reproduced in the app (polling never touches this field; the testers shared
+  // one desktop, where OS-level keystrokes go to whichever window has focus),
+  // but whatever drops digits — a fumbled thumb, a wedge scanner glitch,
+  // another window — leaves a code the GTIN rules can usually catch:
+  //
+  //   9–11 digits     between EAN-8 and UPC-A/EAN-13: the shape of a 12- or
+  //                   13-digit code with digits missing (00675024235 is 11)
+  //   12/13/14 digits the GS1 mod-10 check digit must match — a dropped,
+  //                   doubled or swapped digit almost always breaks it
+  //
+  // Deliberately NOT checked: 1–7 digits (in-house codes, PLUs, typed SKUs),
+  // 8 digits (UPC-E's check digit is computed on its expanded form, so the
+  // EAN-8 rule would wrongly flag real UPC-Es), and anything not all digits
+  // (QR payloads, Code 128). Camera decodes never come through here — the
+  // decoder already verifies the check digit.
+  //
+  // A question, not a refusal: odd codes exist, and the operator holding the
+  // bottle is the one who knows.
+  function barcodeDoubt(code) {
+    if (!/^[0-9]+$/.test(code)) return null;
+    var n = code.length;
+    if (n >= 9 && n <= 11) {
+      return 'has ' + n + ' digits — retail barcodes have 8, 12, 13 or 14, so a digit may be missing';
+    }
+    if (n >= 12 && n <= 14) {
+      var sum = 0;
+      // Weights 3,1,3,1… from the digit next to the check digit, leftwards.
+      for (var i = n - 2, w = 3; i >= 0; i--, w = 4 - w) sum += Number(code.charAt(i)) * w;
+      if ((10 - (sum % 10)) % 10 !== Number(code.charAt(n - 1))) {
+        return 'doesn’t pass the barcode check digit, so a digit may be wrong or missing';
+      }
+    }
+    return null;
+  }
+
   function manualAdd() {
     var v = $('manual-input').value.trim();
     // Say why nothing happened. Returning in silence is indistinguishable from a
@@ -6952,6 +6991,10 @@
       toast('That looks like two barcodes joined — scan or type one', '#b91c1c');
       return;
     }
+    var doubt = barcodeDoubt(v);
+    // Cancel keeps the code in the field to be corrected, rather than making
+    // the operator start again.
+    if (doubt && !confirm(v + ' ' + doubt + '.\n\nCheck it against the bottle. Count it anyway?')) return;
     $('manual-input').value = '';
     openQtyDialog(v, false);
   }
