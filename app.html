@@ -2157,9 +2157,16 @@
     setItem: function (k, v) { try { (rememberMe ? localStorage : sessionStorage).setItem(k, v); } catch (e) {} },
     removeItem: function (k) { try { (rememberMe ? localStorage : sessionStorage).removeItem(k); } catch (e) {} }
   };
-  var sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
-    auth: { storage: dynamicStorage }
-  });
+  // A function so logout can start a FRESH client — see doLogout() for why.
+  // Everything calls `sb` at call time, so replacing it is enough; the one
+  // thing attached to a client instance is its auth listener, re-attached by
+  // attachAuthListeners().
+  function makeSupabaseClient() {
+    return window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
+      auth: { storage: dynamicStorage }
+    });
+  }
+  var sb = makeSupabaseClient();
 
   // ---- Auth ----
   // Which of org-create-row/org-join-row is shown, based on orgSignupMode —
@@ -2567,12 +2574,15 @@
   // Supabase signs the user in via the recovery link and fires this event;
   // enterApp() runs as normal (they're validly authenticated) and this just
   // additionally offers to set a new password on top of that.
-  sb.auth.onAuthStateChange(function (event, session) {
-    if (event === 'PASSWORD_RECOVERY') {
-      $('reset-pass1').value = ''; $('reset-pass2').value = '';
-      $('reset-password-overlay').classList.add('open');
-    }
-  });
+  function attachAuthListeners(client) {
+    client.auth.onAuthStateChange(function (event, session) {
+      if (event === 'PASSWORD_RECOVERY') {
+        $('reset-pass1').value = ''; $('reset-pass2').value = '';
+        $('reset-password-overlay').classList.add('open');
+      }
+    });
+  }
+  attachAuthListeners(sb);
   $('reset-pass-cancel').onclick = function () { $('reset-password-overlay').classList.remove('open'); };
   $('reset-pass-save').onclick = function () {
     var p1 = $('reset-pass1').value, p2 = $('reset-pass2').value;
@@ -4385,24 +4395,113 @@
   // without it, being dropped onto a login form is indistinguishable from the
   // app having crashed or bounced Home, which is how ST5 read it. A toast alone
   // is not enough — it fades, and the screen it fades on says nothing.
-  function doLogout(reason) {
-    clearHomeCache();
-    homeFromCache = false;
-    stopSeatHeartbeat();
-    // best-effort — frees the seat immediately rather than waiting out the
-    // staleness timeout. supabase-js query builders are lazy thenables:
-    // the request is never actually sent unless something consumes it, so
-    // this needs a .then() even though the result itself is ignored.
-    sb.rpc('release_seat').then(function () {});
-    sb.auth.signOut().then(function () {
-      currentUser = null; currentOrg = null; currentTake = null; items = []; locations = [];
-      resetAuthUiState();
-      setAuthMode('login');
-      if (reason) $('auth-sub').textContent = reason;
-      showView('auth');
+  // ---- Log out ---------------------------------------------------------------
+  //
+  // UPDATED 14 Oct 2026. Stress test: Log out needed several taps, the first
+  // left a blank page for ~40s, and the login screen then read
+  // "[object PointerEvent]".
+  //
+  // The 40 seconds: everything here used to wait for sb.auth.signOut(). The
+  // vendored supabase-js revokes the session on the server BEFORE removing it
+  // locally, inside its auth lock — so on a slow or dead connection the screen
+  // didn't change, and every later auth call (the next login included) queued
+  // behind it. Now, in this order:
+  //
+  //   1. the screen and local state change at once — this device is signed out
+  //      the moment the button is tapped;
+  //   2. the stored session is removed HERE, so a reload can't sign back in,
+  //      and a fresh client replaces the old one, so nothing waits on its lock;
+  //   3. the server side — release the seat, revoke the session — goes out in
+  //      the background with the old token, each bounded at
+  //      LOGOUT_NETWORK_TIMEOUT_MS. If it fails, the seat frees itself at the
+  //      heartbeat staleness timeout, as it always would have.
+  //
+  // "[object PointerEvent]": the button was bound as `onclick = doLogout`, so
+  // the click event arrived as `reason` and was printed under the heading. Only
+  // a string is ever shown now, and the button passes nothing.
+  var loggingOut = false;
+  var LOGOUT_NETWORK_TIMEOUT_MS = 5000;
+
+  // The old session's access token, read from storage before it is removed.
+  function storedAccessToken(client) {
+    var key = client && client.auth && client.auth.storageKey;
+    if (!key) return null;
+    var raw = null;
+    try { raw = localStorage.getItem(key) || sessionStorage.getItem(key); } catch (e) {}
+    try {
+      var obj = JSON.parse(raw || 'null');
+      return (obj && (obj.access_token || (obj.currentSession && obj.currentSession.access_token))) || null;
+    } catch (e) { return null; }
+  }
+  // Both storages, because "Remember me" decides which one holds it.
+  function forgetStoredSession(client) {
+    var key = client && client.auth && client.auth.storageKey;
+    if (!key) return;
+    [localStorage, sessionStorage].forEach(function (store) {
+      try {
+        for (var i = store.length - 1; i >= 0; i--) {
+          var k = store.key(i);
+          if (k === key || (k && k.indexOf(key + '-') === 0)) store.removeItem(k);
+        }
+      } catch (e) {}
     });
   }
-  $('logout-btn').onclick = doLogout;
+  function fetchWithTimeout(url, opts) {
+    var ctl = window.AbortController ? new AbortController() : null;
+    if (ctl) { opts.signal = ctl.signal; setTimeout(function () { ctl.abort(); }, LOGOUT_NETWORK_TIMEOUT_MS); }
+    return fetch(url, opts).catch(function () { /* best effort */ });
+  }
+  function backgroundSignOut(token) {
+    if (!token) return;
+    var headers = { apikey: cfg.supabaseAnonKey, Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
+    // Seat first, while the token is certainly still valid.
+    fetchWithTimeout(cfg.supabaseUrl + '/rest/v1/rpc/release_seat', { method: 'POST', headers: headers, body: '{}' })
+      .then(function () {
+        return fetchWithTimeout(cfg.supabaseUrl + '/auth/v1/logout?scope=global', { method: 'POST', headers: headers });
+      });
+  }
+
+  function doLogout(reason) {
+    // A second tap while the first is running does nothing — and neither does a
+    // late extra tap once it's done (the button-triggered call has no message,
+    // and there is nobody left to log out), so it can't reset a login form
+    // someone has started typing into.
+    if (loggingOut) return;
+    if (!currentUser && typeof reason !== 'string') return;
+    loggingOut = true;
+    var message = typeof reason === 'string' ? reason : '';
+    var btn = $('logout-btn');
+    if (btn) btn.disabled = true;
+    try {
+      clearHomeCache();
+      homeFromCache = false;
+      stopSeatHeartbeat();
+      var old = sb;
+      var token = storedAccessToken(old);
+      try { old.auth.stopAutoRefresh(); } catch (e) {}
+      forgetStoredSession(old);
+      sb = makeSupabaseClient();
+      attachAuthListeners(sb);
+      backgroundSignOut(token);
+      // takes too: the next person to sign in on this phone must not see the
+      // last one's list while theirs loads.
+      currentUser = null; currentOrg = null; currentTake = null; items = []; locations = []; takes = [];
+      resetAuthUiState();
+      setAuthMode('login');
+      if (message) $('auth-sub').textContent = message;
+    } catch (e) {
+      console.error('logout:', e);
+    } finally {
+      // Whatever happened above, the operator lands on the login screen —
+      // never a blank page.
+      showView('auth');
+      loggingOut = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+  // A wrapper, not `onclick = doLogout` — that passed the click event in as
+  // the "reason" and printed "[object PointerEvent]" on the login screen.
+  $('logout-btn').onclick = function () { doLogout(); };
   // Unlike the main Account-view logout, this is the ONLY way out of the
   // org-setup/payment-pending/seats-full screens (see showOrgSetupPrompt()'s
   // comment) — and on org-setup specifically it can silently discard a
