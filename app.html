@@ -216,6 +216,11 @@
   .eb-problems:empty { display: none; }
   .eb-warn { color: var(--warning); }
 
+  /* A tap the server hasn't confirmed yet: the line already shows its effect
+     (so nobody taps again thinking nothing happened), dimmed until the reply
+     settles it to the stored value. */
+  .qty-val.pending { opacity: 0.55; }
+
   /* First-import feedback, at the foot of the ⋯ sheet. Set apart (its own
      ground and border) so it reads as a question about the last file, not as
      one more thing to do to the stocktake. */
@@ -4889,6 +4894,9 @@
       items = [];
       $('badge').textContent = '';
     }
+    // Pending taps are keyed by take, so another take's can't show here; this
+    // just stops the map growing across a shift.
+    pendingSteps = {};
     showView('scan');
     // loadItems() first: it sets the loading flag and paints "Loading…". Calling
     // applyTakeReadOnly() before it would render an empty `items` with no load in
@@ -4979,6 +4987,11 @@
   // repaint unless something actually changed. Used by the poll and by
   // focus/visibility, which fire while the operator is mid-count and must not
   // disturb the screen.
+  // A load that never answers must still end. Without a bound, one dead request
+  // left itemsLoading true for good — and the poll and the on-return refresh
+  // both wait for loading to finish, so the open take never updated again.
+  var ITEMS_LOAD_TIMEOUT_MS = 20000;
+
   function loadItems(cb, quiet) {
     if (!currentTake) return;
     var takeId = currentTake.id;
@@ -4988,42 +5001,57 @@
       itemsLoadFailed = false;
       renderItems();   // paints "Loading…" only when there is nothing to show yet
     }
+    var settled = false;
+    var timer = setTimeout(function () { onFailure({ message: 'The request timed out' }); }, ITEMS_LOAD_TIMEOUT_MS);
+    // THE NEWEST REQUEST OWNS THE LOADING STATE, quiet or not.
+    //
+    // This used to clear itemsLoading only for a non-quiet reply. A quiet
+    // refresh landing while the first load was still out — closing the keypad
+    // fires one, so does refreshTakeStatus() — bumped the token, the first load's
+    // reply was discarded as superseded, and the quiet reply didn't clear the
+    // flag. "Loading…" then stayed forever, and because the poll skips while
+    // loading, the take stopped refreshing entirely. That is the frozen take from
+    // the 14 Oct stress test.
+    var current = function () { return !settled && token === itemsRequestToken; };
     sb.from('stocktake_items')
       .select('*')
       .eq('stocktake_id', takeId)
       .order('last_scanned', { ascending: false })
       .then(function (res) {
-        if (token !== itemsRequestToken) return;   // superseded; ignore
-        if (!quiet) itemsLoading = false;
-        if (res.error) {
-          // Leave whatever is already on screen alone — stale lines are more
-          // use than a wrongly-empty list. A background poll fails silently:
-          // one dropped request on venue wifi is not worth a red toast over a
-          // count that is still perfectly readable.
-          if (!quiet) {
-            itemsLoadFailed = true;
-            fail(res.error, 'Could not load items');
-            renderItems();
-          }
-          return;
-        }
+        if (!current()) return;   // superseded: the newer request will settle the state
+        if (res.error) { onFailure(res.error); return; }
+        settled = true;
+        clearTimeout(timer);
+        var stateChanged = itemsLoading || itemsLoadFailed;
+        itemsLoading = false;
+        itemsLoadFailed = false;
         var fresh = res.data || [];
         var changed = itemsSignature(fresh) !== itemsSignature(items);
         items = fresh;
-        if (changed || !quiet) renderItems();
+        // A quiet refresh that finds nothing new still has to repaint if it is
+        // the one ending "Loading…" — otherwise the screen keeps saying it.
+        if (changed || !quiet || stateChanged) renderItems();
         // Keep the Home card's embedded aggregate in step with what the scan
         // view is showing. Without this, Home and the open take disagree until
         // the next full loadTakes() — "inside 6/275 vs Home 13/366".
         syncTakeSnapshot(takeById(takeId), fresh);
         if (cb) cb();
-      }, function (err) {
-        if (token !== itemsRequestToken) return;
-        if (quiet) return;   // background failure: say nothing, change nothing
-        itemsLoading = false;
-        itemsLoadFailed = true;
-        fail(err, 'Could not load items');
-        renderItems();
-      });
+      }, function (err) { if (current()) onFailure(err); });
+
+    function onFailure(err) {
+      if (!current()) return;
+      settled = true;
+      clearTimeout(timer);
+      // Leave whatever is already on screen alone — stale lines are more use
+      // than a wrongly-empty list. A background poll that fails while nothing
+      // was waiting on it says nothing and changes nothing: one dropped request
+      // on venue wifi is not worth a red toast over a readable count.
+      if (!itemsLoading && quiet) return;
+      itemsLoading = false;
+      itemsLoadFailed = true;
+      if (!quiet) fail(err, 'Could not load items');
+      renderItems();
+    }
   }
 
   function takeById(id) {
@@ -5130,6 +5158,36 @@
     loadTakes(true);
   };
 
+  // In-flight −/+ taps, by take and barcode: the sum of deltas sent but not yet
+  // settled. renderItems() adds it to the line so a tap shows the instant it is
+  // made. The stored qty is untouched — the reply replaces the line with the
+  // server's value, and the pending amount comes off when it settles, whatever
+  // the outcome.
+  var pendingSteps = {};
+  function pendingStepFor(barcode) {
+    return currentTake ? (pendingSteps[currentTake.id + '|' + barcode] || 0) : 0;
+  }
+  function addPendingStep(takeId, barcode, delta) {
+    var k = takeId + '|' + barcode;
+    var v = qtyRound((pendingSteps[k] || 0) + delta);
+    if (v) pendingSteps[k] = v; else delete pendingSteps[k];
+    if (currentTake && currentTake.id === takeId) renderItems();
+  }
+
+  // One touch, one tap. Some WebViews deliver a tap as two click events a few
+  // milliseconds apart; on a stepper that is two RPCs and a count that moves by
+  // 2 — reported 14 Oct as 12 -> 14 from a single tap. 120ms is far faster than
+  // anyone deliberately taps (a fast counter manages one every 200ms or so), so
+  // this only ever drops the duplicate.
+  var STEP_DOUBLE_FIRE_MS = 120;
+  var lastStepAt = {};
+  function isDoubleFire(key) {
+    var now = Date.now();
+    var dup = lastStepAt[key] && now - lastStepAt[key] < STEP_DOUBLE_FIRE_MS;
+    lastStepAt[key] = now;
+    return dup;
+  }
+
   // ---- Items in current stocktake ----
   function renderItems() {
     var listEl = $('list');
@@ -5193,7 +5251,10 @@
       var qc = document.createElement('div');
       qc.className = 'qty-controls';
       var minus = document.createElement('button'); minus.textContent = '−';
-      var val = document.createElement('div'); val.className = 'qty-val'; val.textContent = qtyText(it.qty);
+      var val = document.createElement('div'); val.className = 'qty-val';
+      var pend = pendingStepFor(it.barcode);
+      val.textContent = qtyText(Math.max(qtyNum(it.qty) + pend, 0));
+      if (pend) val.classList.add('pending');
       var plus = document.createElement('button'); plus.textContent = '+';
       // Step stays 1 even though qty is decimal now: the common case is whole
       // bottles, and a ± that moved by 0.25 would make counting 12 of something
@@ -5218,11 +5279,15 @@
       }
       minus.onclick = function (e) {
         if (e) e.stopPropagation();
+        if (isDoubleFire(row.dataset.barcode + '|-')) return;
         var line = lineFromRow();
-        if (line && qtyNum(line.qty) > 0) stepItemQty(line, -1);
+        // Floor check against what the operator SEES (stored + pending), so a run
+        // of − taps on a slow connection can't queue more decrements than exist.
+        if (line && qtyNum(line.qty) + pendingStepFor(line.barcode) > 0) stepItemQty(line, -1);
       };
       plus.onclick = function (e) {
         if (e) e.stopPropagation();
+        if (isDoubleFire(row.dataset.barcode + '|+')) return;
         var line = lineFromRow();
         if (line) stepItemQty(line, 1);
       };
@@ -5482,11 +5547,16 @@
     var takeId = currentTake.id;
     var amount = qtyRound(delta);
     var key = writeKey(takeId, it.barcode, 'step', amount);
+    // Visible NOW, not when the reply arrives. On 14 Oct replies took 10–25s and
+    // the line didn't move, so the operator tapped again — each tap a real +1.
+    addPendingStep(takeId, it.barcode, amount);
+    var settle = function () { addPendingStep(takeId, it.barcode, -amount); };
     requestIdFor(key, takeId, it.barcode, function (requestId) {
-      if (!requestId) return; // the earlier identical tap landed — told above
+      if (!requestId) { settle(); return; } // the earlier identical tap landed — told above
       sendItemWrite('add_stocktake_item', {
         p_stocktake_id: takeId, p_barcode: it.barcode, p_qty: amount, p_request_id: requestId
       }, function (out) {
+        settle();
         if (out.row) {
           delete pendingWrites[key];
           // The line and the badge both re-derive from this server row, so
@@ -5524,6 +5594,15 @@
     // number first to find out.
     if (takeIsReadOnly()) {
       toast('This count is completed — ask a manager to reopen it', '#b91c1c');
+      return;
+    }
+    // Not into a take whose lines haven't arrived. The save itself would be
+    // fine — the database adds to whatever is stored — but the keypad's
+    // "already scanned" hint and the toast's "added to N already counted" are
+    // both read from the loaded lines, and would be wrong. Bounded: a load
+    // that doesn't answer gives up after ITEMS_LOAD_TIMEOUT_MS.
+    if (itemsLoading && !items.length) {
+      toast('Still loading this stocktake — one moment', '#b45309');
       return;
     }
     var existing = items.find(function (it) { return it.barcode === code; });
