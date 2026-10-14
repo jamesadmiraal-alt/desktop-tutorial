@@ -5788,6 +5788,7 @@
   var lastStepAt = {};
   function isDoubleFire(key) {
     var now = Date.now();
+    lastTapAt = now;
     var dup = lastStepAt[key] && now - lastStepAt[key] < STEP_DOUBLE_FIRE_MS;
     lastStepAt[key] = now;
     return dup;
@@ -5819,16 +5820,32 @@
   // and states updated. A node moves only when the order genuinely changes.
   var displayOrder = [];   // barcodes, in the order the open take shows them
   var rowCache = {};       // barcode -> its row element, while shown
+  // A line another device removed would pull every row below it UP — under a
+  // thumb mid-burst. So within TAP_SETTLE_MS of a tap, a vanished line keeps
+  // its row as it was (its buttons find no line and do nothing), and it goes
+  // on the first render after the taps stop.
+  var lastTapAt = 0;
+  var TAP_SETTLE_MS = 1000;
+  var settleTimer = null;
 
   // `items` in display order. Lines displayOrder doesn't know yet are added at
-  // the end; lines that are gone drop out.
+  // the end; lines that are gone drop out (after the taps settle).
   function orderedItems() {
     var byBc = {};
     items.forEach(function (it) { byBc[it.barcode] = it; });
-    var out = [], seen = {};
+    var settling = Date.now() - lastTapAt < TAP_SETTLE_MS;
+    var out = [], seen = {}, held = false;
     displayOrder.forEach(function (bc) {
-      if (byBc[bc] && !seen[bc]) { out.push(byBc[bc]); seen[bc] = true; }
+      if (seen[bc]) return;
+      if (byBc[bc]) { out.push(byBc[bc]); seen[bc] = true; }
+      else if (settling && rowCache[bc] && rowCache[bc]._item) { out.push(rowCache[bc]._item); seen[bc] = true; held = true; }
     });
+    if (held && !settleTimer) {
+      settleTimer = setTimeout(function () {
+        settleTimer = null;
+        if (currentView === 'scan') renderItems();
+      }, Math.max(TAP_SETTLE_MS - (Date.now() - lastTapAt), 0) + 50);
+    }
     items.forEach(function (it) {
       if (!seen[it.barcode]) { out.push(it); seen[it.barcode] = true; }
     });
@@ -5836,7 +5853,10 @@
     return out;
   }
 
-  function clearRows() { rowCache = {}; }
+  function clearRows() {
+    rowCache = {};
+    if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+  }
 
   // Built once per barcode. Every handler reads the barcode from the row at tap
   // time — never an index, never the object captured when the row was drawn.
@@ -5923,6 +5943,7 @@
 
   // Text and states only — the node, its buttons and their handlers stay put.
   function updateItemRow(row, it, readOnly) {
+    row._item = it;
     var el = row._els;
     var savedName = barcodeNameFor(it.barcode);
     if (el.name.textContent !== savedName) el.name.textContent = savedName;
