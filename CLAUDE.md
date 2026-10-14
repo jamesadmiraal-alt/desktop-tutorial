@@ -241,3 +241,32 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   non-missing ones all one leading zero away.
 - Quantity precision is 2 dp in THREE places — the numpad's input guard, `QTY_DP` in
   app.html, and `qty numeric(12,2)` in schema.sql. Anything finer needs all three.
+
+## Network truthfulness (14 Oct 2026 stress test — don't regress these)
+
+- **A lost reply is UNKNOWN, never "failed".** Every item write carries a request id
+  (`p_request_id`, `crypto.randomUUID()`); `add_stocktake_item`/`set_stocktake_item_qty`
+  apply an id at most once (`stocktake_item_requests`, 20261014_01). On status 0 / timeout /
+  5xx the app asks `stocktake_item_request_applied()`, re-reads the line, and says "saved" or
+  "Couldn't confirm that save. Check the line before re-entering." **Never write "Nothing was
+  recorded"** — that claim plus an honest retry turned 2 into 4. An unconfirmed action stays
+  pending; repeating it re-asks first, and is not sent if the earlier one landed.
+- **Every request is bounded** and re-reads state on timeout: item writes 15s, item loads
+  20s, status 12s, create 15s, Home 20s. The newest request owns a loading flag, quiet or not —
+  a quiet refresh that supersedes a load must also be what ends "Loading…".
+- **Polls never stack.** The open-take poll (7s) and Home's (15s) skip a tick while their
+  previous request is still out. Starting a new one each tick discards every reply on a slow
+  phone, so it never updates (Coolroom, 14 Oct). There is no realtime channel — by design.
+- **Status changes update every copy by id** (`applyStatusLocally`): the ⋯ sheet's
+  `actionsTake`, Home's `takes[]` entry and `currentTake` are often different objects.
+  Counts lock for any status but `in_progress` — in the DB trigger
+  (`enforce_stocktake_not_completed`, 20261014_02) and in `takeIsReadOnly()`.
+- **Home reads totals, not lines**: `stocktake_totals()` (security invoker) — never embed
+  `stocktake_items(qty)` back into `loadTakes()`. Home paints from a per-org-and-user device
+  cache; the ⋯ actions wait for the fresh list; logout clears it. Hot RLS policies wrap helper
+  calls as `(select public.my_org_id())` so they run once per statement, not per row
+  (20261014_03) — keep that wrapping in any new policy on `stocktakes`/`stocktake_items`.
+- **Logout never waits on the network** and never binds `onclick = doLogout` (the event
+  became the "reason"). It removes the stored session and replaces `sb` with a fresh client
+  (`makeSupabaseClient()` + `attachAuthListeners()`); seat release and revoke go out in the
+  background. Anything new attached to the client instance must go in `attachAuthListeners`.
