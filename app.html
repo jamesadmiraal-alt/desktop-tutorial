@@ -221,6 +221,12 @@
      settles it to the stored value. */
   .qty-val.pending { opacity: 0.55; }
 
+  /* Home's freshness line: "Updating…" over a list painted from this device's
+     last copy, or what went wrong. Small and dim — it is a footnote to the list,
+     not an alert — and tappable to retry when the refresh failed. */
+  .home-status { font-size: 0.8rem; color: var(--text-dim); text-align: center; margin: 6px 0 2px; }
+  .home-status.failed { color: var(--warning); cursor: pointer; text-decoration: underline; }
+
   /* First-import feedback, at the foot of the ⋯ sheet. Set apart (its own
      ground and border) so it reads as a question about the last file, not as
      one more thing to do to the stocktake. */
@@ -1346,6 +1352,7 @@
 <!-- ===== Home: stocktake list ===== -->
 <div id="home-view" class="view">
   <button id="new-stocktake" class="primary">＋ New stocktake</button>
+  <div id="home-status" class="home-status" role="status" aria-live="polite" style="display:none"></div>
   <!-- Order: In Progress, then Ready for export, then Completed — the workflow's
        own order, and the order of relevance to whoever is holding the phone. This
        app is used by the person counting, so their unfinished work belongs at the
@@ -1868,6 +1875,36 @@
       return 'This app needs a database update that has not been applied yet — tell your administrator before counting.';
     }
     return msg;
+  }
+
+  // ---- Timings ------------------------------------------------------------
+  //
+  // Stress test, 14 Oct: Home took 20–60s, saves and Mark ready 10–25s. Some
+  // of that evening overlapped network drops on the test machine, so "the
+  // server is slow" was a guess. This makes it measurable: every timed call is
+  // kept in window.__gantryTimings (last 200), anything over 5s is always
+  // logged to the console, and ?debug=1 (or localStorage gantry-debug = 1) logs
+  // every call. Read them in DevTools after reproducing a slow moment.
+  var DEBUG_TIMINGS = (function () {
+    try { return /[?&]debug=1\b/.test(location.search) || localStorage.getItem('gantry-debug') === '1'; }
+    catch (e) { return false; }
+  })();
+  var SLOW_CALL_MS = 5000;
+  window.__gantryTimings = [];
+  function startTiming(label) {
+    var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+    var ended = false;
+    return function (outcome) {
+      if (ended) return;
+      ended = true;
+      var t1 = (window.performance && performance.now) ? performance.now() : Date.now();
+      var entry = { label: label, ms: Math.round(t1 - t0), outcome: outcome || 'ok', at: new Date().toISOString() };
+      window.__gantryTimings.push(entry);
+      if (window.__gantryTimings.length > 200) window.__gantryTimings.shift();
+      if (DEBUG_TIMINGS || entry.ms >= SLOW_CALL_MS) {
+        console.info('[gantry timing] ' + label + ' ' + entry.ms + 'ms ' + entry.outcome);
+      }
+    };
   }
 
   function fail(error, what) {
@@ -4348,6 +4385,8 @@
   // app having crashed or bounced Home, which is how ST5 read it. A toast alone
   // is not enough — it fades, and the screen it fades on says nothing.
   function doLogout(reason) {
+    clearHomeCache();
+    homeFromCache = false;
     stopSeatHeartbeat();
     // best-effort — frees the seat immediately rather than waiting out the
     // staleness timeout. supabase-js query builders are lazy thenables:
@@ -4414,10 +4453,30 @@
   // ---- Stocktakes (home) ----
   var takes = [];
 
+  // A card's numbers. t.totals ({ lines, qty }) comes from stocktake_totals()
+  // or from the open take's own lines (syncTakeSnapshot); t.stocktake_items is
+  // the old embedded shape, still read when Home fell back to it (a database
+  // without 20261014_03). Neither: "…" — never a confident "0 items" that
+  // simply means "not fetched".
+  function takeLineCount(t) {
+    if (t.totals) return t.totals.lines;
+    if (t.stocktake_items) return t.stocktake_items.length;
+    return null;
+  }
   function takeTotals(t) {
-    var list = t.stocktake_items || [];
-    var qty = list.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0);
-    return list.length + ' items · ' + qtyText(qty) + ' total qty';
+    var lines, qty;
+    if (t.totals) { lines = t.totals.lines; qty = t.totals.qty; }
+    else if (t.stocktake_items) {
+      lines = t.stocktake_items.length;
+      qty = t.stocktake_items.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0);
+    } else {
+      return '… items';
+    }
+    return itemCountText(lines) + ' · ' + qtyText(qty) + ' total qty';
+  }
+  // "1 item", not "1 items" (reported 14 Oct).
+  function itemCountText(n) {
+    return n + (n === 1 ? ' item' : ' items');
   }
 
   // This org's pre-created locations (each nested under a venue) — fetched
@@ -4482,43 +4541,190 @@
   // so any background caller — a focus event, a stale-row refresh — could yank
   // someone out of an open take and discard the number they were typing. Worse,
   // it made the bounce look like the pad had crashed.
-  function loadTakes(navigate) {
-    if (navigate || currentView === 'home') showView('home');
-    var scroller = $('home-view');
-    var keepScroll = scroller.scrollTop;
-    if (!document.querySelector('#home-view .stocktake')) {
-      $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
-    }
+  // ---- Home ---------------------------------------------------------------
+  //
+  // UPDATED 14 Oct 2026 (stress test: Home "Loading…" for 20–60s):
+  //   * card totals come from stocktake_totals() — one row per stocktake —
+  //     instead of embedding every line of every stocktake ever counted;
+  //   * Home paints at once from this device's last copy of the list, marked
+  //     "Updating…", rather than a blank "Loading…";
+  //   * the refresh is bounded (HOME_TIMEOUT_MS); if it fails, the list on
+  //     screen stays and the line under New stocktake says so, tap to retry.
+  var HOME_TIMEOUT_MS = 20000;
+  var HOME_CACHE_PREFIX = 'gantry-home-cache:';
+  var homeLoadToken = 0;
+  // True while Home is showing the cached copy and no fresh list has arrived.
+  // The ⋯ actions wait for the fresh one: export and status changes gate on a
+  // take's status, and a cached status can be minutes old.
+  var homeFromCache = false;
+
+  function homeCacheKey() {
+    return (currentOrg && currentUser) ? HOME_CACHE_PREFIX + currentOrg.id + ':' + currentUser.id : null;
+  }
+  // Per user, not just per org: staff under staff_see_own_stocktakes_only see a
+  // different list from their manager on the same phone.
+  function saveHomeCache() {
+    var key = homeCacheKey();
+    if (!key) return;
+    try {
+      var names = {};
+      takes.forEach(function (t) { if (t.created_by && creatorNames[t.created_by]) names[t.created_by] = creatorNames[t.created_by]; });
+      localStorage.setItem(key, JSON.stringify({
+        savedAt: new Date().toISOString(),
+        names: names,
+        takes: takes.map(function (t) {
+          return { id: t.id, name: t.name, status: t.status, created_at: t.created_at, updated_at: t.updated_at,
+                   created_by: t.created_by, locations: t.locations,
+                   totals: t.totals || (t.stocktake_items ? {
+                     lines: t.stocktake_items.length,
+                     qty: qtyRound(t.stocktake_items.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0)),
+                   } : null) };
+        }),
+      }));
+    } catch (e) { /* storage full or blocked: Home just loads the slow way */ }
+  }
+  function readHomeCache() {
+    var key = homeCacheKey();
+    if (!key) return null;
+    try {
+      var c = JSON.parse(localStorage.getItem(key) || 'null');
+      return c && Array.isArray(c.takes) ? c : null;
+    } catch (e) { return null; }
+  }
+  // On logout: a shared bar phone must not keep the last person's list.
+  function clearHomeCache() {
+    try {
+      for (var i = localStorage.length - 1; i >= 0; i--) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf(HOME_CACHE_PREFIX) === 0) localStorage.removeItem(k);
+      }
+    } catch (e) {}
+  }
+
+  function setHomeStatus(text, failed) {
+    var el = $('home-status');
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+    el.classList.toggle('failed', !!failed);
+  }
+  $('home-status').onclick = function () {
+    if ($('home-status').classList.contains('failed')) loadTakes();
+  };
+
+  var TAKES_COLUMNS = 'id,name,status,created_at,updated_at,created_by,'
+    + 'locations!inner(name,archived_at,venues!inner(name,archived_at))';
+  function takesQuery(columns) {
     // Stocktakes at an archived location — or in an archived venue — leave Home.
     // That's the point of archiving a sold venue, and it's reversible: nothing
     // is deleted, so restoring brings every row back. Same `!inner` requirement
     // and same two-level check as loadLocations() above; the confirm dialog in
     // admin.html tells the operator to export first.
-    sb.from('stocktakes')
-      .select('id,name,status,created_at,updated_at,created_by,locations!inner(name,archived_at,venues!inner(name,archived_at)),stocktake_items(qty)')
+    return sb.from('stocktakes').select(columns)
       .is('locations.archived_at', null)
       .is('locations.venues.archived_at', null)
-      .order('updated_at', { ascending: false })
-      .then(function (res) {
-        // On failure the previous rows are deliberately left on screen rather
-        // than replaced by an empty list — stale but tappable beats a blank
-        // Home, and the toast says what happened.
-        if (res.error) { fail(res.error, 'Could not load stocktakes'); return; }
-        takes = res.data;
-        loadCreatorNames(function () {
-          renderHome();
-          // Put the operator back where they were. renderHome() replaces every
-          // row, so without this the scroll resets and the layout shifts under
-          // whatever they were reaching for.
-          scroller.scrollTop = keepScroll;
-          // Every loadTakes() resolves here, not just the post-login one — but
-          // maybeAutoStartTutorial() is a no-op after the first completed/skipped
-          // run (or if we're not actually looking at Home), so this is the one
-          // place that covers both "just landed on Home after signing in" and
-          // "reopen the app already signed in" without a separate hook.
-          maybeAutoStartTutorial();
-        });
+      .order('updated_at', { ascending: false });
+  }
+
+  // cb(error, rows) — rows carry .totals. Falls back to the old embedded query
+  // if stocktake_totals() doesn't exist yet (PGRST202: 20261014_03 not applied),
+  // so pushing app.html first can't break Home.
+  function fetchTakesWithTotals(cb) {
+    Promise.all([takesQuery(TAKES_COLUMNS), sb.rpc('stocktake_totals')]).then(function (both) {
+      var tk = both[0], tot = both[1];
+      if (tk.error) { cb(tk.error); return; }
+      if (tot.error && tot.error.code === 'PGRST202') {
+        takesQuery(TAKES_COLUMNS + ',stocktake_items(qty)').then(function (legacy) {
+          if (legacy.error) { cb(legacy.error); return; }
+          cb(null, legacy.data || []);
+        }, function (e) { cb(e); });
+        return;
+      }
+      var byId = {};
+      if (!tot.error) (tot.data || []).forEach(function (r) {
+        byId[r.stocktake_id] = { lines: Number(r.line_count) || 0, qty: qtyRound(r.total_qty) };
       });
+      var rows = tk.data || [];
+      rows.forEach(function (t) {
+        if (byId[t.id]) t.totals = byId[t.id];
+        // A take with no lines has no totals row — that IS zero, when the
+        // totals call worked. When it failed, keep whatever this card showed.
+        else if (!tot.error) t.totals = { lines: 0, qty: 0 };
+        else {
+          var prev = takeById(t.id);
+          if (prev && prev.totals) t.totals = prev.totals;
+        }
+      });
+      cb(null, rows);
+    }, function (e) { cb(e); });
+  }
+
+  function loadTakes(navigate) {
+    if (navigate || currentView === 'home') showView('home');
+    var scroller = $('home-view');
+    var keepScroll = scroller.scrollTop;
+    var token = ++homeLoadToken;
+
+    // Nothing on screen yet: paint this device's last copy straight away.
+    if (!takes.length) {
+      var cached = readHomeCache();
+      if (cached && cached.takes.length) {
+        takes = cached.takes;
+        Object.keys(cached.names || {}).forEach(function (id) {
+          if (!creatorNames[id]) creatorNames[id] = cached.names[id];
+        });
+        homeFromCache = true;
+        renderHome();
+      }
+    }
+    if (!document.querySelector('#home-view .stocktake')) {
+      $('stocktake-list-inprogress').innerHTML = '<div class="empty">Loading…</div>';
+    }
+    setHomeStatus(takes.length ? 'Updating…' : '');
+
+    var endTiming = startTiming('loadTakes');
+    var settled = false;
+    var finish = function (err, rows) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (token !== homeLoadToken) return;   // a newer load owns the screen
+      if (err) {
+        endTiming('error');
+        // The list on screen — fresh, cached, or none — stays. Stale but
+        // tappable beats blank, and the line says how stale and how to retry.
+        if (takes.length) {
+          var cachedAt = homeFromCache && readHomeCache();
+          setHomeStatus('Couldn’t refresh' + (cachedAt ? ' — showing the list from '
+            + new Date(cachedAt.savedAt).toLocaleTimeString() : '') + '. Tap to try again.', true);
+        } else {
+          $('stocktake-list-inprogress').innerHTML =
+            '<div class="empty">Couldn’t load your stocktakes. Check your signal — nothing has been lost.</div>';
+          setHomeStatus('Tap to try again.', true);
+        }
+        return;
+      }
+      endTiming('ok');
+      takes = rows;
+      homeFromCache = false;
+      setHomeStatus('');
+      loadCreatorNames(function () {
+        if (token !== homeLoadToken) return;
+        renderHome();
+        saveHomeCache();
+        // Put the operator back where they were. renderHome() replaces every
+        // row, so without this the scroll resets and the layout shifts under
+        // whatever they were reaching for.
+        scroller.scrollTop = keepScroll;
+        // Every loadTakes() resolves here, not just the post-login one — but
+        // maybeAutoStartTutorial() is a no-op after the first completed/skipped
+        // run (or if we're not actually looking at Home), so this is the one
+        // place that covers both "just landed on Home after signing in" and
+        // "reopen the app already signed in" without a separate hook.
+        maybeAutoStartTutorial();
+      });
+    };
+    var timer = setTimeout(function () { finish({ message: 'timed out' }); }, HOME_TIMEOUT_MS);
+    fetchTakesWithTotals(finish);
   }
 
   // stocktakes.created_by references auth.users, not profiles — there's no
@@ -4572,8 +4778,9 @@
       (currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager')) ? '' : 'none';
     del.onclick = function (e) {
       e.stopPropagation();
-      var n = (t.stocktake_items || []).length;
-      if (confirm('Delete stocktake "' + t.name + '" and its ' + n + ' items?\n\n'
+      var n = takeLineCount(t);
+      if (confirm('Delete stocktake "' + t.name + '"'
+                  + (n === null ? '' : ' and its ' + itemCountText(n)) + '?\n\n'
                   + 'Export first if you need the data. This is recorded in the activity log.')) {
         sb.from('stocktakes').delete().eq('id', t.id).then(function (res) {
           if (res.error) { fail(res.error, 'Delete failed'); return; }
@@ -5094,6 +5301,7 @@
       renderItems();   // paints "Loading…" only when there is nothing to show yet
     }
     var settled = false;
+    var endTiming = startTiming('loadItems' + (quiet ? ' (poll)' : ''));
     var timer = setTimeout(function () { onFailure({ message: 'The request timed out' }); }, ITEMS_LOAD_TIMEOUT_MS);
     // THE NEWEST REQUEST OWNS THE LOADING STATE, quiet or not.
     //
@@ -5114,6 +5322,7 @@
         if (res.error) { onFailure(res.error); return; }
         settled = true;
         clearTimeout(timer);
+        endTiming('ok');
         var stateChanged = itemsLoading || itemsLoadFailed;
         itemsLoading = false;
         itemsLoadFailed = false;
@@ -5134,6 +5343,7 @@
       if (!current()) return;
       settled = true;
       clearTimeout(timer);
+      endTiming('failed');
       // Leave whatever is already on screen alone — stale lines are more use
       // than a wrongly-empty list. A background poll that fails while nothing
       // was waiting on it says nothing and changes nothing: one dropped request
@@ -5523,10 +5733,12 @@
   // the confirm step below finds out what it did.
   function sendItemWrite(rpc, args, cb) {
     var settled = false;
+    var endTiming = startTiming(rpc);
     var finish = function (outcome) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      endTiming(outcome.row ? 'ok' : outcome.error ? 'refused' : 'no reply');
       cb(outcome);
     };
     var timer = setTimeout(function () { finish({ lost: true }); }, ITEM_WRITE_TIMEOUT_MS);
@@ -6737,7 +6949,10 @@
   // construction rather than by luck, and costs no extra request.
   function syncTakeSnapshot(take, takeItems) {
     if (!take) return;
-    take.stocktake_items = takeItems.map(function (it) { return { qty: it.qty }; });
+    take.totals = {
+      lines: takeItems.length,
+      qty: qtyRound(takeItems.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0)),
+    };
     // Also update the row in `takes`, which is what renderHome() actually reads.
     // `take` is usually the same object, but not always: actionsTake and
     // currentTake can be pointers into a list that a background refresh has
@@ -6745,7 +6960,7 @@
     if (take.id) {
       for (var i = 0; i < takes.length; i++) {
         if (takes[i].id === take.id && takes[i] !== take) {
-          takes[i].stocktake_items = take.stocktake_items;
+          takes[i].totals = take.totals;
           break;
         }
       }
@@ -6806,6 +7021,10 @@
   }
 
   function openTakeActions(t) {
+    if (homeFromCache) {
+      toast('Updating the list — one moment', '#b45309');
+      return;
+    }
     actionsTake = t;
     actionsOpenedAt = Date.now();
     $('take-actions-title').textContent = t.name;
@@ -6825,7 +7044,17 @@
       btn.className = act.cls;
       btn.onclick = function () {
         if (!stateControlsArmed()) return;
-        setTakeStatus(t, act.status, 'manual');
+        if (btn.disabled) return;
+        // Feedback on the tap itself: 14 Oct's Mark ready took 10–25s and showed
+        // nothing while it worked. Restored whatever happens (setTakeStatus
+        // always calls back, within STATUS_TIMEOUT_MS plus a read-back).
+        var label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
+        setTakeStatus(t, act.status, 'manual', function () {
+          btn.disabled = false;
+          btn.textContent = label;
+        });
       };
     }
 
@@ -6841,7 +7070,14 @@
       if (!confirm('Mark "' + t.name + '" completed?\n\n'
                    + 'It becomes read-only for everyone — anyone still counting will '
                    + 'not be able to save. A manager can reopen it afterwards.')) return;
-      setTakeStatus(t, 'completed', 'manual');
+      if (completeBtn.disabled) return;
+      var label = completeBtn.textContent;
+      completeBtn.disabled = true;
+      completeBtn.textContent = 'Saving…';
+      setTakeStatus(t, 'completed', 'manual', function () {
+        completeBtn.disabled = false;
+        completeBtn.textContent = label;
+      });
     };
 
     // See renderExportButton(). If the template hasn't arrived yet the button
@@ -6908,10 +7144,12 @@
 
   function setTakeStatus(t, status, reason, onDone) {
     var settled = false;
+    var endTiming = startTiming('set_stocktake_status');
     var finish = function (finalStatus, refused) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      endTiming(finalStatus === status ? 'ok' : refused ? 'refused' : 'unconfirmed');
       var ok = finalStatus === status;
       if (finalStatus) {
         t.status = finalStatus;
@@ -7233,7 +7471,7 @@
       sb.rpc('clear_stocktake_items', { p_stocktake_id: actionsTake.id }).then(function (res) {
         if (res.error) { fail(res.error, 'Clear failed'); return; }
         closeTakeActions();
-        actionsTake.stocktake_items = [];
+        actionsTake.totals = { lines: 0, qty: 0 };
         actionsTake.updated_at = new Date().toISOString();
         renderHome();
       });

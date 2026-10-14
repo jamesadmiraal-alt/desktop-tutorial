@@ -581,6 +581,7 @@ create index stocktakes_org_idx on public.stocktakes (org_id, updated_at desc);
 create index stocktakes_location_idx on public.stocktakes (location_id);
 create index items_stocktake_idx on public.stocktake_items (stocktake_id);
 create index items_org_idx on public.stocktake_items (org_id);
+create index if not exists stocktakes_org_status_idx on public.stocktakes (org_id, status);
 
 -- Keep the parent stocktake's updated_at fresh whenever its items change
 create or replace function public.touch_stocktake()
@@ -1125,13 +1126,16 @@ create policy "owner delete memberships" on public.memberships
 -- Inlined rather than calling can_see_stocktake(), which would re-query
 -- stocktakes once per row to answer a question about the row already in hand.
 -- With the flag off this collapses to the original `org_id = my_org_id()`.
+-- Helper calls wrapped in (select …) so they are evaluated ONCE per statement
+-- (an InitPlan), not once per row — security definer functions are never
+-- inlined. Same logic; see 20261014_03.
 create policy "read org stocktakes" on public.stocktakes
   for select using (
-    org_id = public.my_org_id()
+    org_id = (select public.my_org_id())
     and (
-      coalesce(public.my_role(), '') in ('owner', 'manager')
-      or not public.staff_sees_own_only()
-      or created_by = auth.uid()
+      (select coalesce(public.my_role(), '')) in ('owner', 'manager')
+      or not (select public.staff_sees_own_only())
+      or created_by = (select auth.uid())
     )
   );
 
@@ -1195,7 +1199,7 @@ create policy "owner manager delete stocktakes" on public.stocktakes
 -- readable would be theatre.
 create policy "read org items" on public.stocktake_items
   for select using (
-    org_id = public.my_org_id()
+    org_id = (select public.my_org_id())   -- once per statement, see 20261014_03
     and exists (
       select 1 from public.stocktakes s where s.id = stocktake_items.stocktake_id
     )
@@ -1246,6 +1250,18 @@ create policy "org members update items" on public.stocktake_items
 -- This does not affect `delete from stocktakes`: its cascade to
 -- stocktake_items runs as the table owner with RLS forced off, not as the
 -- caller, so it is unaffected by client privileges.
+-- Home's card totals, one row per stocktake rather than every line of every
+-- stocktake. security INVOKER: the caller's RLS decides which lines count.
+create or replace function public.stocktake_totals()
+returns table (stocktake_id uuid, line_count bigint, total_qty numeric)
+language sql stable security invoker set search_path = public as $$
+  select i.stocktake_id, count(*), coalesce(sum(i.qty), 0)
+    from public.stocktake_items i
+   group by i.stocktake_id
+$$;
+
+grant execute on function public.stocktake_totals() to authenticated;
+
 drop policy if exists "org members delete items" on public.stocktake_items;
 revoke delete on public.stocktake_items from authenticated, anon;
 
