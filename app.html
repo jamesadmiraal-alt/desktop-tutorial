@@ -2112,8 +2112,32 @@
     if (wasOpen) shieldGhostClicks();
   }
 
+  // The open take, in the URL: #take=<uuid>. So a reload (F5, a phone that
+  // dropped the page, the native shell restarting) comes back to the count
+  // instead of Home — retest, 14 Oct. replaceState, never a new history
+  // entry: Back must keep meaning what it means now, and replaceState fires no
+  // hashchange, so applyAuthHash()'s #signup routing is unaffected.
+  var TAKE_HASH_RE = /^#take=([0-9a-f-]{36})$/i;
+  // Read once, at load: the take to reopen once the fresh list arrives.
+  var restoreTakeId = (function () {
+    var m = TAKE_HASH_RE.exec(location.hash || '');
+    return m ? m[1] : null;
+  })();
+  function setTakeHash(id) {
+    try {
+      var want = '#take=' + id;
+      if (location.hash !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
+    } catch (e) { /* a sandboxed frame without history: nothing to remember */ }
+  }
+  function clearTakeHash() {
+    try {
+      if (TAKE_HASH_RE.test(location.hash || '')) history.replaceState(history.state, '', location.pathname + location.search);
+    } catch (e) {}
+  }
+
   function showView(name) {
     currentView = name;
+    if (name === 'scan' && currentTake) setTakeHash(currentTake.id); else clearTakeHash();
     // Every navigation path runs through here — ‹ Back, hardware back, opening a
     // stocktake, Home after a save — so this is the one place that reliably
     // catches a dialog left open by any of them.
@@ -4513,6 +4537,8 @@
     if (btn) btn.disabled = true;
     try {
       sessionEpoch++;
+      restoreTakeId = null;
+      clearTakeHash();
       clearHomeCache();
       homeFromCache = false;
       stopSeatHeartbeat();
@@ -4826,7 +4852,16 @@
   // wrong row. Failures are silent; the next tick tries again.
   function loadTakes(navigate, quiet) {
     var epoch = sessionEpoch;
-    if (!quiet && (navigate || currentView === 'home')) showView('home');
+    // `navigate` means "the operator is headed for Home" — after login, Back,
+    // Skip. It must never pull them OUT of a take they have since opened.
+    // Retest, 14 Oct: after a reload on a slow connection, the post-login
+    // chain (org refresh -> seat claim -> loadTakes(true)) landed after the
+    // operator had already tapped into a take, and dropped them back on Home —
+    // "first open went blank and dropped to Home; the second open worked", and
+    // likely the "reloaded itself to Home while idle" too. Back clears
+    // currentTake before calling here, so Back still lands on Home.
+    var inTake = currentView === 'scan' && !!currentTake;
+    if (!quiet && !inTake && (navigate || currentView === 'home')) showView('home');
     var scroller = $('home-view');
     var keepScroll = scroller.scrollTop;
     var token = ++homeLoadToken;
@@ -4884,6 +4919,12 @@
         if (token !== homeLoadToken) return;
         renderHome();
         saveHomeCache();
+        if (restoreTakeId && !quiet) {
+          var restoreId = restoreTakeId;
+          restoreTakeId = null;
+          // Gone (deleted, archived, or not visible to this login): stay on Home.
+          if (currentView === 'home' && takeById(restoreId)) openTakeById(restoreId);
+        }
         // Put the operator back where they were. renderHome() replaces every
         // row, so without this the scroll resets and the layout shifts under
         // whatever they were reaching for.
@@ -5736,9 +5777,11 @@
       if (itemsLoading) {
         listEl.innerHTML = '<div class="empty">Loading…</div>';
       } else if (itemsLoadFailed) {
-        listEl.innerHTML = '<div class="empty">Couldn’t load this stocktake’s lines.<br>'
-          + 'Check your signal and tap ‹ Back, then open it again.<br>'
-          + '<b>Nothing has been lost.</b></div>';
+        // Stays on the take with a Retry — never blank, never a jump to Home.
+        listEl.innerHTML = '<div class="empty">Couldn’t load this stocktake’s lines — check your signal.<br>'
+          + '<b>Nothing has been lost.</b><br>'
+          + '<button id="items-retry" class="primary" style="width:auto;margin-top:10px;padding:8px 18px">Retry</button></div>';
+        $('items-retry').onclick = function () { loadItems(); };
       } else {
         listEl.innerHTML = '<div class="empty">No scans yet.<br>Point the camera at a barcode to start.</div>';
       }
