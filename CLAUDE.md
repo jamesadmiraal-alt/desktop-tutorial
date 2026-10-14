@@ -275,3 +275,18 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   draw UI or touch `currentUser` (org refresh, seat claim, heartbeat, Home load) must
   capture `sessionEpoch` and drop itself if it changed — that's what stops a late reply
   showing "Already signed in elsewhere" over the login screen.
+- **± taps are queued per line** (`stepQueues`): one request in flight per line, later taps
+  summed and sent as one request with its own id. Never drop a tap; the double-fire guard is
+  30ms — 120ms dropped real taps.
+- **Never navigate away from an open take** in `loadTakes()` (late post-login chains did).
+  The open take lives in the URL as `#take=<id>` (`replaceState`, no history entries) and is
+  reopened after a reload once the fresh list arrives.
+- **Manual/wedge barcodes are checked** by `barcodeDoubt()`: 9–11 digits or a failed GS1
+  check digit on 12–14 asks before counting. Test bots typing invented codes will see it —
+  real bottles pass.
+- **Module-level constants built from other constants must come after them.** `BUILDER_COLUMNS`
+  was built from a not-yet-assigned `TEMPLATE_COLUMNS` and shipped `select=undefined,…`.
+  Headless fakes that ignore column lists can't catch that; a real-client URL check can.
+- Testing hooks: `?debug=1` shows the sync badge, logs every timed call, enables
+  `window.__gantryFail = 'drop-reply-once' | 'no-send-once'` for the next item save; and
+  `gantryTimings()` prints the timing table.
