@@ -7,3 +7,8 @@ verify_jwt = false
 # which has it OFF. This one's RLS scoping depends on knowing the caller.
 [functions.notify-export-template]
 verify_jwt = true
+
+# JWT ON: the caller's own session is who is asking; org, plan and role are
+# looked up from it server-side.
+[functions.contact-support]
+verify_jwt = true
