@@ -2037,6 +2037,13 @@ begin
     raise exception 'This stocktake is completed — ask a manager to reopen it before changing counts.'
       using errcode = 'check_violation';
   end if;
+  -- Ready for export locks counts too (20261014_02): head office's cue that the
+  -- numbers are final must mean they ARE final. NULL (the parent already gone,
+  -- mid-cascade) is not locked, or deleting a stocktake would be impossible.
+  if v_status is not null and v_status <> 'in_progress' then
+    raise exception 'This count is marked ready. Move it back to In Progress to keep counting.'
+      using errcode = 'check_violation';
+  end if;
 
   return coalesce(new, old);
 end $$;

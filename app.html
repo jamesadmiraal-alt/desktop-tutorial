@@ -1395,10 +1395,9 @@
        exporting stopped completing it — and asserting an export that may never
        have happened is how an operator concludes the app is confused about their
        count rather than that someone closed it. -->
-  <div id="readonly-note" style="display:none">
-    <b>This count is completed.</b> It can’t be changed.
-    Ask a manager to reopen it from ⋯ on the stocktake list.
-  </div>
+  <!-- Text set by applyTakeReadOnly(): the way out differs — a Ready count goes
+       back to In Progress from ⋯; a Completed one needs a manager to reopen. -->
+  <div id="readonly-note" style="display:none"></div>
   <div id="reader-wrap">
     <div id="reader"></div>
     <div id="scanner-off">Camera is off. Tap <b><span class="ico" style="--i:url(icons/camera.svg)"></span> Scan</b> to begin scanning.<br>
@@ -4903,6 +4902,9 @@
     // flight, which paints "No scans yet" over a count that has plenty.
     loadItems();
     applyTakeReadOnly();
+    // The Home card's status can be minutes old — another phone may have marked
+    // this ready. Ask now, rather than letting someone count into a locked take.
+    refreshTakeStatus();
     // From here the list keeps itself current with what everyone else is
     // scanning, not just this device.
     startItemsPolling();
@@ -4915,8 +4917,19 @@
   // Deliberately NOT the enforcement: another device can complete the take while
   // this one is mid-count, so the local status is only ever a hint. The trigger
   // is what makes it true, and its message is what the toast shows.
+  //
+  // UPDATED 14 Oct 2026: read-only means anything but In Progress. "Ready for
+  // export" is head office's cue that the numbers are final; the stress test
+  // saw a line go 46 -> 48 after Mark ready because only 'completed' locked.
+  // The database refuses those writes too now (20261014_02) — this is the
+  // screen agreeing before anyone types.
   function takeIsReadOnly() {
-    return !!(currentTake && currentTake.status === 'completed');
+    return !!(currentTake && currentTake.status && currentTake.status !== 'in_progress');
+  }
+  function lockedMessage() {
+    return currentTake && currentTake.status === 'completed'
+      ? 'This count is completed — ask a manager to reopen it'
+      : 'This count is marked ready. Move it back to In Progress to keep counting.';
   }
 
   // Reads the open take's REAL status from SQL and applies it, without touching
@@ -4952,8 +4965,13 @@
       // status may have changed the lines too, and this is the moment the
       // operator is looking for the truth.
       loadItems(null, true);
-      if (status === 'completed' && !quiet) {
-        toast('This count has been completed — it is now read-only', '#b45309');
+      // Said when it changed under this screen (another phone, or an export):
+      // the operator needs to know why the controls just stopped working — or
+      // started again.
+      if (!quiet) {
+        if (status === 'completed') toast('This count has been completed — it is now read-only', '#b45309');
+        else if (status === 'ready_for_export') toast('This count was marked ready — counting is locked', '#b45309');
+        else if (status === 'in_progress') toast('This count is back in progress — you can keep counting');
       }
     });
   }
@@ -4961,6 +4979,20 @@
   function applyTakeReadOnly() {
     var ro = takeIsReadOnly();
     $('readonly-note').style.display = ro ? '' : 'none';
+    if (ro) {
+      var note = $('readonly-note');
+      note.innerHTML = '';
+      var b = document.createElement('b');
+      if (currentTake.status === 'completed') {
+        b.textContent = 'This count is completed.';
+        note.appendChild(b);
+        note.appendChild(document.createTextNode(' It can’t be changed. Ask a manager to reopen it from ⋯ on the stocktake list.'));
+      } else {
+        b.textContent = 'This count is marked ready.';
+        note.appendChild(b);
+        note.appendChild(document.createTextNode(' Move it back to In Progress (⋯ on the stocktake list) to keep counting.'));
+      }
+    }
     // The camera is the loudest affordance on this screen; leaving it live on a
     // finished count invites a scan that can only be refused.
     if (ro && scanning) stopScanner();
@@ -5092,6 +5124,9 @@
       // tick is all that takes.
       if (itemsLoading) return;
       loadItems(null, true);
+      // Status too: Mark ready on another phone must lock this one within one
+      // tick, not at its next refused write.
+      refreshTakeStatus();
     }, ITEMS_POLL_MS);
   }
 
@@ -5110,6 +5145,7 @@
     // never clears.
     if (currentView === 'scan' && currentTake && !dialogOpen && !itemsLoading) {
       loadItems(null, true);
+      refreshTakeStatus();
     } else if (currentView === 'home' && !document.querySelector('.overlay.open')) {
       // Home's totals come from an aggregate embedded at load time, so it goes
       // stale exactly the same way. Guarded on no open dialog because loadTakes()
@@ -5573,6 +5609,7 @@
           // The server answered and refused: the transaction rolled back, so
           // this one IS known not to have been applied.
           fail({ message: it.barcode + ' was not changed. ' + failHint(out.error) }, '');
+          if (/completed|ready/i.test((out.error && out.error.message) || '')) refreshTakeStatus(true);
           return;
         }
         resolveLostWrite(key, requestId, takeId, it.barcode,
@@ -5593,7 +5630,7 @@
     // fail. The database is the enforcement; this is not making someone type a
     // number first to find out.
     if (takeIsReadOnly()) {
-      toast('This count is completed — ask a manager to reopen it', '#b91c1c');
+      toast(lockedMessage(), '#b91c1c');
       return;
     }
     // Not into a take whose lines haven't arrived. The save itself would be
@@ -6778,35 +6815,86 @@
   // onDone runs whether the call succeeded or failed. The export path relies on
   // that: the operator asked for a CSV, and withholding it because a status
   // update failed would be the wrong trade.
+  //
+  // UPDATED 14 Oct 2026. After an export the take stayed under Ready for export
+  // on Home. The status had been set on the object this function was handed —
+  // actionsTake — but a background loadTakes() replaces the `takes` array, so
+  // Home was rendering a DIFFERENT object for the same take, still saying
+  // Ready. applyStatusLocally() now updates every copy by id.
+  //
+  // And it never guesses: if the call times out or its reply is lost, the
+  // status is read back from the server before anything is said or done.
+  // onDone(ok, finalStatus): ok = the server holds `status`; finalStatus =
+  // what it actually holds, or null if that couldn't be found out.
+  var STATUS_TIMEOUT_MS = 12000;
+
+  function applyStatusLocally(id, status) {
+    if (actionsTake && actionsTake.id === id) actionsTake.status = status;
+    for (var i = 0; i < takes.length; i++) if (takes[i].id === id) takes[i].status = status;
+    if (currentTake && currentTake.id === id) {
+      currentTake.status = status;
+      applyTakeReadOnly();
+    }
+  }
+
+  function readTakeStatus(id, cb) {
+    var settled = false;
+    var finish = function (v) { if (!settled) { settled = true; clearTimeout(timer); cb(v); } };
+    var timer = setTimeout(function () { finish(null); }, 8000);
+    sb.from('stocktakes').select('id,status').eq('id', id).then(function (res) {
+      finish(!res.error && res.data && res.data[0] ? res.data[0].status : null);
+    }, function () { finish(null); });
+  }
+
   function setTakeStatus(t, status, reason, onDone) {
-    sb.rpc('set_stocktake_status', {
-      p_stocktake_id: t.id, p_status: status, p_reason: reason
-    }).then(function (res) {
-      if (res.error) {
-        fail(res.error, 'Could not update stocktake');
-      } else {
-        t.status = status;
-        closeTakeActions();
-        // If this is the take currently open on this device, its header and its
-        // controls have to follow — otherwise the scan view keeps offering a pad
-        // for a count that is now read-only.
-        if (currentTake && currentTake.id === t.id) {
-          currentTake.status = status;
-          applyTakeReadOnly();
-        }
+    var settled = false;
+    var finish = function (finalStatus, refused) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      var ok = finalStatus === status;
+      if (finalStatus) {
+        t.status = finalStatus;
+        applyStatusLocally(t.id, finalStatus);
         renderHome();
+      }
+      if (ok) {
+        closeTakeActions();
         if (reason === 'manual') {
           toast(status === 'ready_for_export' ? 'Marked ready for export'
               : status === 'completed' ? 'Marked completed — this count is now read-only'
               : 'Back to in progress');
         }
+      } else if (reason === 'manual' && !refused) {
+        // Not a refusal we were told about — a lost or slow reply, checked.
+        toast(finalStatus
+          ? 'Couldn’t change the status — it is still ' + statusLabel(finalStatus)
+          : 'Couldn’t confirm the status change — check the stocktake list', '#b45309');
       }
-      if (onDone) onDone();
-    }, function (err) {
-      // Network-level rejection, not a Postgres error.
-      fail({ message: (err && err.message) || 'request failed' }, 'Could not update stocktake');
-      if (onDone) onDone();
-    });
+      if (onDone) onDone(ok, finalStatus);
+    };
+    // Lost or slow: find out what the server actually holds.
+    var verify = function () { readTakeStatus(t.id, function (st) { finish(st, false); }); };
+    var timer = setTimeout(verify, STATUS_TIMEOUT_MS);
+
+    sb.rpc('set_stocktake_status', {
+      p_stocktake_id: t.id, p_status: status, p_reason: reason
+    }).then(function (res) {
+      if (settled) return;
+      if (res.error && replyWasLost(res)) { clearTimeout(timer); verify(); return; }
+      if (res.error) {
+        // The server answered and refused (role, transition) — accurate to say.
+        fail(res.error, 'Could not update stocktake');
+        clearTimeout(timer);
+        readTakeStatus(t.id, function (st) { finish(st, true); });
+        return;
+      }
+      finish(status, false);
+    }, function () { if (!settled) { clearTimeout(timer); verify(); } });
+  }
+
+  function statusLabel(st) {
+    return st === 'ready_for_export' ? 'Ready for export' : st === 'completed' ? 'Completed' : 'In progress';
   }
 
   // Handing the numbers out of the app is what finishes a count. Export is the
@@ -6843,20 +6931,26 @@
       toast(handoverMsg);
       return;
     }
-    setTakeStatus(take, 'completed', 'export', function () {
-      // Now the request has settled, the navigation is safe to trigger.
+    setTakeStatus(take, 'completed', 'export', function (ok, finalStatus) {
+      // Now the request has settled (or timed out and been checked), the
+      // navigation is safe to trigger. A status write that never answers no
+      // longer holds the file hostage: STATUS_TIMEOUT_MS bounds the wait.
       handOver();
-      // setTakeStatus only advances t.status when the RPC succeeded, so this
-      // is a reliable read of whether it landed.
-      if (take.status === 'completed') {
+      // ok and finalStatus come from the server — the RPC's own answer, or a
+      // read-back after a lost reply — never from what this device assumed.
+      if (ok) {
         toast(handoverMsg + ' — count marked completed');
+      } else if (finalStatus) {
+        // setTakeStatus may have toasted the underlying reason; this replaces
+        // it deliberately: "Could not update stocktake: TypeError: Load failed"
+        // tells a bartender nothing, whereas which half worked does.
+        toast(handoverMsg + ' — still ' + statusLabel(finalStatus) + ', finish it from ⋯', '#b91c1c');
       } else {
-        // setTakeStatus has already toasted the underlying reason, and this
-        // replaces it deliberately: "Could not update stocktake: TypeError:
-        // Load failed" tells a bartender nothing they can act on, whereas
-        // which half worked and what to do next does.
-        toast(handoverMsg + ' — still Ready for export, finish it from ⋯', '#b91c1c');
+        toast(handoverMsg + ' — couldn’t confirm it was marked completed; check the stocktake list', '#b45309');
       }
+      // Confirm Home against the server in the background, so the card can't
+      // keep saying Ready if anything above went sideways.
+      if (currentView === 'home') loadTakes();
     });
   }
 
