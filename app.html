@@ -5342,6 +5342,7 @@
     // Pending taps are keyed by take, so another take's can't show here; this
     // just stops the map growing across a shift.
     pendingSteps = {};
+    stepQueues = {};
     showView('scan');
     // loadItems() first: it sets the loading flag and paints "Loading…". Calling
     // applyTakeReadOnly() before it would render an empty `items` with no load in
@@ -5699,11 +5700,13 @@
   }
 
   // One touch, one tap. Some WebViews deliver a tap as two click events a few
-  // milliseconds apart; on a stepper that is two RPCs and a count that moves by
-  // 2 — reported 14 Oct as 12 -> 14 from a single tap. 120ms is far faster than
-  // anyone deliberately taps (a fast counter manages one every 200ms or so), so
-  // this only ever drops the duplicate.
-  var STEP_DOUBLE_FIRE_MS = 120;
+  // milliseconds apart; on a stepper that would count twice.
+  //
+  // 30ms, not the 120ms this shipped with: 120 dropped REAL taps — a fast thumb
+  // or a test bot gets close to that, and the 14 Oct retest saw 3 quick taps
+  // become +1 with no feedback. A duplicate event arrives within a few
+  // milliseconds; nobody taps deliberately inside 30.
+  var STEP_DOUBLE_FIRE_MS = 30;
   var lastStepAt = {};
   function isDoubleFire(key) {
     var now = Date.now();
@@ -6074,18 +6077,53 @@
   // both taps land. It also clamps at 0, so a decrement race can't trip the
   // column's `check (qty >= 0)`. Keyed on (stocktake_id, barcode), not `it.id`,
   // which goes stale as soon as the line is removed and rescanned elsewhere.
+  // Taps per line are QUEUED, never dropped.
+  //
+  // Retest, 14 Oct: three quick + taps sent one request and the line went up by
+  // 1, silently. (Not a disabled button, as the report guessed — the 120ms
+  // double-fire guard below was dropping real taps; it is 30ms now.)
+  //
+  // One request per line at a time. The first tap is sent at once; taps that
+  // arrive while it is out are added up, shown on the line straight away, and
+  // sent as ONE request — with its own request id, so it is still applied at
+  // most once — when the one before settles. 5 fast taps: +5, in 1–2 requests.
+  // Sequencing per line also keeps the server's running total and the order of
+  // ± taps the same as the operator's.
+  var stepQueues = {};   // take|barcode -> { busy, queued }
+
   function stepItemQty(it, delta) {
     var takeId = currentTake.id;
+    var barcode = it.barcode;
     var amount = qtyRound(delta);
-    var key = writeKey(takeId, it.barcode, 'step', amount);
     // Visible NOW, not when the reply arrives. On 14 Oct replies took 10–25s and
     // the line didn't move, so the operator tapped again — each tap a real +1.
-    addPendingStep(takeId, it.barcode, amount);
-    var settle = function () { addPendingStep(takeId, it.barcode, -amount); };
-    requestIdFor(key, takeId, it.barcode, function (requestId) {
-      if (!requestId) { settle(); return; } // the earlier identical tap landed — told above
+    addPendingStep(takeId, barcode, amount);
+    var qk = takeId + '|' + barcode;
+    var q = stepQueues[qk] || (stepQueues[qk] = { busy: false, queued: 0 });
+    if (q.busy) { q.queued = qtyRound(q.queued + amount); return; }
+    q.busy = true;
+    sendStep(takeId, barcode, amount, q, qk);
+  }
+
+  function sendStep(takeId, barcode, amount, q, qk) {
+    var key = writeKey(takeId, barcode, 'step', amount);
+    var settle = function () { addPendingStep(takeId, barcode, -amount); };
+    // Whatever arrived while this one was out goes next, as one request. A + and
+    // a − that cancel out send nothing.
+    var next = function () {
+      if (q.queued) {
+        var a = q.queued;
+        q.queued = 0;
+        sendStep(takeId, barcode, a, q, qk);
+        return;
+      }
+      q.busy = false;
+      delete stepQueues[qk];
+    };
+    requestIdFor(key, takeId, barcode, function (requestId) {
+      if (!requestId) { settle(); next(); return; } // the earlier identical change landed — told above
       sendItemWrite('add_stocktake_item', {
-        p_stocktake_id: takeId, p_barcode: it.barcode, p_qty: amount, p_request_id: requestId
+        p_stocktake_id: takeId, p_barcode: barcode, p_qty: amount, p_request_id: requestId
       }, function (out) {
         settle();
         if (out.row) {
@@ -6094,24 +6132,32 @@
           // what's on screen is what's stored — including any change another
           // device made between this tap and its reply.
           showServerLine(takeId, out.row);
+          next();
           return;
         }
         if (out.error) {
           delete pendingWrites[key];
+          // The server refused (a lock, the trial cap): taps queued behind this
+          // one would be refused the same way. Drop them with this one message
+          // rather than a toast per tap, and take them off the line.
+          if (q.queued) { addPendingStep(takeId, barcode, -q.queued); q.queued = 0; }
+          q.busy = false;
+          delete stepQueues[qk];
           // Only reachable if the line was deleted on another device between
           // the render and this tap and re-creating it meets the trial cap.
           if (isTrialLimit(out.error)) { showTrialLimit(); return; }
           // The server answered and refused: the transaction rolled back, so
           // this one IS known not to have been applied.
-          fail({ message: it.barcode + ' was not changed. ' + failHint(out.error) }, '');
+          fail({ message: barcode + ' was not changed. ' + failHint(out.error) }, '');
           if (/completed|ready/i.test((out.error && out.error.message) || '')) refreshTakeStatus(true);
           return;
         }
-        resolveLostWrite(key, requestId, takeId, it.barcode,
-          function () { /* landed: the line is already redrawn from the server */ },
+        resolveLostWrite(key, requestId, takeId, barcode,
+          function () { /* landed: the line is already redrawn from the server */ next(); },
           function () {
-            toast("Couldn't confirm that change to " + it.barcode + '. Check the line before tapping again.',
+            toast("Couldn't confirm that change to " + barcode + '. Check the line before tapping again.',
                   '#b45309');
+            next();
           });
       });
     });
