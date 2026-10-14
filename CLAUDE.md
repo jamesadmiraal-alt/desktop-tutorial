@@ -267,6 +267,11 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   calls as `(select public.my_org_id())` so they run once per statement, not per row
   (20261014_03) — keep that wrapping in any new policy on `stocktakes`/`stocktake_items`.
 - **Logout never waits on the network** and never binds `onclick = doLogout` (the event
-  became the "reason"). It removes the stored session and replaces `sb` with a fresh client
-  (`makeSupabaseClient()` + `attachAuthListeners()`); seat release and revoke go out in the
-  background. Anything new attached to the client instance must go in `attachAuthListeners`.
+  became the "reason"). It never calls `sb.auth.signOut()` (which holds the auth lock while
+  it waits on the server): it bumps `sessionEpoch`, removes the stored session (the client
+  reads storage on every call, so ONE client is enough — don't create a second, it warns
+  "Multiple GoTrueClient instances"), and revokes in the background with **`scope=local`** —
+  global could land after a re-login and kill the new session. Any async reply that can
+  draw UI or touch `currentUser` (org refresh, seat claim, heartbeat, Home load) must
+  capture `sessionEpoch` and drop itself if it changed — that's what stops a late reply
+  showing "Already signed in elsewhere" over the login screen.

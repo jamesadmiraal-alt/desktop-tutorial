@@ -2157,16 +2157,11 @@
     setItem: function (k, v) { try { (rememberMe ? localStorage : sessionStorage).setItem(k, v); } catch (e) {} },
     removeItem: function (k) { try { (rememberMe ? localStorage : sessionStorage).removeItem(k); } catch (e) {} }
   };
-  // A function so logout can start a FRESH client — see doLogout() for why.
-  // Everything calls `sb` at call time, so replacing it is enough; the one
-  // thing attached to a client instance is its auth listener, re-attached by
-  // attachAuthListeners().
-  function makeSupabaseClient() {
-    return window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
-      auth: { storage: dynamicStorage }
-    });
-  }
-  var sb = makeSupabaseClient();
+  // ONE client for the life of the page. Logout signs it out by removing its
+  // stored session rather than replacing it — see doLogout().
+  var sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
+    auth: { storage: dynamicStorage }
+  });
 
   // ---- Auth ----
   // Which of org-create-row/org-join-row is shown, based on orgSignupMode —
@@ -2574,15 +2569,12 @@
   // Supabase signs the user in via the recovery link and fires this event;
   // enterApp() runs as normal (they're validly authenticated) and this just
   // additionally offers to set a new password on top of that.
-  function attachAuthListeners(client) {
-    client.auth.onAuthStateChange(function (event, session) {
-      if (event === 'PASSWORD_RECOVERY') {
-        $('reset-pass1').value = ''; $('reset-pass2').value = '';
-        $('reset-password-overlay').classList.add('open');
-      }
-    });
-  }
-  attachAuthListeners(sb);
+  sb.auth.onAuthStateChange(function (event, session) {
+    if (event === 'PASSWORD_RECOVERY') {
+      $('reset-pass1').value = ''; $('reset-pass2').value = '';
+      $('reset-password-overlay').classList.add('open');
+    }
+  });
   $('reset-pass-cancel').onclick = function () { $('reset-password-overlay').classList.remove('open'); };
   $('reset-pass-save').onclick = function () {
     var p1 = $('reset-pass1').value, p2 = $('reset-pass2').value;
@@ -2602,8 +2594,23 @@
   // only) when the app resumes from the in-app Stripe checkout browser tab.
   // Two independent queries (profile is personal, org is shared) rather than
   // one join, since a user with no membership yet still has a valid profile.
+  // Which signed-in session the app is in. Logout bumps it; anything started
+  // under the old session — this org refresh, a seat claim, a heartbeat,
+  // Home's load — checks it when its reply arrives and drops the reply if the
+  // session has changed.
+  //
+  // Retest, 14 Oct: Log out from inside a take showed a blank screen, then
+  // "Already signed in elsewhere". An org refresh started before the tap (by
+  // opening Account) answered after it: it repopulated the org, claimed a seat
+  // with no session behind it, and drew the takeover prompt over the login
+  // screen. The same late reply is the reported TypeError "Cannot set
+  // properties of null (setting 'name')" — it wrote to currentUser, which
+  // logout had already cleared.
+  var sessionEpoch = 0;
+
   function refreshOrgStatus(cb) {
     if (!currentUser) return;
+    var epoch = sessionEpoch;
     var previousTier = currentOrg ? currentOrg.planTier : null;
     Promise.all([
       sb.from('profiles').select('full_name, marketing_opt_in').eq('id', currentUser.id).maybeSingle(),
@@ -2611,6 +2618,7 @@
         .select('role, organisations(id, name, plan_tier, country, country_changed_at, export_format, strip_leading_zero, export_template_id, heartbeat_interval_seconds, scan_barcodes, scan_qr, scan_mode)')
         .eq('user_id', currentUser.id).maybeSingle()
     ]).then(function (results) {
+      if (epoch !== sessionEpoch || !currentUser) return;   // logged out meanwhile
       var profileRes = results[0], memberRes = results[1];
       if (!profileRes.error && profileRes.data) {
         currentUser.name = profileRes.data.full_name || '';
@@ -2716,8 +2724,12 @@
   // Wraps claim_seat and handles its three outcomes. takeover=true is the second
   // call, made after the operator confirms they want the login moved here.
   function claimSeat(takeover, onGranted, cb) {
+    var epoch = sessionEpoch;
     sb.rpc('claim_seat', { p_device_id: deviceId(), p_takeover: !!takeover })
       .then(function (res) {
+        // A claim answered after logout must not draw anything — that is the
+        // "Already signed in elsewhere" a voluntary logout used to land on.
+        if (epoch !== sessionEpoch) return;
         var d = res.data || {};
         if (res.error) {
           // A transport failure is not a denial.
@@ -2838,7 +2850,11 @@
     // working indefinitely, which is exactly the sharing this is meant to stop.
     if (!currentOrg) return;
     heartbeatIntervalId = setInterval(function () {
+      var epoch = sessionEpoch;
       sb.rpc('heartbeat', { p_device_id: deviceId() }).then(function (res) {
+        // In flight when the operator logged out: not a takeover, and must not
+        // put "taken over on another device" on their login screen.
+        if (epoch !== sessionEpoch) return;
         if (!res.error && res.data === false) {
           stopSeatHeartbeat();
           // false now means either "an owner kicked you" or "this login was taken
@@ -4416,16 +4432,28 @@
   // vendored supabase-js revokes the session on the server BEFORE removing it
   // locally, inside its auth lock — so on a slow or dead connection the screen
   // didn't change, and every later auth call (the next login included) queued
-  // behind it. Now, in this order:
+  // behind it. sb.auth.signOut() is therefore not called at all. Instead:
   //
-  //   1. the screen and local state change at once — this device is signed out
-  //      the moment the button is tapped;
-  //   2. the stored session is removed HERE, so a reload can't sign back in,
-  //      and a fresh client replaces the old one, so nothing waits on its lock;
-  //   3. the server side — release the seat, revoke the session — goes out in
+  //   1. sessionEpoch moves on, so every reply still in flight for the old
+  //      session is dropped when it lands (see sessionEpoch);
+  //   2. the screen and local state change at once;
+  //   3. the stored session is removed HERE. The client reads its session from
+  //      storage on every call (checked: __loadSession in the vendored build),
+  //      so that alone signs it out — same client, no lock, no second
+  //      instance. (A fresh client per logout was tried on 14 Oct: it worked,
+  //      but logged "Multiple GoTrueClient instances" and left the old one's
+  //      listeners alive.)
+  //   4. the server side — release the seat, revoke the session — goes out in
   //      the background with the old token, each bounded at
   //      LOGOUT_NETWORK_TIMEOUT_MS. If it fails, the seat frees itself at the
   //      heartbeat staleness timeout, as it always would have.
+  //
+  // The revoke is scope=LOCAL — this session only. It was scope=global, which
+  // revokes every session the user has; on a slow connection it could reach
+  // the server AFTER the operator had already logged back in, and kill the new
+  // login too — the "re-login looped back to login" in the 14 Oct retest. It
+  // also came back 403; any 4xx here is ignored, the token is gone locally
+  // either way.
   //
   // "[object PointerEvent]": the button was bound as `onclick = doLogout`, so
   // the click event arrived as `reason` and was printed under the heading. Only
@@ -4468,7 +4496,7 @@
     // Seat first, while the token is certainly still valid.
     fetchWithTimeout(cfg.supabaseUrl + '/rest/v1/rpc/release_seat', { method: 'POST', headers: headers, body: '{}' })
       .then(function () {
-        return fetchWithTimeout(cfg.supabaseUrl + '/auth/v1/logout?scope=global', { method: 'POST', headers: headers });
+        return fetchWithTimeout(cfg.supabaseUrl + '/auth/v1/logout?scope=local', { method: 'POST', headers: headers });
       });
   }
 
@@ -4484,15 +4512,13 @@
     var btn = $('logout-btn');
     if (btn) btn.disabled = true;
     try {
+      sessionEpoch++;
       clearHomeCache();
       homeFromCache = false;
       stopSeatHeartbeat();
-      var old = sb;
-      var token = storedAccessToken(old);
-      try { old.auth.stopAutoRefresh(); } catch (e) {}
-      forgetStoredSession(old);
-      sb = makeSupabaseClient();
-      attachAuthListeners(sb);
+      stopItemsPolling();
+      var token = storedAccessToken(sb);
+      forgetStoredSession(sb);
       backgroundSignOut(token);
       // takes too: the next person to sign in on this phone must not see the
       // last one's list while theirs loads.
@@ -4799,6 +4825,7 @@
   // changed — rebuilding every card under a thumb is how a tap lands on the
   // wrong row. Failures are silent; the next tick tries again.
   function loadTakes(navigate, quiet) {
+    var epoch = sessionEpoch;
     if (!quiet && (navigate || currentView === 'home')) showView('home');
     var scroller = $('home-view');
     var keepScroll = scroller.scrollTop;
@@ -4830,6 +4857,7 @@
       clearTimeout(timer);
       if (homeRefreshInFlight === token) homeRefreshInFlight = 0;
       if (token !== homeLoadToken) return;   // a newer load owns the screen
+      if (epoch !== sessionEpoch) return;    // logged out meanwhile
       if (err && quiet) { endTiming('error (background)'); return; }
       if (err) {
         endTiming('error');
