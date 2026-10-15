@@ -2006,10 +2006,14 @@
     // "permission denied" to "this login may now be in use on another device",
     // which is true of a scan write mid-count and was actively misleading here.
     var text = (what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed');
+    errorToast(text, what);
+  }
+  // A red toast with "Get help" on it, for a signed-in operator — the message
+  // arrives with this exact text attached. Held on screen longer, since it now
+  // has something to tap. Also used for "Couldn't confirm…": an unknown outcome
+  // is exactly when someone wants to ask (retest, 16 Oct).
+  function errorToast(text, what) {
     toast(text, '#b91c1c');
-    // "Get help" on the error itself, for a signed-in operator — the message
-    // arrives with this exact text attached. Held on screen longer, since it
-    // now has something to tap.
     if (currentUser) {
       var t = $('toast');
       var link = document.createElement('button');
@@ -3184,7 +3188,7 @@
     var parts = ['your account and venue (' + ((currentOrg && currentOrg.name) || 'no organisation yet') + ')'];
     if (takeText) parts.push('this count: ' + takeText);
     if (error) parts.push('the last error: “' + error + '”');
-    parts.push('your device and app version');
+    parts.push('your device and app version (' + helpContext.version + ')');
     $('help-include').textContent = 'We’ll include: ' + parts.join('; ') + '.';
     $('help-subject').value = prefill.error ? 'Error: ' + (prefill.what || prefill.error).slice(0, 100) : '';
     $('help-message').value = '';
@@ -5584,7 +5588,7 @@
         // if the first attempt lands late, the server's one-open-name rule
         // (enforce_unique_open_stocktake_name) refuses the retry as "already in
         // progress", and recover() then finds and opens the first one.
-        toast('Couldn’t confirm the stocktake was created. Tap Create to try again — it won’t make a second one.', '#b45309');
+        errorToast('Couldn’t confirm the stocktake was created. Tap Create to try again — it won’t make a second one.');
       });
     };
     var timer = setTimeout(function () { if (!settled) recover(); }, CREATE_TIMEOUT_MS);
@@ -5841,7 +5845,11 @@
     sb.from('stocktake_items')
       .select('*')
       .eq('stocktake_id', takeId)
-      .order('last_scanned', { ascending: false })
+      // Newest LINE first (first_scanned), not most recently touched — the same
+      // order a live session keeps (new lines on top, existing rows stay put),
+      // so a reload doesn't reshuffle the list (retest, 16 Oct). Polls ignore
+      // this order anyway; see "Row order and row identity".
+      .order('first_scanned', { ascending: false })
       .then(function (res) {
         releasePoll();
         if (!current()) return;   // superseded: the newer request will settle the state
@@ -6596,8 +6604,7 @@
         resolveLostWrite(key, requestId, takeId, barcode,
           function () { /* landed: the line is already redrawn from the server */ next(); },
           function () {
-            toast("Couldn't confirm that change to " + barcode + '. Check the line before tapping again.',
-                  '#b45309');
+            errorToast("Couldn't confirm that change to " + barcode + '. Check the line before tapping again.');
             next();
           });
       });
@@ -6624,6 +6631,11 @@
       toast('Still loading this stocktake — one moment', '#b45309');
       return;
     }
+    // Never over another code's entry — whatever path got here.
+    if (pendingCode && code !== pendingCode && $('qty-overlay').classList.contains('open')) {
+      sayPadIsOpen(code, true);
+      return;
+    }
     var existing = items.find(function (it) { return it.barcode === code; });
     pendingCode = code;
     dialogOpen = true;
@@ -6641,6 +6653,8 @@
     }
     $('qty-overlay').dataset.mode = isEdit ? 'edit' : 'scan';
     $('qty-input').value = isEdit && existing ? qtyText(existing.qty) : '';
+    qtyLastGood = $('qty-input').value;
+    cancelQtyWedge();
     // Editing shows the current quantity, and the first key must REPLACE it, not
     // append to it. On desktop select() did that; on touch there is no select(),
     // so editing a line at 8 and tapping 1 produced 81. Consumed by the first
@@ -6768,6 +6782,7 @@
     // Strip a leading zero only when a real digit follows it — "07" becomes "7",
     // but "0.4" must keep its zero, and a bare "0" is now a legitimate count.
     el.value = v.replace(/^0+(?=\d)/, '');
+    qtyLastGood = el.value;
   }
 
   // Taps that land on the scrim or the gaps between keys must die here. The
@@ -6816,17 +6831,68 @@
     return intPart.length > QTY_MAX_INT_DIGITS || digits.length > 12;
   }
 
-  function rejectBarcodeInQty() {
-    var typed = $('qty-input').value.trim();
-    $('qty-input').value = '';
-    // Another product's barcode (a wedge scan with the pad open) says so — it
-    // was not added, and the operator needs to know to scan it again.
-    if (/^\d{8,14}$/.test(typed) && typed !== pendingCode) {
-      toast('That’s another barcode — finish or cancel this count first. ' + typed + ' was not added', '#b91c1c');
-      return;
-    }
-    toast('That’s a barcode, not a quantity — enter how many', '#b91c1c');
+  // Camera, Capture, the manual field and the quantity field all say the same
+  // thing when a different barcode arrives with the pad open.
+  function padBlockedMessage(code) {
+    return 'That’s another barcode — finish or cancel this count first. ' + code + ' was not added';
   }
+
+  // A barcode typed INTO the quantity field (a keyboard wedge with the pad
+  // focused). Retest, 16 Oct: with 2 already typed for A, a wedge scan of B
+  // wiped the field — A's 2 was gone — and the wedge's remaining digits kept
+  // arriving into the emptied field, so its trailing Enter could commit a
+  // fragment of B's digits as A's quantity.
+  //
+  // So: the field goes back to what it held before the barcode started
+  // (qtyLastGood), and the rest of the burst is swallowed key by key — digits
+  // collected, Enter eaten — until the keys stop. Then one message, naming the
+  // whole barcode.
+  var qtyLastGood = '';
+  var qtyWedge = null;            // { code, timer } while a burst is arriving
+  var QTY_WEDGE_QUIET_MS = 300;
+  var QTY_STABLE_MS = 80;
+  var qtyStableTimer = null;
+  function rejectBarcodeInQty() {
+    var el = $('qty-input');
+    var raw = el.value.trim();
+    clearTimeout(qtyStableTimer);
+    var prefix = qtyLastGood;
+    var part = (prefix && raw.indexOf(prefix) === 0) ? raw.slice(prefix.length) : raw;
+    el.value = prefix;
+    if (!qtyWedge) qtyWedge = { code: '', timer: null };
+    qtyWedge.code += part.replace(/[^0-9A-Za-z]/g, '');
+    armQtyWedgeTimer();
+  }
+  function armQtyWedgeTimer() {
+    clearTimeout(qtyWedge.timer);
+    qtyWedge.timer = setTimeout(finishQtyWedge, QTY_WEDGE_QUIET_MS);
+  }
+  function finishQtyWedge() {
+    if (!qtyWedge) return;
+    var code = qtyWedge.code;
+    clearTimeout(qtyWedge.timer);
+    qtyWedge = null;
+    if (!$('qty-overlay').classList.contains('open')) return;
+    if (code && code !== pendingCode) toast(padBlockedMessage(code), '#b91c1c');
+    else toast('That’s a barcode, not a quantity — enter how many', '#b91c1c');
+  }
+  function cancelQtyWedge() {
+    if (qtyWedge) { clearTimeout(qtyWedge.timer); qtyWedge = null; }
+    clearTimeout(qtyStableTimer);
+  }
+  // Capture phase, so it runs before the Enter-to-save handler below.
+  $('qty-input').addEventListener('keydown', function (e) {
+    if (!qtyWedge) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      finishQtyWedge();
+    } else if (e.key && e.key.length === 1) {
+      e.preventDefault();
+      qtyWedge.code += e.key;
+      armQtyWedgeTimer();
+    }
+  }, true);
 
   $('qty-input').addEventListener('input', function () {
     var el = $('qty-input');
@@ -6847,6 +6913,11 @@
       // end on every keystroke and typing a mid-string digit becomes impossible.
       el.value = clean;
     }
+    // Recorded only once it has sat still: a wedge types ~10–30ms apart, a
+    // person far slower, so a barcode's own leading digits never become the
+    // value to restore.
+    clearTimeout(qtyStableTimer);
+    qtyStableTimer = setTimeout(function () { qtyLastGood = el.value; }, QTY_STABLE_MS);
   });
 
   // Matched on the message prefix raised by enforce_trial_scan_limit()
@@ -6871,6 +6942,8 @@
 
   function closeQtyDialog() {
     var wasOpen = $('qty-overlay').classList.contains('open');
+    cancelQtyWedge();
+    qtyLastGood = '';
     dialogOpen = false;
     pendingCode = null;
     $('qty-overlay').classList.remove('open');
@@ -7087,7 +7160,7 @@
               // server — can be checked. Repeating this exact save re-asks first
               // and reuses the id, so it can't count twice.
               closeQtyDialog();
-              toast(COULD_NOT_CONFIRM, '#b45309');
+              errorToast(COULD_NOT_CONFIRM);
             });
         });
     });
@@ -7166,7 +7239,7 @@
     var now = Date.now();
     if (!always && code === padBlockedScan.code && now - padBlockedScan.at < 2500) return;
     padBlockedScan = { code: code, at: now };
-    toast('Finish or cancel this count first — ' + code + ' was not added', '#b91c1c');
+    toast(padBlockedMessage(code), '#b91c1c');
   }
 
   function onScan(decodedText) {
@@ -7518,6 +7591,16 @@
 
   function manualAdd() {
     var v = $('manual-input').value.trim();
+    // The pad is open on another code: same guard as a camera scan. Retest,
+    // 16 Oct: Enter here switched the pad to B and silently dropped A's 2.
+    // Cleared, so a leftover code can't hold off the camera
+    // (manualEntryInProgress) without saying so.
+    if (pendingCode && $('qty-overlay').classList.contains('open')) {
+      $('manual-input').value = '';
+      if (v && v !== pendingCode) sayPadIsOpen(v, true);
+      try { $('qty-input').focus(); } catch (e) {}
+      return;
+    }
     // Say why nothing happened. Returning in silence is indistinguishable from a
     // dead button, which is how "typed barcode + Add: no qty dialog" gets
     // reported.
@@ -7952,9 +8035,9 @@
         }
       } else if (reason === 'manual' && !refused) {
         // Not a refusal we were told about — a lost or slow reply, checked.
-        toast(finalStatus
+        errorToast(finalStatus
           ? 'Couldn’t change the status — it is still ' + statusLabel(finalStatus)
-          : 'Couldn’t confirm the status change — check the stocktake list', '#b45309');
+          : 'Couldn’t confirm the status change — check the stocktake list');
       }
       if (onDone) onDone(ok, finalStatus);
     };
@@ -8031,7 +8114,7 @@
         // tells a bartender nothing, whereas which half worked does.
         toast(handoverMsg + ' — still ' + statusLabel(finalStatus) + ', finish it from ⋯', '#b91c1c');
       } else {
-        toast(handoverMsg + ' — couldn’t confirm it was marked completed; check the stocktake list', '#b45309');
+        errorToast(handoverMsg + ' — couldn’t confirm it was marked completed; check the stocktake list');
       }
       // Confirm Home against the server in the background, so the card can't
       // keep saying Ready if anything above went sideways.

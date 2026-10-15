@@ -300,6 +300,12 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   patches rows in place (`rowCache`, one node per barcode) — never `innerHTML = ''` and rebuild.
   Re-sorting by `last_scanned` on each poll sent 9 of 10 taps to the wrong line (15 Oct): a
   + tap bumps `last_scanned`, so the next poll moved that line to the top.
+- **The qty pad's entry is never dropped for another barcode.** Camera, Capture, the manual
+  field and `openQtyDialog()` itself all refuse a different code while the pad is open
+  (`sayPadIsOpen()` / `padBlockedMessage()`). A wedge typing into the qty field restores the
+  value from before the burst (`qtyLastGood`, recorded only after 80ms still) and swallows the
+  rest of the burst including its Enter — otherwise the tail digits became the quantity
+  (16 Oct). "Couldn't confirm…" toasts use `errorToast()`: red, with Get help.
 - **Never navigate away from an open take** in `loadTakes()` (late post-login chains did).
   The open take lives in the URL as `#take=<id>` (`replaceState`, no history entries) and is
   reopened after a reload once the fresh list arrives.
