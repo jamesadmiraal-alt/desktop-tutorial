@@ -1533,6 +1533,7 @@
            Only offered from Ready for export. -->
       <button id="take-complete" style="display:none">Mark completed</button>
       <button id="take-clear" class="danger">Clear items</button>
+      <div id="take-clear-note" class="hint" style="display:none">Move back to In Progress to clear items.</div>
     </div>
     <!-- First-import feedback. Shown only after an export with an UNVERIFIED
          template, only to owner/manager, and only until it is answered (once,
@@ -2166,8 +2167,10 @@
   // handler can close anything.
   var GHOST_RADIUS = 44;
   var lastPointerAt = { x: -1e6, y: -1e6 };
+  var lastPointerDownAt = 0;
   document.addEventListener('pointerdown', function (e) {
     lastPointerAt = { x: e.clientX, y: e.clientY };
+    lastPointerDownAt = performance.now();
   }, true);
 
   document.addEventListener('click', function (e) {
@@ -4195,18 +4198,18 @@
   }
 
   // Every handler waits for the sheet's arming delay — see stateControlsArmed().
-  $('take-feedback-yes').onclick = function () {
-    if (!stateControlsArmed()) return;
+  $('take-feedback-yes').onclick = function (e) {
+    if (!stateControlsArmed(e)) return;
     sendImportFeedback(true, null, null);
   };
-  $('take-feedback-no').onclick = function () {
-    if (!stateControlsArmed()) return;
+  $('take-feedback-no').onclick = function (e) {
+    if (!stateControlsArmed(e)) return;
     $('take-feedback-yn').style.display = 'none';
     $('take-feedback-more').style.display = '';
     $('take-feedback-failed').focus();
   };
-  $('take-feedback-send').onclick = function () {
-    if (!stateControlsArmed()) return;
+  $('take-feedback-send').onclick = function (e) {
+    if (!stateControlsArmed(e)) return;
     var raw = $('take-feedback-failed').value.trim();
     var n = Number(raw);
     // The one number that makes a "No" useful — how bad was it — so it is
@@ -4217,8 +4220,8 @@
     }
     sendImportFeedback(false, n, $('take-feedback-notes').value.trim());
   };
-  $('take-feedback-later').onclick = function () {
-    if (!stateControlsArmed()) return;
+  $('take-feedback-later').onclick = function (e) {
+    if (!stateControlsArmed(e)) return;
     if (feedbackTake) {
       try { localStorage.setItem(FEEDBACK_DISMISS_PREFIX + feedbackTake.id, '1'); } catch (e) { /* best effort */ }
     }
@@ -5150,6 +5153,7 @@
     var scroller = $('home-view');
     var keepScroll = scroller.scrollTop;
     var token = ++homeLoadToken;
+    var startedAt = Date.now();
 
     // Nothing on screen yet: paint this device's last copy straight away.
     if (!takes.length) {
@@ -5195,6 +5199,11 @@
         return;
       }
       endTiming('ok');
+      // Asked before this device cleared a take: its totals are from before the
+      // clear. Keep the zero rather than paint the old numbers back (19 Oct).
+      rows.forEach(function (r) {
+        if (clearedTakeAt[r.id] && clearedTakeAt[r.id] > startedAt) r.totals = { lines: 0, qty: 0 };
+      });
       var unchanged = quiet && homeSignature(rows) === homeSignature(takes);
       takes = rows;
       homeFromCache = false;
@@ -7884,9 +7893,21 @@
   // takes to read a sheet and choose. Only the state-changing controls are held
   // back — Export and Cancel are safe to hit immediately and holding
   // those would just feel broken.
+  //
+  // UPDATED 19 Oct: by EVENT, not by clock. A flat 350ms also swallowed a real
+  // second tap — Back, ⋯, Clear in quick succession did nothing on 3 of 10
+  // tries, silently. The stray this guards against is the OPENING tap's own
+  // echo, and that tap's finger went down before the sheet opened; a
+  // deliberate tap on the sheet went down after. So: a click is armed when its
+  // pointerdown came after the sheet opened. A keyboard or programmatic click
+  // (detail 0) has no pointer and is armed. The clock is only the fallback for
+  // a browser with no pointer events.
   var STATE_ARM_MS = 350;
   var actionsOpenedAt = 0;
-  function stateControlsArmed() {
+  var actionsOpenedPerf = 0;   // the same moment, sub-millisecond, for comparing with pointerdown
+  function stateControlsArmed(e) {
+    if (e && e.detail === 0) return true;
+    if (lastPointerDownAt) return lastPointerDownAt > actionsOpenedPerf;
     return Date.now() - actionsOpenedAt >= STATE_ARM_MS;
   }
 
@@ -7897,6 +7918,7 @@
     }
     actionsTake = t;
     actionsOpenedAt = Date.now();
+    actionsOpenedPerf = performance.now();
     $('take-actions-title').textContent = t.name;
     var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
     // Clearing every item is owner/manager only — enforced by
@@ -7904,7 +7926,16 @@
     // offered a button that only produces a server error. Same
     // check-before-asking shape as countryChangeEligible(). Staff can still
     // remove items individually from inside the stocktake.
-    $('take-clear').style.display = canManage ? '' : 'none';
+    //
+    // And only on an In Progress take: the database refuses item writes for
+    // any other status (enforce_stocktake_not_completed), so on Ready or
+    // Completed the button could only produce a 23514 (19 Oct). Owner/manager
+    // there see why instead.
+    var clearable = canManage && t.status === 'in_progress';
+    $('take-clear').style.display = clearable ? '' : 'none';
+    $('take-clear').disabled = false;
+    $('take-clear').textContent = 'Clear items';
+    $('take-clear-note').style.display = (canManage && !clearable) ? '' : 'none';
 
     var act = statusAction(t, canManage);
     var btn = $('take-status');
@@ -7912,8 +7943,8 @@
     if (act) {
       btn.textContent = act.label;
       btn.className = act.cls;
-      btn.onclick = function () {
-        if (!stateControlsArmed()) return;
+      btn.onclick = function (e) {
+        if (!stateControlsArmed(e)) return;
         if (btn.disabled) return;
         // Feedback on the tap itself: 14 Oct's Mark ready took 10–25s and showed
         // nothing while it worked. Restored whatever happens (setTakeStatus
@@ -7935,8 +7966,8 @@
     // they knew was the pad refusing to save.
     var completeBtn = $('take-complete');
     completeBtn.style.display = t.status === 'ready_for_export' ? '' : 'none';
-    completeBtn.onclick = function () {
-      if (!stateControlsArmed()) return;
+    completeBtn.onclick = function (e) {
+      if (!stateControlsArmed(e)) return;
       if (!confirm('Mark "' + t.name + '" completed?\n\n'
                    + 'It becomes read-only for everyone — anyone still counting will '
                    + 'not be able to save. A manager can reopen it afterwards.')) return;
@@ -8330,23 +8361,132 @@
   // platforms resolve on dismissal rather than rejecting, so a naive version
   // locks a count when someone opens the share sheet and backs out.
 
-  $('take-clear').onclick = function () {
-    // Same arming delay as the status controls — this is the most destructive
-    // button in the sheet and it sits in the same group.
-    if (!stateControlsArmed()) return;
-    if (!actionsTake) { toast('Open the stocktake’s ⋯ menu again', '#b91c1c'); return; }
-    fetchTakeItems(actionsTake.id, function (takeItems) {
-      if (!takeItems.length) { toast('Nothing to clear', '#b91c1c'); closeTakeActions(); return; }
-      if (!confirm('Delete all ' + takeItems.length + ' scanned items in "' + actionsTake.name + '"? Export first if you need the data.')) return;
-      sb.rpc('clear_stocktake_items', { p_stocktake_id: actionsTake.id }).then(function (res) {
-        if (res.error) { fail(res.error, 'Clear failed'); return; }
-        closeTakeActions();
-        actionsTake.totals = { lines: 0, qty: 0 };
-        actionsTake.updated_at = new Date().toISOString();
-        renderHome();
+  // ---- Clear items ----------------------------------------------------------
+  //
+  // 19 Oct, live: 7 of 10 clears succeeded on the server while the Home card
+  // kept "N items · M qty" until the next poll — the totals were zeroed on
+  // actionsTake, an object the 15s refresh had since replaced in `takes`. Now
+  // every copy is updated by id (applyClearLocally), the device cache too, and a
+  // Home load that started BEFORE the clear can't paint the old totals back.
+  // Bounded like every other request; a lost reply re-counts before saying
+  // anything; and it waits for this take's own saves still in flight, so a
+  // late +1 can't re-create a line just after the clear.
+  var CLEAR_TIMEOUT_MS = 15000;
+  var CLEAR_COUNT_TIMEOUT_MS = 12000;
+  var CLEAR_WAIT_WRITES_MS = 20000;
+  var clearedTakeAt = {};   // take id -> when this device cleared it
+
+  // How many lines the server holds for a take: a number, or null if it
+  // couldn't be found out (bounded).
+  function countTakeLines(takeId, cb) {
+    var done = false;
+    var finish = function (n) { if (!done) { done = true; clearTimeout(timer); cb(n); } };
+    var timer = setTimeout(function () { finish(null); }, CLEAR_COUNT_TIMEOUT_MS);
+    sb.from('stocktake_items').select('id').eq('stocktake_id', takeId).then(function (res) {
+      finish(res.error ? null : (res.data || []).length);
+    }, function () { finish(null); });
+  }
+
+  // This device's saves to the take that are queued or still out.
+  function takeHasWritesInFlight(takeId) {
+    var pre = takeId + '|';
+    var k;
+    for (k in stepQueues) if (k.indexOf(pre) === 0) return true;
+    for (k in pendingSteps) if (k.indexOf(pre) === 0) return true;
+    return !!(commitInFlight && currentTake && currentTake.id === takeId);
+  }
+  function waitForTakeWrites(takeId, cb) {
+    var until = Date.now() + CLEAR_WAIT_WRITES_MS;
+    (function check() {
+      if (!takeHasWritesInFlight(takeId)) { cb(true); return; }
+      if (Date.now() > until) { cb(false); return; }
+      setTimeout(check, 200);
+    })();
+  }
+
+  function applyClearLocally(takeId) {
+    var now = new Date().toISOString();
+    clearedTakeAt[takeId] = Date.now();
+    var zero = function (t) { if (t && t.id === takeId) { t.totals = { lines: 0, qty: 0 }; t.updated_at = now; } };
+    takes.forEach(zero);
+    zero(actionsTake);
+    zero(currentTake);
+    if (currentTake && currentTake.id === takeId) { items = []; renderItems(); }
+    saveHomeCache();
+    if (currentView === 'home') renderHome();
+  }
+
+  $('take-clear').onclick = function (e) {
+    // Same arming as the status controls — this is the most destructive button
+    // in the sheet and it sits in the same group.
+    if (!stateControlsArmed(e)) return;
+    var btn = $('take-clear');
+    if (btn.disabled) return;
+    // By id, at click time: the object the sheet opened with may have been
+    // replaced by a refresh since.
+    var t = actionsTake ? (takeById(actionsTake.id) || actionsTake) : null;
+    if (!t) { toast('Open the stocktake’s ⋯ menu again', '#b91c1c'); return; }
+    if (t.status !== 'in_progress') { toast('Move back to In Progress to clear items', '#b45309'); return; }
+    var takeId = t.id, name = t.name;
+    var reset = function () { btn.disabled = false; btn.textContent = 'Clear items'; };
+    btn.disabled = true;
+    btn.textContent = takeHasWritesInFlight(takeId) ? 'Finishing saves…' : 'Checking…';
+    waitForTakeWrites(takeId, function (settled) {
+      if (!settled) {
+        reset();
+        errorToast('Some changes to "' + name + '" are still saving — try Clear again in a moment');
+        return;
+      }
+      btn.textContent = 'Checking…';
+      countTakeLines(takeId, function (n) {
+        if (n === null) { reset(); errorToast('Couldn’t check "' + name + '" — check your signal and try again'); return; }
+        if (!n) { reset(); applyClearLocally(takeId); toast('Nothing to clear'); closeTakeActions(); return; }
+        if (!confirm('Delete all ' + n + ' scanned items in "' + name + '"? Export first if you need the data.')) { reset(); return; }
+        btn.textContent = 'Clearing…';
+        var settledRpc = false;
+        var succeed = function () {
+          reset();
+          applyClearLocally(takeId);
+          closeTakeActions();
+          toast('Cleared "' + name + '"');
+        };
+        // No reliable answer: count again before saying anything.
+        var recheck = function () {
+          countTakeLines(takeId, function (left) {
+            if (left === 0) { succeed(); return; }
+            reset();
+            errorToast(left === null
+              ? 'Couldn’t confirm "' + name + '" was cleared — check it before trying again'
+              : 'Couldn’t clear "' + name + '" — ' + left + ' line' + (left === 1 ? ' is' : 's are') + ' still there. Try again.');
+          });
+        };
+        var timer = setTimeout(function () { if (settledRpc) return; settledRpc = true; recheck(); }, CLEAR_TIMEOUT_MS);
+        sb.rpc('clear_stocktake_items', { p_stocktake_id: takeId }).then(function (res) {
+          if (settledRpc) return;
+          settledRpc = true;
+          clearTimeout(timer);
+          if (res.error && replyWasLost(res)) { recheck(); return; }
+          if (res.error) {
+            reset();
+            fail(res.error, 'Clear failed');
+            if (/ready|completed/i.test(res.error.message || '')) refreshTakeStatusById(takeId);
+            return;
+          }
+          succeed();
+        }, function () {
+          if (settledRpc) return;
+          settledRpc = true;
+          clearTimeout(timer);
+          recheck();
+        });
       });
     });
   };
+  // A refusal for status means the sheet was out of date: re-read it so the
+  // card (and the sheet, if reopened) says Ready/Completed.
+  function refreshTakeStatusById(takeId) {
+    readTakeStatus(takeId, function (st) { if (st) { applyStatusLocally(takeId, st); renderHome(); } });
+  }
 
   // ---- Boot ----
   sb.auth.getSession().then(function (res) {

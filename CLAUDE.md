@@ -306,6 +306,14 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   value from before the burst (`qtyLastGood`, recorded only after 80ms still) and swallows the
   rest of the burst including its Enter — otherwise the tail digits became the quantity
   (16 Oct). "Couldn't confirm…" toasts use `errorToast()`: red, with Get help.
+- **The ⋯ sheet arms by event, not by clock.** `stateControlsArmed(e)` accepts a click whose
+  pointerdown came after the sheet opened (`performance.now()`, strict `>`), or a keyboard /
+  programmatic click (`detail === 0`); every caller passes its event. A flat 350ms window
+  silently ate a real fast second tap (Clear, 19 Oct).
+- **Clear items** is offered only on In Progress takes (owner/manager), waits for this device's
+  in-flight saves to that take, is bounded (15s) and re-counts on a lost reply. Success goes
+  through `applyClearLocally(id)` — every copy by id, the device cache, and a Home load that
+  started before the clear can't paint the old totals back (`clearedTakeAt`).
 - **Never navigate away from an open take** in `loadTakes()` (late post-login chains did).
   The open take lives in the URL as `#take=<id>` (`replaceState`, no history entries) and is
   reopened after a reload once the fresh list arrives.
