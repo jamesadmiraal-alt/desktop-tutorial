@@ -7,7 +7,12 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 
 - **No build step.** Plain HTML/CSS/JS, libraries vendored into the repo (no CDNs).
 - `index.html` — marketing landing page (features, POS interest form, pricing: Trial /
-  Single-venue $29/mo or $290/yr / Multi-venue $59/mo or $590/yr).
+  Solo $29/mo or $290/yr / Team $59/mo or $590/yr).
+- **Plan names on screen are Solo and Team** (renamed 21 Oct 2026 from Single-venue /
+  Multi-venue). Only the labels changed: `plan_tier` stays `'single'`/`'multi'`, as do Stripe
+  metadata, ids and every key. In app.html, `planLabel(tier)` / `PLAN_LABELS` turn a key into
+  its name — use it rather than writing a name from a key. Older comments and docs still say
+  single-/multi-venue; that's the key talking, not the copy.
 - `privacy.html`, `terms.html` — static legal pages, linked from the site footer, the
   signup form and Account. **Both are marked as drafts pending legal review** — say so
   if asked, and don't quietly remove the banner.
@@ -138,7 +143,7 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   the webhook depends on this to match the paying user.
 - **Users vs seats is the pricing model, and the words matter.** Two separate things,
   and users conflated them until the copy was fixed on 2026-09-01: **how many people
-  you set up** is unlimited and free on Multi-venue, while **how many can be counting
+  you set up** is unlimited and free on Team, while **how many can be counting
   at the same time** is what's billed ($29/mo each beyond the owner). Say "people" and
   "at the same time" in anything user-facing; "concurrent user" and "seat" are the
   billing terms and belong in Stripe and in code, not on screen. The column stays

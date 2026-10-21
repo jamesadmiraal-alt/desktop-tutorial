@@ -148,7 +148,7 @@ Deno.serve(async (req) => {
     }
     const org = membership.organisations;
     if (org.plan_tier !== "multi") {
-      return jsonResponse({ error: "Concurrent seats only apply to the multi-venue plan." }, 400);
+      return jsonResponse({ error: "Extra people counting at the same time only apply to the Team plan." }, 400);
     }
     if (!org.stripe_subscription_item_id) {
       return jsonResponse({ error: "This organisation's billing isn't fully set up yet." }, 400);

@@ -340,7 +340,7 @@
       <button id="add-venue-btn" class="primary">Add venue</button>
     </div>
     <p class="hint" id="venue-limit-note" style="display:none;margin-top:12px;margin-bottom:0">
-      Single-venue includes one venue, with unlimited locations inside it. Upgrade to Multi-venue from the app's Account page for unlimited venues.
+      Solo includes one venue, with unlimited locations inside it. Upgrade to Team from the app's Account page for unlimited venues.
     </p>
   </div>
   </div><!-- /pane venues -->
@@ -425,7 +425,7 @@
          seat-count box that set-seat-count would reject with a 403. -->
     <div id="seats-owner-controls">
       <p class="hint">Set up as many people as you like — there's no charge per person, and venues and
-        locations are unlimited on Multi-venue. What's billed is how many can be <b>counting at the
+        locations are unlimited on Team. What's billed is how many can be <b>counting at the
         same time</b>. You're always included; each extra person counting at once is $29/mo.</p>
       <label for="seat-count-input">Extra people counting at once</label>
       <p class="hint" style="margin-top:2px">Beyond you. Each one is billed for a minimum of one month, so you
@@ -701,7 +701,7 @@
     $('org-name-display').textContent = currentOrg.name;
     var badge = $('org-plan-badge');
     badge.textContent = currentOrg.planTier === 'free' ? 'Free plan'
-      : currentOrg.planTier === 'single' ? 'Single-venue plan' : 'Multi-venue plan';
+      : currentOrg.planTier === 'single' ? 'Solo plan' : 'Team plan';
     badge.className = 'plan-badge ' + (currentOrg.planTier === 'free' ? 'free' : 'pro');
     $('join-code-display').textContent = currentOrg.joinCode;
     $('org-staff-own-only').checked = currentOrg.staffSeeOwnOnly;
@@ -1653,8 +1653,8 @@
         // management/billing questions don't apply the same way once
         // there's no location/venue hierarchy or seat pool to administer.
         if (org.plan_tier === 'single') {
-          $('denied-title').textContent = 'Multi-venue only';
-          $('denied-text').textContent = "This console is for organisations on the Multi-venue plan. Upgrade from the app's Account page to manage locations, team members and concurrent seats here.";
+          $('denied-title').textContent = 'Team plan only';
+          $('denied-text').textContent = "This console is for organisations on the Team plan. Upgrade from the app's Account page to manage locations, team members and concurrent seats here.";
           showView('denied');
           return;
         }

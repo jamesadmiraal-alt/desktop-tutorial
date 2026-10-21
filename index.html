@@ -109,6 +109,7 @@
     padding: 3px 12px; border-radius: 999px; text-transform: uppercase;
   }
   .plan h3 { font-size: 1.1rem; }
+  .plan .plan-sub { color: var(--text-dim); font-size: 0.88rem; margin-top: 2px; }
   .plan .price { font-size: 2.2rem; font-weight: 800; margin: 8px 0 2px; }
   .plan .per { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 16px; }
   .plan .annual-offer {
@@ -257,11 +258,11 @@
 <section class="wrap" style="padding: 8px 20px 40px">
   <div class="card" style="text-align:center;max-width:680px;margin:0 auto">
     <div class="icon"><span class="ico" style="--i:url(icons/building-2.svg)"></span></div>
-    <h3 style="font-size:1.3rem;margin:12px 0 10px">Running more than one venue?</h3>
+    <h3 style="font-size:1.3rem;margin:12px 0 10px">Counting with staff, or running more than one venue?</h3>
     <p style="color:#d1d5db;font-size:0.98rem;line-height:1.6">
-      Single-venue keeps one bar's counts in one place. <b>Multi-venue</b> does more —
-      every location's stocktakes flow into the same organisation, so head office sees
-      everything centralised, not scattered across each site's own spreadsheet.
+      Solo keeps one venue's counts in one place, for one person. <b>Team</b> adds your
+      staff, counting at the same time, and brings every location's stocktakes into one
+      organisation, so head office sees everything in one place.
       Export any stocktake, from any venue, in a format ready to import straight into
       your stock management system.
     </p>
@@ -317,7 +318,7 @@
     <div class="step"><div class="n">3</div><h3>Scan</h3><p>Point your phone's camera at a barcode — beep, done.</p></div>
     <div class="step"><div class="n">4</div><h3>Count</h3><p>The number pad pops up — type the quantity and save. Scan again to add to the count.</p></div>
     <div class="step"><div class="n">5</div><h3>Export</h3><p>Download the finished stocktake as CSV — ready for your books or stock system.</p></div>
-    <div class="step"><div class="n">6</div><h3>Choose a plan</h3><p>The trial covers 5 products per stocktake. When you need a full count, pick Single- or Multi-venue and check out securely with Stripe.</p></div>
+    <div class="step"><div class="n">6</div><h3>Choose a plan</h3><p>The trial covers 5 products per stocktake. When you need a full count, pick Solo or Team and check out securely with Stripe.</p></div>
   </div>
 </section>
 
@@ -326,7 +327,8 @@
   <p class="section-sub">Try it free first — 5 products per stocktake, as many stocktakes as you like, exports included. No card needed.</p>
   <div class="plans">
     <div class="plan">
-      <h3>Single-venue</h3>
+      <h3>Solo</h3>
+      <div class="plan-sub">One venue, just you.</div>
       <div class="price">$29</div>
       <div class="per">per month</div>
       <div class="annual-offer">or <b>$290/year</b> — 12 months for the price of 10 <span class="offer-tag">2 months free</span></div>
@@ -342,7 +344,8 @@
     </div>
     <div class="plan pro">
       <div class="tag">Multiple venues</div>
-      <h3>Multi-venue</h3>
+      <h3>Team</h3>
+      <div class="plan-sub">Your staff counting together, at one venue or many.</div>
       <div class="price">$59</div>
       <!-- "Concurrent user" was doing too much work here: it is the billing
            term, not something a publican says. The two ideas have to be
@@ -354,6 +357,7 @@
       <div class="per">per month, for you counting</div>
       <div class="annual-offer">or <b>$590/year</b> — 12 months for the price of 10 <span class="offer-tag">2 months free</span></div>
       <ul>
+        <li>Add as many staff as you need</li>
         <li>Unlimited venues and locations</li>
         <li>Set up as many people as you like — no charge per person</li>
         <li>$29/mo for each extra person counting <b>at the same time</b></li>

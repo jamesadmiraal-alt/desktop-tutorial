@@ -806,7 +806,7 @@ begin
   -- here would make `<>` evaluate to NULL, which plpgsql treats as false — the
   -- exact null-comparison bypass this file has already been bitten by.
   if target_org.plan_tier is distinct from 'multi' then
-    raise exception 'This organisation is on the Single-venue plan (owner only). Ask the owner to upgrade to Multi-venue.';
+    raise exception 'This organisation is on the Solo plan (owner only). Ask the owner to upgrade to Team.';
   end if;
 
   insert into public.memberships (org_id, user_id, role) values (target_org.id, auth.uid(), 'staff');
@@ -853,7 +853,7 @@ begin
   -- same sentence is returned by create-team-member (403) and shown on the Team
   -- view; keep the three in step if it is ever reworded.
   if (select plan_tier from public.organisations where id = org_id) is distinct from 'multi' then
-    raise exception 'Single-venue is just you — the owner. Multi-venue ($59/mo) lets you set up as many people as you like, and costs $29/mo for each extra person counting at the same time.';
+    raise exception 'Solo ($29/mo) is just you — the owner. Team ($59/mo) lets you set up as many people as you like, and costs $29/mo for each extra person counting at the same time.';
   end if;
 
   if p_role not in ('manager', 'staff') then

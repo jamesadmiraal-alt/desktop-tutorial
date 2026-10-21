@@ -798,13 +798,13 @@
       <p class="upgrade-text">Choose a plan to activate <b id="pending-org-name"></b>.</p>
       <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="single">
-        <span><span class="opt-name">Single-venue</span>
-          <div class="opt-sub">One user (the owner), 1 location, unlimited products</div></span>
+        <span><span class="opt-name">Solo</span>
+          <div class="opt-sub">One venue, just you. Unlimited products.</div></span>
         <span class="opt-price">$29<small>/mo</small></span>
       </button>
       <button class="upgrade-opt best" data-tier="multi">
-        <span><span class="opt-name">Multi-venue</span>
-          <div class="opt-sub">Unlimited venues and locations</div></span>
+        <span><span class="opt-name">Team</span>
+          <div class="opt-sub">Your staff counting together, at one venue or many.</div></span>
         <span class="opt-price">$59<small>/mo</small></span>
         <span class="opt-note">+$29/mo per extra person counting at the same time</span>
       </button>
@@ -1012,32 +1012,32 @@
       <div class="plan-desc">5 products per stocktake, as many stocktakes as you like, exports included. Pick a plan to count without the cap.</div>
       <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="single">
-        <span><span class="opt-name">Single-venue</span>
-          <div class="opt-sub">One venue, one user — just you.</div></span>
+        <span><span class="opt-name">Solo</span>
+          <div class="opt-sub">One venue, just you.</div></span>
         <span class="opt-price">$29<small>/mo</small></span>
       </button>
       <button class="upgrade-opt best" data-tier="multi">
-        <span><span class="opt-name">Multi-venue</span>
-          <div class="opt-sub">Several venues, and a team counting at the same time.</div></span>
+        <span><span class="opt-name">Team</span>
+          <div class="opt-sub">Your staff counting together, at one venue or many.</div></span>
         <span class="opt-price">$59<small>/mo</small></span>
         <span class="opt-note">+$29/mo per extra person counting at the same time</span>
       </button>
     </div>
     <div id="acct-plan-single" style="display:none">
-      <span class="plan-badge pro">Single-venue plan</span>
+      <span class="plan-badge pro">Solo plan</span>
       <div class="plan-desc">One user — you, the owner. 1 location, unlimited products per stocktake.</div>
       <button id="manage-sub-btn-single" class="manage-sub-btn">Manage subscription</button>
       <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
       <button class="upgrade-opt" data-tier="multi">
-        <span><span class="opt-name">Upgrade to Multi-venue</span>
-          <div class="opt-sub">Unlimited venues and locations</div></span>
+        <span><span class="opt-name">Upgrade to Team</span>
+          <div class="opt-sub">Add as many staff as you need, at one venue or many.</div></span>
         <span class="opt-price">$59<small>/mo</small></span>
         <span class="opt-note">+$29/mo per extra person counting at the same time</span>
       </button>
       <div id="acct-note">Thanks for supporting Gantry!</div>
     </div>
     <div id="acct-plan-multi" style="display:none">
-      <span class="plan-badge pro">Multi-venue plan</span>
+      <span class="plan-badge pro">Team plan</span>
       <div class="plan-desc">Unlimited venues, locations and products, and as many people set up as you like. Change how many can count at the same time from the admin console any time — billing adjusts automatically.</div>
       <button id="manage-sub-btn-multi" class="manage-sub-btn">Manage subscription</button>
       <div id="acct-note">Update your payment method, view invoices, or cancel — handled securely by Stripe.
@@ -1108,7 +1108,7 @@
          it here or hit the API. The upgrade lives on Account, not here — one
          checkout path, already priced. -->
     <div id="team-single-venue-note" style="display:none">
-      <button id="team-upgrade-btn" class="primary" style="margin-top:4px;width:100%">Upgrade to Multi-venue</button>
+      <button id="team-upgrade-btn" class="primary" style="margin-top:4px;width:100%">Upgrade to Team</button>
     </div>
     <div id="team-add-member-form">
       <label for="team-member-name">Name</label>
@@ -1611,13 +1611,13 @@
     <p class="plan-desc" style="margin:0 0 6px">Pick a plan to count without the cap:</p>
     <label class="checkbox-row"><input type="checkbox" class="bill-annually-toggle"><span>Bill annually (save ~2 months)</span></label>
     <button class="upgrade-opt" data-tier="single">
-      <span><span class="opt-name">Single-venue</span>
-        <div class="opt-sub">One venue, one user — just you. Unlimited products and stocktakes.</div></span>
+      <span><span class="opt-name">Solo</span>
+        <div class="opt-sub">One venue, just you. Unlimited products and stocktakes.</div></span>
       <span class="opt-price">$29<small>/mo</small></span>
     </button>
     <button class="upgrade-opt best" data-tier="multi">
-      <span><span class="opt-name">Multi-venue</span>
-        <div class="opt-sub">Several venues, and a team counting at the same time — every venue's counts in one place.</div></span>
+      <span><span class="opt-name">Team</span>
+        <div class="opt-sub">Your staff counting together, at one venue or many — every venue's counts in one place.</div></span>
       <span class="opt-price">$59<small>/mo</small></span>
       <span class="opt-note">+$29/mo per extra person counting at the same time</span>
     </button>
@@ -2497,10 +2497,10 @@
       //
       // The only person who can act is the owner, and the only action is an
       // upgrade — so that is the entire message.
-      $('auth-heading').textContent = 'Single-venue is owner only';
-      $('seats-full-message').textContent = orgName + ' is on the Single-venue plan ($29/mo), '
-        + 'which covers one user — the owner. The owner can upgrade to Multi-venue ($59/mo) '
-        + 'from their Account screen to add the team.';
+      $('auth-heading').textContent = 'Solo is owner only';
+      $('seats-full-message').textContent = orgName + ' is on the Solo plan ($29/mo), '
+        + 'which covers one user — the owner. The owner can upgrade to Team ($59/mo) '
+        + 'from their Account screen to add staff.';
     } else if (reason === 'no_seats_purchased') {
       // Says what to ask for in the words the owner will see on their own
       // screen. "Hasn't purchased any concurrent staff seats" described the
@@ -2854,7 +2854,7 @@
       var announceTierChangeIfAny = function () {
         if (previousTier && currentOrg && currentOrg.planTier !== previousTier &&
             (currentOrg.planTier === 'single' || currentOrg.planTier === 'multi')) {
-          var label = currentOrg.planTier === 'multi' ? 'Multi-venue' : 'Single-venue';
+          var label = planLabel(currentOrg.planTier);
           toast('🎉 You’re now on the ' + label + ' plan!', '#059669');
         }
       };
@@ -3068,6 +3068,12 @@
   // Shared across every "Bill annually" checkbox (Single account card, the
   // payment-pending gate) — flipping any one of them updates them all and
   // re-renders every visible price/link to match.
+  // What each plan is CALLED on screen. The keys are the stored
+  // organisations.plan_tier values and Stripe metadata, and never change;
+  // only these labels do. Renamed 21 Oct 2026: Single-venue -> Solo,
+  // Multi-venue -> Team (a team is the difference, not the venue count).
+  var PLAN_LABELS = { trial: 'Trial', single: 'Solo', multi: 'Team', pending: 'No plan' };
+  function planLabel(tier) { return PLAN_LABELS[tier] || String(tier || ''); }
   var billAnnually = false;
   function setBillAnnually(val) {
     billAnnually = val;
@@ -4377,14 +4383,15 @@
     var isTrial = !!(currentOrg && currentOrg.planTier === 'trial');
     $('team-add-member-title').textContent = isMulti
       ? 'Add team member'
-      : (isTrial ? 'Counting with a team?' : 'Single-venue is just you');
+      : (isTrial ? 'Counting with a team?' : 'Solo is just you');
     $('team-add-member-intro').textContent = isMulti
       ? 'Creates their login directly — no join code needed. They can change this password later from this app.'
       : (isTrial
-        ? 'The trial is just you. Single-venue ($29/mo) is one venue, just you; Multi-venue ($59/mo) adds '
-          + 'several venues and lets you set up as many people as you like — $29/mo for each extra person '
-          + 'counting at the same time.'
-        : 'Single-venue ($29/mo) is just you — the owner. Multi-venue ($59/mo) lets you set up as many people '
+        ? 'The trial is just you. Solo ($29/mo) is one venue, just you. Team ($59/mo) lets you add as many '
+          + 'people as you like, at one venue or several. $29/mo for each extra person counting at the same time.'
+        // Same sentence as add_team_member()'s exception and create-team-member's
+        // 403 — reword all three together.
+        : 'Solo ($29/mo) is just you — the owner. Team ($59/mo) lets you set up as many people '
           + 'as you like, and costs $29/mo for each extra person counting at the same time.');
 
     loadTeamAuditLog();

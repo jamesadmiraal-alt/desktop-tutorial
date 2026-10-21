@@ -46,8 +46,8 @@ const PER_HOUR = 5;
 
 const PLAN_LABELS: Record<string, string> = {
   trial: "Trial",
-  single: "Single-venue",
-  multi: "Multi-venue",
+  single: "Solo",
+  multi: "Team",
   pending: "Lapsed / pending",
 };
 

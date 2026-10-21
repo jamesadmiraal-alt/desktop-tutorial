@@ -83,7 +83,8 @@ async function sendUpgradeWelcome(tier: "single" | "multi", to: string | undefin
     console.log("upgrade welcome: no customer email on the session, skipping");
     return;
   }
-  const planLabel = tier === "multi" ? "Multi-venue" : "Single-venue";
+  // Display names only (renamed 21 Oct 2026); tier keys are unchanged.
+  const planLabel = tier === "multi" ? "Team" : "Solo";
   const title = `You're on Gantry ${planLabel}.`;
   const paragraphs = [
     "Scan a barcode, type the qty, export CSV into the stocktake import you already use.",
