@@ -423,7 +423,7 @@
     var label = submitBtn.textContent;
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending…';
-    var base = cfg.supabaseUrl.replace(//+$/, '');
+    var base = cfg.supabaseUrl.replace(/\/+$/, '');
     fetch(base + '/functions/v1/submit-contact', {
       method: 'POST',
       headers: {
