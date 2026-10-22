@@ -3594,20 +3594,49 @@
   // Account picker and the builder's "Use this for exports now". Mirrors what
   // set_export_template() writes, and re-points the cached template the Export
   // button reads, so nothing needs a reload to agree.
+  //
+  // UPDATED 22 Oct: ONE source of truth, switched at once. The org's template
+  // used to change only when the RPC answered, so "change the default, go to
+  // the take, Export" inside that window showed the old name on the button AND
+  // exported the old file. Now the choice applies to currentOrg immediately
+  // (reverted if the save fails), and withExportTemplate() waits for a save
+  // still in flight before it reads anything.
+  var templateSaveInFlight = null;
   function chooseExportTemplate(id, list, done) {
     var ENGINE = window.GANTRY_EXPORT_ENGINE;
-    sb.rpc('set_export_template', { p_template_id: id }).then(function (res) {
-      if (res.error) { fail(res.error, 'Could not change the export template'); done(false); return; }
-      currentOrg.exportTemplateId = res.data;
-      var t = ENGINE.effectiveTemplate(list, currentOrg);
+    var org = currentOrg;
+    var before = { id: org.exportTemplateId, t: org.exportTemplate, f: org.exportFormat, s: org.stripLeadingZero };
+    var apply = function (tid) {
+      org.exportTemplateId = tid;
+      var t = ENGINE.effectiveTemplate(list, org);
       var mirror = ENGINE.legacyMirror(t);
-      currentOrg.exportFormat = mirror.exportFormat;
-      currentOrg.stripLeadingZero = mirror.stripLeadingZero;
-      if (t) currentOrg.exportTemplate = t;
+      org.exportFormat = mirror.exportFormat;
+      org.stripLeadingZero = mirror.stripLeadingZero;
+      if (t) org.exportTemplate = t;
+      if ($('take-actions-overlay').classList.contains('open')) renderExportButton();
+      return t;
+    };
+    var t = apply(id);
+    var settle;
+    var mine = new Promise(function (r) { settle = r; });
+    templateSaveInFlight = mine;
+    var finish = function () { if (templateSaveInFlight === mine) templateSaveInFlight = null; settle(); };
+    var revert = function (err) {
+      org.exportTemplateId = before.id; org.exportTemplate = before.t;
+      org.exportFormat = before.f; org.stripLeadingZero = before.s;
+      if ($('take-actions-overlay').classList.contains('open')) renderExportButton();
+      fail(err, 'Could not change the export template');
+      finish();
+      done(false);
+    };
+    sb.rpc('set_export_template', { p_template_id: id }).then(function (res) {
+      if (res.error) { revert(res.error); return; }
+      if (res.data && res.data !== id) t = apply(res.data);
+      finish();
       // What the NEXT file will be — the question this is reached for.
       toast('Exports will now use the ' + (t ? t.name : 'chosen') + ' template');
       done(true, t);
-    }, function (err) { fail(err, 'Could not change the export template'); done(false); });
+    }, revert);
   }
 
   // Fire-and-forget. The submission row is already saved (by trigger, or by the
@@ -7993,6 +8022,9 @@
   // changed in Admin five minutes ago must be the one that's used. The cached
   // copy is the fallback for a dropped request, not the source of truth.
   function withExportTemplate(cb) {
+    // A default being changed right now decides which file this is: wait for
+    // it (it settles either way — saved, or reverted with a message).
+    if (templateSaveInFlight) { templateSaveInFlight.then(function () { withExportTemplate(cb); }); return; }
     loadExportTemplate(function (t, err) {
       if (t) { cb(t); return; }
       var cached = currentOrg && currentOrg.exportTemplate;
