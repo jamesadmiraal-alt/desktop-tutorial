@@ -319,6 +319,11 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   in-flight saves to that take, is bounded (15s) and re-counts on a lost reply. Success goes
   through `applyClearLocally(id)` — every copy by id, the device cache, and a Home load that
   started before the clear can't paint the old totals back (`clearedTakeAt`).
+- **Never find a take by object in `takes`** — the 15s poll replaces every object, so
+  `indexOf(t)` goes -1 and `splice(-1, 1)` removes the LAST card (deleting a take did this,
+  22 Oct). Match by id. Deleting goes through `deleteTake()`: `.select('id')` on the DELETE
+  (an RLS-filtered delete is a 204 that removed nothing), bounded with a re-check, cache
+  rewritten, and `deletedTakeAt` stops a Home load started before the delete from bringing it back.
 - **Never navigate away from an open take** in `loadTakes()` (late post-login chains did).
   The open take lives in the URL as `#take=<id>` (`replaceState`, no history entries) and is
   reopened after a reload once the fresh list arrives.

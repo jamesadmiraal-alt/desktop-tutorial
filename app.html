@@ -5166,7 +5166,7 @@
     if (!takes.length) {
       var cached = readHomeCache();
       if (cached && cached.takes.length) {
-        takes = cached.takes;
+        takes = cached.takes.filter(function (x) { return !deletedTakeAt[x.id]; });
         Object.keys(cached.names || {}).forEach(function (id) {
           if (!creatorNames[id]) creatorNames[id] = cached.names[id];
         });
@@ -5211,6 +5211,10 @@
       rows.forEach(function (r) {
         if (clearedTakeAt[r.id] && clearedTakeAt[r.id] > startedAt) r.totals = { lines: 0, qty: 0 };
       });
+      // Asked before this device deleted a take: it's still in that answer.
+      // Only then — a load started AFTER the delete that still has the take is
+      // the server saying the delete didn't happen, and that should show.
+      rows = rows.filter(function (r) { return !(deletedTakeAt[r.id] && deletedTakeAt[r.id] > startedAt); });
       var unchanged = quiet && homeSignature(rows) === homeSignature(takes);
       takes = rows;
       homeFromCache = false;
@@ -5299,11 +5303,7 @@
       if (confirm('Delete stocktake "' + t.name + '"'
                   + (n === null ? '' : ' and its ' + itemCountText(n)) + '?\n\n'
                   + 'Export first if you need the data. This is recorded in the activity log.')) {
-        sb.from('stocktakes').delete().eq('id', t.id).then(function (res) {
-          if (res.error) { fail(res.error, 'Delete failed'); return; }
-          takes.splice(takes.indexOf(t), 1);
-          renderHome();
-        });
+        deleteTake(t.id, t.name);
       }
     };
     row.appendChild(info); row.appendChild(more); row.appendChild(del);
@@ -8382,6 +8382,61 @@
   var CLEAR_COUNT_TIMEOUT_MS = 12000;
   var CLEAR_WAIT_WRITES_MS = 20000;
   var clearedTakeAt = {};   // take id -> when this device cleared it
+
+  // ---- Delete a take ---------------------------------------------------------
+  //
+  // 22 Oct: a deleted take vanished, then came back ~2s later as "0 items ·
+  // 0 total qty" until a reload; and the old splice(indexOf(t)) could remove
+  // the WRONG card — after a poll replaced the objects in `takes`, indexOf(t)
+  // was -1, and splice(-1, 1) drops the last one. Now: by id, everywhere; the
+  // device cache is rewritten; and a Home load that started before the delete
+  // can't put the take back (deletedTakeAt — same shape as clearedTakeAt).
+  //
+  // .select('id') because a DELETE that RLS filters out is not an error: it
+  // answers 204 having deleted nothing. Asking for the deleted rows is how to
+  // tell "gone" from "nothing happened".
+  var deletedTakeAt = {};   // take id -> when this device deleted it
+  var DELETE_TAKE_TIMEOUT_MS = 15000;
+
+  function dropDeletedTake(takeId) {
+    deletedTakeAt[takeId] = Date.now();
+    takes = takes.filter(function (x) { return x.id !== takeId; });
+    if (actionsTake && actionsTake.id === takeId) { actionsTake = null; closeTakeActions(); }
+    if (currentTake && currentTake.id === takeId) { currentTake = null; items = []; itemsLoadedTakeId = null; }
+    if (restoreTakeId === takeId) restoreTakeId = null;
+    saveHomeCache();
+    if (currentView === 'home') renderHome();
+  }
+
+  function deleteTake(takeId, name) {
+    var settled = false;
+    var finish = function (outcome, err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (outcome === 'gone') { dropDeletedTake(takeId); toast('Deleted "' + name + '"'); return; }
+      if (outcome === 'refused') { fail(err, 'Delete failed'); return; }
+      if (outcome === 'unchanged') {
+        errorToast('"' + name + '" wasn’t deleted — you may not have permission, or it changed. Refresh and try again.');
+        return;
+      }
+      errorToast('Couldn’t confirm "' + name + '" was deleted — check the list before trying again');
+    };
+    // No reliable answer: look before saying anything.
+    var recheck = function () {
+      sb.from('stocktakes').select('id').eq('id', takeId).then(function (r) {
+        if (r.error) { finish('unknown'); return; }
+        finish((r.data || []).length ? 'unchanged' : 'gone');
+      }, function () { finish('unknown'); });
+    };
+    var timer = setTimeout(function () { if (!settled) recheck(); }, DELETE_TAKE_TIMEOUT_MS);
+    sb.from('stocktakes').delete().eq('id', takeId).select('id').then(function (res) {
+      if (settled) return;
+      if (res.error && replyWasLost(res)) { recheck(); return; }
+      if (res.error) { finish('refused', res.error); return; }
+      finish((res.data || []).length ? 'gone' : 'unchanged');
+    }, function () { if (!settled) recheck(); });
+  }
 
   // How many lines the server holds for a take: a number, or null if it
   // couldn't be found out (bounded).
