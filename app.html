@@ -3263,26 +3263,44 @@
       if (!finish()) return;
       toast(msg || 'Couldn’t send that — email support@gantrystocktake.com instead', '#b91c1c');
     };
-    sb.functions.invoke('contact-support', {
-      body: { subject: $('help-subject').value.trim(), message: message, context: helpContext || {} }
-    }).then(function (res) {
-      if (res.error) {
-        // Our function's own words (e.g. the hourly limit) live in the body.
-        var ctx = res.error.context;
-        if (ctx && typeof ctx.json === 'function') {
-          ctx.json().then(function (b) { showError(b && b.error); }, function () { showError(); });
-        } else showError();
-        return;
-      }
-      var d = res.data || {};
-      if (!d.saved && !d.sent) { showError(d.error); return; }
-      if (!finish()) return;
-      $('help-overlay').classList.remove('open');
-      shieldGhostClicks();
-      lastErrorText = '';
-      if (d.sent) toast('Sent. We reply by email to ' + email + ', usually within one business day.');
-      else toast('Saved — we’ll still see it, and reply by email to ' + email + '.');
-    }, function () { showError(); });
+    var body = { subject: $('help-subject').value.trim(), message: message, context: helpContext || {} };
+    // The session first: a page left open overnight can hold an access token
+    // that has since expired. The function answers a rejected token with
+    // code 'session_invalid' (_shared/auth.ts) BEFORE saving or sending
+    // anything, so refreshing once and retrying can't send the message twice.
+    var send = function (attempt) {
+      sb.functions.invoke('contact-support', { body: body }).then(function (res) {
+        if (res.error) {
+          // Our function's own words (e.g. the hourly limit) live in the body.
+          var ctx = res.error.context;
+          if (ctx && typeof ctx.json === 'function') {
+            ctx.json().then(function (b) {
+              if (b && b.code === 'session_invalid' && attempt === 0) {
+                sb.auth.refreshSession().then(function (r) {
+                  if (r && r.data && r.data.session) send(1);
+                  else showError('Your session has ended — sign in again');
+                }, function () { showError('Your session has ended — sign in again'); });
+                return;
+              }
+              showError(b && b.error);
+            }, function () { showError(); });
+          } else showError();
+          return;
+        }
+        var d = res.data || {};
+        if (!d.saved && !d.sent) { showError(d.error); return; }
+        if (!finish()) return;
+        $('help-overlay').classList.remove('open');
+        shieldGhostClicks();
+        lastErrorText = '';
+        if (d.sent) toast('Sent. We reply by email to ' + email + ', usually within one business day.');
+        else toast('Saved — we’ll still see it, and reply by email to ' + email + '.');
+      }, function () { showError(); });
+    };
+    sb.auth.getSession().then(function (r) {
+      if (!(r && r.data && r.data.session)) { showError('Your session has ended — sign in again'); return; }
+      send(0);
+    }, function () { send(0); });
   };
 
   function goUpgrade(plan) {

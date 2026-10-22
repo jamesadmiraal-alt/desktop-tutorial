@@ -26,10 +26,10 @@
 // Needs migration 20261015_01_support_requests.sql.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { requireUser } from "../_shared/auth.ts";
 import { brandedHtml, mailFooter, sendEmail } from "../_shared/email.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
 const CORS_HEADERS = {
@@ -98,11 +98,11 @@ Deno.serve(async (req) => {
   }
 
   const authHeader = req.headers.get("Authorization") ?? "";
-  const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-  });
-  const { data: { user }, error: authError } = await userClient.auth.getUser();
-  if (authError || !user) return jsonResponse({ error: "Not signed in" }, 401);
+  // Who is calling: _shared/auth.ts (Bearer token, checked with the service
+  // key; 401 no_auth_header / session_invalid).
+  const auth = await requireUser(req, CORS_HEADERS);
+  if ("response" in auth) return auth.response;
+  const user = auth.user;
 
   let body: Record<string, unknown>;
   try {

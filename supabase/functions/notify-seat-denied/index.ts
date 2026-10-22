@@ -28,6 +28,7 @@
 // (SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are injected automatically.)
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { requireUser } from "../_shared/auth.ts";
 import { ADMIN_URL, APP_URL, brandedHtml, mailFooter, sendEmail } from "../_shared/email.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -52,11 +53,15 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("method not allowed", { status: 405, headers: CORS_HEADERS });
 
   const authHeader = req.headers.get("Authorization") ?? "";
+  // Who is calling: _shared/auth.ts (Bearer token, checked with the service
+  // key; 401 no_auth_header / session_invalid).
+  const auth = await requireUser(req, CORS_HEADERS);
+  if ("response" in auth) return auth.response;
+  const user = auth.user;
+  // Still needed: calls below run AS the caller, so RLS / auth.uid() apply.
   const userClient = createClient(SUPABASE_URL, ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
   });
-  const { data: { user }, error: authError } = await userClient.auth.getUser();
-  if (authError || !user) return jsonResponse({ error: "Not signed in" }, 401);
 
   try {
     // Forwarded caller JWT, so auth.uid()/my_role() inside the function resolve

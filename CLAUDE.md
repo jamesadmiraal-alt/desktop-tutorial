@@ -154,6 +154,12 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - Password minimum is `PASSWORD_MIN` in app.html — used by signup, password reset AND
   the hint on the form. Supabase Auth has its own minimum (Dashboard → Auth → Password
   policy); raising one without the other means the server accepts what the app rejects.
+- **Every JWT-ON Edge Function identifies its caller with `_shared/auth.ts`** (`requireUser`):
+  Bearer token checked by `admin.auth.getUser(token)`, 401 `no_auth_header` or `session_invalid`
+  ("Your session has ended — sign in again"). Don't go back to `userClient.auth.getUser()` on the
+  anon key. A `userClient` is still built where a call must run AS the caller (RLS), e.g.
+  notify-export-template, notify-seat-denied. The app's Help send refreshes the session once and
+  retries on `session_invalid` — safe because the check runs before anything is saved.
 - Email: `supabase/functions/_shared/email.ts` is a provider-agnostic sender chosen by
   which secret exists, and it returns `{sent:false}` rather than throwing when none is
   configured — so **every caller must treat a failed send as non-fatal**, and all of
