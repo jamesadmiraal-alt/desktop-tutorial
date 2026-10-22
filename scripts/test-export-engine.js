@@ -484,6 +484,19 @@ eq(E.buildExport(built({ columns: [{ header: 'Code', source: 'identifier' }, { h
   { header: 'Store', source: 'fixed', value: 'PORT ADL' }] }), lines, bctx).text.split('\r\n')[1],
    '0797776409853,10,PORT ADL', 'fixed value column');
 
+// P8 (22 Oct): two exports of one take through different templates must not
+// share a filename. Only system 'full' keeps the bare default.
+console.log('file names: one take, five templates');
+const sys = (code) => Object.assign({ is_system: true }, SEEDS[code]);
+const names5 = [
+  E.fileNameFor(sys('full'), ctx), E.fileNameFor(sys('standard'), ctx), E.fileNameFor(sys('bepoz'), ctx),
+  E.fileNameFor(T({ name: 'Our POS', file_name_pattern: null }), ctx),
+  E.fileNameFor(T({ name: 'Back bar', file_name_pattern: '' }), ctx),
+];
+eq(new Set(names5).size, 5, 'full, standard, bepoz and two blank custom patterns: 5 distinct names');
+eq(names5[0], 'gantry-main-bar-cellar-' + FIXED_DATE + '.csv', 'full keeps its old name');
+eq(names5[3], 'gantry-main-bar-cellar-' + FIXED_DATE + '-our-pos.csv', 'blank custom pattern ends with the template name');
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) {
   console.error(`${failures} FAILED`);

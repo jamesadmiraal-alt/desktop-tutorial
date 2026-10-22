@@ -243,11 +243,23 @@ window.GANTRY_EXPORT_ENGINE = (function () {
   // printing it twice gave gantry-cellar-cellar-…. Then empty tokens' separators
   // collapse, so "gantry--morning-count" can't happen either.
   var DEFAULT_PATTERN = 'gantry-{location}-{stocktake}-{date}';
+  // A template with no pattern of its own gets the template's name on the end,
+  // so two exports of one take through different templates can't share a
+  // filename (22 Oct: a custom template with a blank pattern and Gantry CSV
+  // full both produced gantry-cellar-…-20261022.csv, and Chrome saved the
+  // second as "(1)"). The system 'full' template keeps the bare default — its
+  // filename predates templates and people's folders already hold it.
+  var DEFAULT_PATTERN_NAMED = DEFAULT_PATTERN + '-{template}';
+  function defaultPatternFor(t) {
+    // code is set only on system rows (it is off the client GRANT), so
+    // 'full' alone identifies the system template.
+    return (t && t.code === 'full') ? DEFAULT_PATTERN : DEFAULT_PATTERN_NAMED;
+  }
   function fileNameFor(t, ctx) {
     var take = slugify(ctx.stocktakeName, 'stocktake');
     var loc = slugify(ctx.locationName, '');
     if (loc && take.indexOf(loc) !== -1) loc = '';
-    var name = String(t.file_name_pattern || DEFAULT_PATTERN)
+    var name = String(t.file_name_pattern || defaultPatternFor(t))
       .replace(/\{location\}/g, loc)
       .replace(/\{stocktake\}/g, take)
       .replace(/\{date\}/g, ctx.dateStamp || '')

@@ -3737,7 +3737,9 @@
     $('eb-pad').value = rules.pad_length || 13;
     $('eb-ext').value = (t && t.file_extension === 'txt') ? 'txt' : 'csv';
     $('eb-bom').checked = !!(t && t.bom);
-    $('eb-pattern').value = (t && t.file_name_pattern) || '';
+    // Pre-filled with what an empty pattern would produce, so the {template}
+    // suffix that keeps filenames apart is visible and kept (P8, 22 Oct).
+    $('eb-pattern').value = (t && t.file_name_pattern) || 'gantry-{location}-{stocktake}-{date}-{template}';
     $('eb-behaviour').value = (t && t.import_behaviour) || '';
     $('eb-title').textContent = t ? 'Edit export template' : 'Build a custom export';
     $('eb-saved').style.display = 'none';
