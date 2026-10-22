@@ -6931,6 +6931,11 @@
   // hint redrawn — the typed quantity is never touched. And a REPLACE re-reads
   // the line just before saving: if it moved since the pad opened, it asks.
   var padOpenedQty = null;
+  // Thresholds for asking about an unusually large quantity (P12). config.js
+  // can override them per deployment: largeQtyEntry / largeQtyLine.
+  var LARGE_QTY_ENTRY = (window.BARSCAN_CONFIG && window.BARSCAN_CONFIG.largeQtyEntry) || 200;
+  var LARGE_QTY_LINE = (window.BARSCAN_CONFIG && window.BARSCAN_CONFIG.largeQtyLine) || 500;
+  var largeQtyConfirmed = null;
   var replaceConflictChecked = false;
   function renderQtyHint(qty, isEdit, changed) {
     var hint = $('qty-hint');
@@ -6989,6 +6994,7 @@
     // What the line held when the pad opened: the baseline a REPLACE is
     // checked against (commitQty), and what the hint starts from.
     padOpenedQty = existing ? qtyNum(existing.qty) : null;
+    largeQtyConfirmed = null;
     renderQtyHint(existing ? qtyNum(existing.qty) : null, isEdit, false);
     $('qty-overlay').dataset.mode = isEdit ? 'edit' : 'scan';
     $('qty-input').value = isEdit && existing ? qtyText(existing.qty) : '';
@@ -7422,6 +7428,21 @@
     var beforeQty = null;
     var known = items.find(function (it) { return it.barcode === code; });
     if (known) beforeQty = qtyNum(known.qty);
+
+    // An unusual number is asked about before it's stored (P12, 22 Oct: +999
+    // then +1200 made a line of 2206 without a word). One entry over
+    // LARGE_QTY_ENTRY, or a line ending over LARGE_QTY_LINE. Asked here, inside
+    // commitQty, so Enter and Save both go through it; remembered for this
+    // exact entry so the REPLACE re-check (which re-enters) doesn't ask twice.
+    var lineAfter = isEdit ? qty : qtyRound((known ? displayQty(known) : 0) + qty);
+    var largeKey = code + '|' + mode + '|' + qty;
+    if ((qty > LARGE_QTY_ENTRY || lineAfter > LARGE_QTY_LINE) && largeQtyConfirmed !== largeKey) {
+      var ask = isEdit
+        ? 'Set ' + code + ' to ' + qtyText(qty) + '?'
+        : 'Add ' + qtyText(qty) + '? Line will be ' + qtyText(lineAfter) + '.';
+      if (!confirm(ask)) return;   // nothing saved; the pad and its number stay
+      largeQtyConfirmed = largeKey;
+    }
 
     // Refuse a code that is two codes. Checked here as well as at every entry
     // point: this is the last thing standing between a glued scan and an
