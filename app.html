@@ -151,6 +151,9 @@
     font-weight: 600; width: auto; text-decoration: underline;
   }
   .link-btn:active { opacity: 0.7; }
+  /* "3 of 5 trial products used" under the take header (trial orgs only). */
+  .trial-usage { margin: 6px 12px 0; font-size: 0.82rem; color: var(--text-dim); text-align: center; }
+  .trial-usage.full { color: var(--warning); font-weight: 600; }
 
   /* Changes kept on this phone until they reach the server. Amber while they
      wait; red only when the server refused some (the list stays until OK). */
@@ -1462,6 +1465,7 @@
   <!-- Text set by applyTakeReadOnly(): the way out differs — a Ready count goes
        back to In Progress from ⋯; a Completed one needs a manager to reopen. -->
   <div id="readonly-note" style="display:none"></div>
+  <div id="trial-usage" class="trial-usage" style="display:none"></div>
   <div id="outbox-bar-scan" class="outbox-bar" style="display:none" role="status" aria-live="polite"></div>
   <div id="sync-debug" style="display:none;font-size:0.72rem;color:var(--text-faint);text-align:center;padding:2px 0"></div>
   <div id="reader-wrap">
@@ -1635,7 +1639,12 @@
 <div id="trial-limit-overlay" class="overlay">
   <div class="dialog">
     <div class="title">That's the trial</div>
-    <p class="plan-desc" style="margin:10px 0 4px">
+    <!-- Shown when a 6th product is scanned: says plainly it was NOT added. -->
+    <p class="plan-desc" id="trial-limit-notadded" style="display:none;margin:10px 0 4px">
+      Trial counts up to <b>5 products</b> per stocktake. <b id="trial-limit-code"></b> was <b>NOT added</b>.
+      Everything already counted is saved, and you can still export it.
+    </p>
+    <p class="plan-desc" id="trial-limit-full" style="margin:10px 0 4px">
       The trial covers <b>5 products per stocktake</b>, and you've just filled this one.
       Everything you've counted is saved, and you can still export it.
     </p>
@@ -1653,7 +1662,7 @@
       <span class="opt-note">+$29/mo per extra person counting at the same time</span>
     </button>
     <div class="dialog-actions" style="margin-top:14px">
-      <button id="trial-limit-close" class="flex">Not now</button>
+      <button id="trial-limit-close" class="flex">Close</button>
     </div>
   </div>
 </div>
@@ -6405,9 +6414,29 @@
   }
 
   // ---- Items in current stocktake ----
+  // ---- Trial product counter (P15) ----
+  var TRIAL_PRODUCT_LIMIT = 5;   // enforce_trial_scan_limit() in schema.sql
+  function onTrial() { return !!(currentOrg && currentOrg.planTier === 'trial'); }
+  function trialLinesUsed() { return items.length; }   // a line at 0 still counts, as in the trigger
+  function trialAtLimit() {
+    return onTrial() && !!currentTake && itemsLoadedTakeId === currentTake.id
+      && trialLinesUsed() >= TRIAL_PRODUCT_LIMIT;
+  }
+  function renderTrialUsage() {
+    var el = $('trial-usage');
+    var known = !!currentTake && itemsLoadedTakeId === currentTake.id;
+    if (!onTrial() || !known) { el.style.display = 'none'; return; }
+    var used = Math.min(trialLinesUsed(), TRIAL_PRODUCT_LIMIT);
+    el.style.display = '';
+    el.classList.toggle('full', used >= TRIAL_PRODUCT_LIMIT);
+    el.textContent = used + ' of ' + TRIAL_PRODUCT_LIMIT + ' trial products used'
+      + (used >= TRIAL_PRODUCT_LIMIT ? ' — pick a plan to count more' : '');
+  }
+
   function renderItems() {
     var listEl = $('list');
     ensureOutboxPlaceholders();
+    renderTrialUsage();
     var qty = items.reduce(function (s, it) { return s + displayQty(it); }, 0);
     // Only once THIS take's full list has arrived. Before that, `items` can be a
     // fragment — a save's reply merged in while the first load was still out —
@@ -6969,7 +6998,7 @@
           delete stepQueues[qk];
           // Only reachable if the line was deleted on another device between
           // the render and this tap and re-creating it meets the trial cap.
-          if (isTrialLimit(out.error)) { showTrialLimit(); return; }
+          if (isTrialLimit(out.error)) { showTrialLimit(barcode); return; }
           // The server answered and refused: the transaction rolled back, so
           // this one IS known not to have been applied.
           fail({ message: barcode + ' was not changed. ' + failHint(out.error) }, '');
@@ -7056,6 +7085,12 @@
       return;
     }
     var existing = items.find(function (it) { return it.barcode === code; });
+    // A 6th product on the trial: say so NOW, before a quantity is typed
+    // (22 Oct — the limit only appeared after the qty, went to pricing, and
+    // never said the product hadn't been added). Only when this take's lines
+    // are fully loaded; otherwise the count is unknown and the database's
+    // enforce_trial_scan_limit() is still the boundary.
+    if (!existing && trialAtLimit()) { showTrialLimit(code); return; }
     pendingCode = code;
     dialogOpen = true;
     $('qty-code').textContent = code;
@@ -7342,7 +7377,10 @@
   function isTrialLimit(err) {
     return /Trial limit reached/.test((err && err.message) || '');
   }
-  function showTrialLimit() {
+  function showTrialLimit(notAddedCode) {
+    $('trial-limit-notadded').style.display = notAddedCode ? '' : 'none';
+    $('trial-limit-full').style.display = notAddedCode ? 'none' : '';
+    $('trial-limit-code').textContent = notAddedCode || '';
     // This dialog can be the first upgrade surface someone ever sees — they may
     // never have opened Account this session, so the buttons still carry their
     // static AUD markup until this runs.
@@ -7606,7 +7644,7 @@
             // The trial cap is not a failure to report — it is the moment the
             // product asks to be bought. Show the plans, and close the keypad so
             // the dialog isn't stacked behind it.
-            if (isTrialLimit(out.error)) { closeQtyDialog(); showTrialLimit(); return; }
+            if (isTrialLimit(out.error)) { closeQtyDialog(); showTrialLimit(code); return; }
             // The server answered and refused, so the transaction rolled back:
             // this one genuinely was not saved, and saying so is accurate.
             fail({ message: code + ' was NOT saved. ' + failHint(out.error) }, '');
