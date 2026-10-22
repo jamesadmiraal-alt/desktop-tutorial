@@ -5,7 +5,7 @@ webhook to activate a paid plan automatically after payment. No server of your o
 is needed.
 
 Billing is **organisation-scoped**, not per-user (see the org-model planning doc):
-an organisation is on the **Free**, **Single-venue** ($29/mo flat), or **Multi-venue**
+an organisation is on the **Free**, **Solo** ($29/mo flat), or **Team**
 ($59/mo base + $29/mo per extra concurrent user beyond the owner, via Stripe's
 native graduated pricing — venues/locations themselves are unlimited and free)
 plan, each also offered **monthly or annually** (a "Bill annually" toggle
@@ -16,15 +16,13 @@ mode and swap the URLs/secrets.
 
 ## 1. Create the two products and their prices (Stripe Dashboard)
 
-**Note on naming**: the product names below ("Barscan Single-venue" etc.)
-match what's actually live in the Stripe Dashboard today — this doc's
-instructions describe the existing setup, they don't rename it. Renaming
-the live Stripe products to "Gantry Single-venue"/"Gantry Multi-venue" (and
-updating this doc to match) is a separate, deliberate step — Stripe product
-names are cosmetic (shown on invoices/receipts) and don't affect the price
-IDs or Payment Links already wired into `config.js`, so there's no urgency,
-but do it in the Stripe Dashboard directly rather than just editing this
-file if you want the rebrand to be complete end to end.
+**Note on naming**: the live Stripe products are named **Gantry Solo** and
+**Gantry Team** (renamed in the Dashboard on 22 Oct 2026, from the old
+Barscan-era names; the plans were renamed on screen on 21 Oct). Stripe
+product names are cosmetic (shown at checkout and on invoices/receipts) and
+don't affect the price IDs or Payment Links already wired into `config.js` —
+the tier KEYS stay `single` / `multi` everywhere, in metadata and in
+`plan_tier`. The steps below use the current names.
 
 Gantry picks a Stripe Payment Link based on the organisation's country (set when
 the org is created, editable by the owner in 👤 Account → Change region) — see
@@ -33,7 +31,7 @@ the org is created, editable by the owner in 👤 Account → Change region) —
 two billing periods = **16 prices** total — tedious, but each one is quick.
 
 1. Stripe Dashboard → **Product catalog** → **+ Add product** → create
-   **Barscan Single-venue**. Add **one flat recurring price per currency per
+   **Gantry Solo**. Add **one flat recurring price per currency per
    period** (8 prices: 4 currencies × monthly/annual) — reuse whatever amounts
    make sense per market, they don't need to be an exact conversion:
    | Currency | Monthly | Annual |
@@ -42,12 +40,12 @@ two billing periods = **16 prices** total — tedious, but each one is quick.
    | USD | $27 | $270 |
    | GBP | £25 | £250 |
    | EUR | €27 | €270 |
-2. **+ Add product** again → create **Barscan Multi-venue**. For each currency
+2. **+ Add product** again → create **Gantry Team**. For each currency
    **and** each period (8 more prices), add a recurring price using Stripe's
    tiered/graduated pricing (pricing model → "Tiered", tiers mode →
    "Graduated"), with exactly two tiers:
    - **Tier 1**: up to **1** unit, **flat fee** — $59/mo or $590/yr (AUD; scale
-     the other currencies the same way you did for Single-venue above)
+     the other currencies the same way you did for Solo above)
    - **Tier 2**: up to **∞**, **per-unit** — $29/mo or $290/yr
 
    This produces a total of `base + perSeat × (quantity − 1)` — quantity
@@ -223,13 +221,13 @@ stay **disabled** for this one.
 ## 7. Test the checkout flow
 
 1. In the app, sign in as an organisation **owner** on the **Free** plan and tap
-   👤 Account → **Single-venue** or **Multi-venue**
+   👤 Account → **Solo** or **Team**
 2. On the Stripe test checkout, pay with card `4242 4242 4242 4242`, any future
    expiry, any CVC
 3. You're redirected back to the app with a "Payment received" message
 4. Within a few seconds the webhook flips the organisation's plan — open
    👤 Account and the matching plan badge should appear
-5. For Multi-venue specifically: in `admin.html`'s "How many can count at once"
+5. For Team specifically: in `admin.html`'s "How many can count at once"
    card, set the extra people to 1 and click Update — check the Stripe
    Dashboard's subscription afterward and confirm its quantity is 2
    (the owner's included slot + 1 purchased)
@@ -253,7 +251,7 @@ Five functions besides the webhook: `create-portal-session` (Manage
 subscription), `delete-account`, `create-team-member`/`update-team-member`
 (owner-provisioned logins — no billing involved), **`kick-user`** (the admin
 console's "Log out" on an active session — frees a concurrent seat), and
-**`set-seat-count`** (only used on the multi-venue tier, when the owner changes
+**`set-seat-count`** (only used on the Team tier, when the owner changes
 how many extra concurrent seats they're paying for — see the org-model planning
 doc for why this needs to be server-side at all).
 
@@ -299,7 +297,7 @@ opens Stripe's hosted Customer Portal.
 the right customer, and that a staff/manager account gets a clear "only the
 owner can manage billing" error instead (403).
 
-**Multi-venue location add/remove**: as owner/manager of a multi-venue org, add
+**Team location add/remove**: as owner/manager of a Team org, add
 a location in `admin.html` → confirm the Stripe subscription's quantity
 increments; remove one → confirm it decrements. Try removing a location that
 still has stocktakes — should be blocked with a clear message, not a raw

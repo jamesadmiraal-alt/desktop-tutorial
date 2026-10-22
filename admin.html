@@ -411,7 +411,7 @@
   </div>
   </div><!-- /pane team -->
 
-  <!-- Seats: multi-venue only. The TAB is hidden for single-venue rather than
+  <!-- Seats: Team only. The TAB is hidden for Solo rather than
        showing an empty pane (see checkAccessAndEnter). -->
   <div class="tab-pane" data-pane="seats" hidden>
   <div class="card" id="seats-card">
@@ -1139,7 +1139,7 @@
     if (!name) { toast('Enter a venue name', '#b91c1c'); return; }
     $('add-venue-btn').disabled = true;
     // Plain insert for every tier — venues/locations carry no billing
-    // consequence any more (multi-venue pays per concurrent seat instead,
+    // consequence any more (Team pays per concurrent seat instead,
     // see the Concurrent seats card below), so there's no Stripe quantity
     // to sync here the way there used to be.
     sb.from('venues').insert({ name: name, org_id: currentOrg.id }).then(function (res) {
@@ -1333,7 +1333,7 @@
     });
   }
 
-  // ---- Concurrent seats (multi-venue only) ----
+  // ---- Concurrent seats (Team only) ----
   // Client-side mirror of enforce_seat_minimum_term() (schema.sql), the same way
   // app.html's countryChangeEligible() mirrors enforce_country_cooldown: show the
   // real next-eligible date rather than making a request the trigger will reject.
@@ -1648,8 +1648,8 @@
           showView('denied');
           return;
         }
-        // This console (locations, team, concurrent seats) is a multi-venue
-        // concept end to end — single-venue is one location, and staff
+        // This console (locations, team, concurrent seats) is a Team
+        // concept end to end — Solo is one location, and staff
         // management/billing questions don't apply the same way once
         // there's no location/venue hierarchy or seat pool to administer.
         if (org.plan_tier === 'single') {
@@ -1678,10 +1678,10 @@
         renderOrg();
         buildActionFilter();
 
-        // Concurrent seats are a multi-venue-only concept. Single-venue has no
+        // Concurrent seats are a Team-only concept. Solo has no
         // seat pool because it has no team to pool: that plan is ONE user, the
         // owner — claim_seat() refuses any non-owner session on it (schema.sql,
-        // Rule 1b). The TAB is hidden rather than the card, so single-venue never
+        // Rule 1b). The TAB is hidden rather than the card, so Solo never
         // sees a tab that leads nowhere.
         if (currentOrg.planTier === 'multi') {
           $('tab-btn-seats').style.display = '';

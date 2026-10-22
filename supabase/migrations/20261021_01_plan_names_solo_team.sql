@@ -108,3 +108,24 @@ grant execute on function public.add_team_member(uuid, text) to authenticated;
 -- Verify (both true):
 --   select prosrc like '%Solo plan (owner only)%' from pg_proc where proname = 'join_organisation';
 --   select prosrc like '%Solo ($29/mo) is just you%' from pg_proc where proname = 'add_team_member';
+--
+-- Prod check — returns 0 ROWS when this migration is applied. Matches the old
+-- MESSAGE wording only: the function bodies' comments still say
+-- "Single-venue", and prosrc includes comments.
+--
+--   select p.proname, 'old wording still present' as problem
+--   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+--   where n.nspname = 'public' and p.proname in ('join_organisation', 'add_team_member')
+--     and (p.prosrc like '%on the Single-venue plan%' or p.prosrc like '%upgrade to Multi-venue%'
+--          or p.prosrc like '%Single-venue is just you%' or p.prosrc like '%Multi-venue ($59/mo)%')
+--   union all
+--   select f, 'function missing'
+--   from unnest(array['join_organisation', 'add_team_member']) as f
+--   where not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+--                     where n.nspname = 'public' and p.proname = f)
+--   union all
+--   select p.proname, 'new wording missing'
+--   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+--   where n.nspname = 'public'
+--     and ((p.proname = 'join_organisation' and p.prosrc not like '%on the Solo plan (owner only)%')
+--       or (p.proname = 'add_team_member' and p.prosrc not like '%Solo ($29/mo) is just you%'));

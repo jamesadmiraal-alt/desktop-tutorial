@@ -116,7 +116,7 @@
      A zero basis makes it take whatever is left beside the price instead.
      min-width: 0 is what actually lets it shrink: without it a flex item
      refuses to go below its longest unbreakable content, which is how
-     "Multi-venue" ended up wrapping one letter per line. */
+     the old long plan name ended up wrapping one letter per line. */
   .upgrade-opt > span:first-child { flex: 1 1 0; min-width: 0; }
   .upgrade-opt .opt-name { font-weight: 700; }
   .upgrade-opt .opt-sub { font-size: 0.78rem; color: var(--text-dim); font-weight: 400; margin-top: 2px; }
@@ -598,7 +598,7 @@
      directly — scoped to the tour's own row, not every dialog in the app. */
   #tutorial-card .dialog-actions button { min-height: 44px; }
 
-  /* ---- Team view (single-venue only — see #team-view) ---- */
+  /* ---- Team view (Solo only — see #team-view) ---- */
   .code-box { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
     background: var(--bg); padding: 10px; border-radius: 8px; margin: 10px 0; }
   .team-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -801,7 +801,7 @@
          created before the trial existed and never converted. The copy stays
          tier-neutral for that reason. See showPaymentPendingPrompt().
          Reuses the same .upgrade-opt/
-         .bill-annually-toggle wiring as the Account view's Single-venue
+         .bill-annually-toggle wiring as the Account view's Solo
          upsell, just in a different place in the DOM. -->
     <div id="payment-pending-row" style="display:none">
       <p class="upgrade-text">Choose a plan to activate <b id="pending-org-name"></b>.</p>
@@ -818,7 +818,7 @@
         <span class="opt-note">+$29/mo per extra person counting at the same time</span>
       </button>
     </div>
-    <!-- Multi-venue only: all of this org's purchased concurrent seats are
+    <!-- Team only: all of this org's purchased concurrent seats are
          already in use (see claim_seat() in schema.sql). Same "distinct
          screen, org-setup-note/org-setup-logout reused as the only escape"
          pattern as payment-pending-row above — see showSeatsFullPrompt(). -->
@@ -961,7 +961,7 @@
        Which file Export produces — the same org setting admin.html's
        Organisation card sets, written by the same set_export_template().
 
-       It is here as well because admin.html is Multi-venue only: a single-venue
+       It is here as well because admin.html is Team only: a Solo
        or trial venue had NO way to choose what its export looked like, and the
        venue manager working from the app had to go and find the head-office
        console to fix a file the POS had just rejected.
@@ -1004,8 +1004,8 @@
          and they lead to the same conceptual place, so both are labelled "Admin"
          — the label shouldn't change depending on the plan. -->
     <button id="open-admin-btn" class="acct-nav-btn" style="display:none">Admin</button>
-    <!-- Single-venue equivalent of open-admin-btn — admin.html is
-         multi-venue-only (see checkAccessAndEnter() there), so single-venue
+    <!-- Solo equivalent of open-admin-btn — admin.html is
+         Team-only (see checkAccessAndEnter() there), so Solo
          owners/managers get an in-app Team view instead of a dead-end
          external link. See showView('team')/#team-view. -->
     <button id="open-team-btn" class="acct-nav-btn" style="display:none">Admin</button>
@@ -1074,9 +1074,9 @@
   </div>
 </div>
 
-<!-- ===== Team & location (single-venue only — see open-team-btn in Account.
-     Multi-venue uses admin.html instead; this exists purely because
-     admin.html is gated to multi-venue only, and single-venue orgs still
+<!-- ===== Team & location (Solo only — see open-team-btn in Account.
+     Team uses admin.html instead; this exists purely because
+     admin.html is gated to Team only, and Solo orgs still
      need to rename their one location and manage their team.) ===== -->
 <div id="team-view" class="view">
   <div class="subheader" style="margin:-16px -12px 14px">
@@ -1111,7 +1111,7 @@
   <div class="acct-card" id="team-add-member-card">
     <h3 id="team-add-member-title">Add team member</h3>
     <p class="plan-desc" style="margin-bottom:10px" id="team-add-member-intro">Creates their login directly — no join code needed. They can change this password later from this app.</p>
-    <!-- Shown instead of the form on Single-venue, which covers one user: the
+    <!-- Shown instead of the form on Solo, which covers one user: the
          owner. Same wording as add_team_member()'s exception and
          create-team-member's 403, so the answer is identical whether they read
          it here or hit the API. The upgrade lives on Account, not here — one
@@ -1148,7 +1148,7 @@
     </div>
   </div>
   <!-- Activity log. Previously this existed only in admin.html, which is gated
-       to the multi-venue tier — so single-venue operators, who are the most
+       to the Team tier — so Solo operators, who are the most
        likely to end up arguing about a deleted stocktake, had no way to see who
        deleted what. Read-only here: audit_log has no client write policy at
        all, and RLS restricts SELECT to owners and managers of the same org. -->
@@ -1336,7 +1336,7 @@
   </div>
 </div>
 
-<!-- ===== Edit team member (single-venue #team-view only) ===== -->
+<!-- ===== Edit team member (Solo #team-view only) ===== -->
 <div id="team-edit-member-overlay" class="overlay">
   <div class="dialog">
     <div class="title">Edit team member</div>
@@ -1787,7 +1787,7 @@
   // needsOrgSetup since it's a different screen/reason, but both mean "hide
   // the account button, there's nothing to open yet" — see showView().
   var paymentPending = false;
-  // True whenever a multi-venue org's purchased concurrent seats are all
+  // True whenever a Team org's purchased concurrent seats are all
   // occupied (see showSeatsFullPrompt()) — same "hide the account button"
   // treatment as the other two auth-view sub-states above.
   var seatsFull = false;
@@ -2461,7 +2461,7 @@
   // Since the trial exists, a NEW signup no longer lands here — 'pending' now
   // means a lapsed subscription, or an org created before the trial (see
   // refreshOrgStatus()). The upgrade-opt buttons here are the same ones
-  // Account view's Single-venue card uses, just relocated — clicking one
+  // Account view's Solo card uses, just relocated — clicking one
   // goes straight to Stripe with this org's id as client_reference_id
   // (goUpgrade() already does that generically).
   function showPaymentPendingPrompt() {
@@ -2481,7 +2481,7 @@
     showView('auth');
   }
 
-  // Multi-venue only: either every purchased concurrent seat is already
+  // Team only: either every purchased concurrent seat is already
   // occupied, or none have been purchased yet — two different situations
   // that need different copy (see claim_seat()'s 'no_seats_purchased' vs
   // 'seats_full' reasons in schema.sql). Same "distinct screen,
@@ -2504,7 +2504,7 @@
       // Not a seat problem at all, so none of the seat advice applies. Telling
       // this person to "ask a teammate to log out" or "add a seat from the admin
       // console" would send them after two things that don't exist on this plan:
-      // there is no pool to free up, and admin.html is multi-venue only.
+      // there is no pool to free up, and admin.html is Team only.
       //
       // The only person who can act is the owner, and the only action is an
       // upgrade — so that is the entire message.
@@ -2869,12 +2869,12 @@
           toast('🎉 You’re now on the ' + label + ' plan!', '#059669');
         }
       };
-      // claim_seat now runs for EVERY tier and role, not just multi-venue. It
+      // claim_seat now runs for EVERY tier and role, not just Team. It
       // enforces two rules and only one of them is about seats: one device per
       // login applies to everyone (it's what makes account-sharing unworkable and
       // keeps the audit trail meaningful), while the seat POOL is still
       // multi-and-non-owner. This branch used to be skipped entirely for
-      // single-venue — exactly where a shared login is most likely.
+      // Solo — exactly where a shared login is most likely.
       //
       // Bug fixed here: a user with NO organisation at all (fresh signup,
       // before create/join) has no active_sessions row to claim in the first
@@ -3020,10 +3020,10 @@
   var heartbeatIntervalId = null;
   function startSeatHeartbeat() {
     stopSeatHeartbeat();
-    // Runs on EVERY tier now, not just multi-venue. It's no longer only a
+    // Runs on EVERY tier now, not just Team. It's no longer only a
     // seat-pool keepalive: it's also how a device discovers its login was taken
     // over elsewhere (heartbeat returns false when device_id no longer matches).
-    // Leaving single-venue out would mean a displaced single-venue device kept
+    // Leaving Solo out would mean a displaced Solo device kept
     // working indefinitely, which is exactly the sharing this is meant to stop.
     if (!currentOrg) return;
     heartbeatIntervalId = setInterval(function () {
@@ -3085,8 +3085,8 @@
   // re-renders every visible price/link to match.
   // What each plan is CALLED on screen. The keys are the stored
   // organisations.plan_tier values and Stripe metadata, and never change;
-  // only these labels do. Renamed 21 Oct 2026: Single-venue -> Solo,
-  // Multi-venue -> Team (a team is the difference, not the venue count).
+  // only these labels do. Renamed 21 Oct 2026 from the old venue-count
+  // names to Solo and Team (a team is the difference, not the venue count).
   var PLAN_LABELS = { trial: 'Trial', single: 'Solo', multi: 'Team', pending: 'No plan' };
   function planLabel(tier) { return PLAN_LABELS[tier] || String(tier || ''); }
   var billAnnually = false;
@@ -3329,11 +3329,11 @@
     var canManage = !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
     $('change-region-btn').style.display = isOwner ? '' : 'none';
     $('acct-subscription-card').style.display = isOwner ? '' : 'none';
-    // admin.html's own access gate is owner/manager AND multi-venue —
-    // matches both conditions here so single-venue never gets a dead-end
-    // link into a "Multi-venue only" denied screen. Single-venue gets the
+    // admin.html's own access gate is owner/manager AND Team —
+    // matches both conditions here so Solo never gets a dead-end
+    // link into a "Team only" denied screen. Solo gets the
     // in-app Team view instead (#team-view) — same capability, different
-    // surface, since it doesn't need admin.html's desktop/multi-venue UI.
+    // surface, since it doesn't need admin.html's desktop/Team UI.
     // Trial goes with single, not multi: a trial org has one venue and one
     // 'Main' location created for it, and renaming that location is the first
     // thing most operators want ("Main" is not what they call their cellar).
@@ -4345,11 +4345,11 @@
     else if (currentView === 'team') $('team-back').onclick();
   };
 
-  // ---- Team & venue (single-venue only — see open-team-btn above).
+  // ---- Team & venue (Solo only — see open-team-btn above).
   // Deliberately no join-code/daily-code display here — create-team-member
   // below already fully replaces what codes were for (no code to read
-  // aloud, no separate join step), so it's left admin.html/multi-venue-only.
-  // Single-venue orgs get exactly one venue, ever — but unlimited locations
+  // aloud, no separate join step), so it's left admin.html/Team-only.
+  // Solo orgs get exactly one venue, ever — but unlimited locations
   // within it (see schema.sql's venues layer), so this manages the venue's
   // name plus a full locations list, not just a single location like before.
   var teamVenue = null;
@@ -4360,7 +4360,7 @@
   // Read-only, owner/manager-only by RLS. Kept out of the Promise.all below so
   // a failure here can never stop the venue and roster from rendering — the log
   // is the least important thing on this screen to get right, and this view is
-  // the only place a single-venue operator can manage their team.
+  // the only place a Solo operator can manage their team.
   function loadTeamAuditLog() {
     sb.from('audit_log').select('*').eq('org_id', currentOrg.id)
       .order('created_at', { ascending: false }).limit(100).then(function (res) {
@@ -4378,7 +4378,7 @@
     $('team-add-member-card').style.display =
       (currentOrg && currentOrg.role === 'owner') ? '' : 'none';
 
-    // Single-venue is ONE user: the owner. Swap the form for the upgrade rather
+    // Solo is ONE user: the owner. Swap the form for the upgrade rather
     // than showing a form whose only possible outcome is a 403 — the server
     // refuses this on both add_team_member() and create-team-member, so offering
     // it would be inviting someone to fail.
@@ -4392,8 +4392,8 @@
     // Any leftover "account created" panel from a previous multi session would
     // otherwise sit above the upgrade copy and contradict it.
     if (!isMulti) $('team-add-member-result').style.display = 'none';
-    // Three states, not two: a trial org isn't on Single-venue, so telling it
-    // "Single-venue is just you" would name a plan they haven't bought and read
+    // Three states, not two: a trial org isn't on Solo, so telling it
+    // "Solo is just you" would name a plan they haven't bought and read
     // as a downgrade.
     var isTrial = !!(currentOrg && currentOrg.planTier === 'trial');
     $('team-add-member-title').textContent = isMulti
@@ -4412,7 +4412,7 @@
     loadTeamAuditLog();
     Promise.all([
       // Archived venues excluded, and archived locations with them. This view is
-      // the single-venue org's location management, and archiving is only
+      // the Solo org's location management, and archiving is only
       // reachable from admin.html, which single-tier orgs can't open — so this
       // is defensive rather than routine. It matters after a multi→single
       // downgrade, where an archived venue can exist and `limit(1)` could
@@ -4449,7 +4449,7 @@
     });
   });
 
-  // Single-venue is permanently capped at one venue, but its locations are
+  // Solo is permanently capped at one venue, but its locations are
   // unlimited and freely add/rename/remove-able — same list shape as
   // admin.html's Venues card uses for its own nested per-venue locations.
   function renderTeamLocations() {
@@ -4977,7 +4977,7 @@
 
   // How many distinct venues this org's locations span — single-tier orgs
   // are always exactly 1 (their permanent cap), so this only ever goes
-  // above 1 for a multi-venue org that's actually created more than one.
+  // above 1 for a Team org that's actually created more than one.
   function distinctVenueCount() {
     var seen = {};
     var count = 0;
@@ -5290,7 +5290,7 @@
     var meta = document.createElement('div'); meta.className = 'meta';
     // Location only, no venue: the venue is now the sub-heading this row sits
     // under (see fillTakeList), so repeating it here would print it twice on
-    // every row. Still gated on >1 venue, which keeps the single-venue case
+    // every row. Still gated on >1 venue, which keeps the Solo case
     // identical to before this layer existed — with one venue the location alone
     // is already unambiguous and the meta line stays short.
     var loc = t.locations;
@@ -5409,7 +5409,7 @@
   }
 
   // Fills a status list, inserting a venue sub-heading per venue when the org
-  // spans more than one. A single-venue org gets a flat list exactly as before —
+  // spans more than one. A Solo org gets a flat list exactly as before —
   // no sub-headings, nothing to notice.
   //
   // Venue comes from the locations->venues join loadTakes already selects, so this
@@ -5533,7 +5533,7 @@
       $('name-location-row').style.display = '';
       $('name-location').innerHTML = '';
       if (distinctVenueCount() > 1) {
-        // Group by venue so a multi-venue org's picker reads
+        // Group by venue so a Team org's picker reads
         // "Venue > Location" instead of a flat list that could contain
         // same-named locations from different venues.
         var byVenue = {};

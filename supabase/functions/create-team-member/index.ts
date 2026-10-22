@@ -95,7 +95,7 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "Only the owner can add team members." }, 403);
     }
 
-    // Single-venue is ONE user: the owner. A team is what Multi-venue is for.
+    // Solo is ONE user: the owner. A team is what Team is for.
     //
     // Refused HERE, before the Admin API is touched, so no auth user is created
     // and rolled back — a half-provisioned account whose email can never be

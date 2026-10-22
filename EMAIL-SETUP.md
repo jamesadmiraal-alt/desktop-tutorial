@@ -20,7 +20,7 @@ still stands.
 | Email | Function | Trigger |
 |---|---|---|
 | You're on Gantry. Five products per count. | `send-trial-welcome` | `create_organisation()` succeeds — the create path only |
-| You're on Gantry Single-venue / Multi-venue | `super-stripewebhooks` | `checkout.session.completed` |
+| You're on Gantry Solo / Team | `super-stripewebhooks` | `checkout.session.completed` |
 | Concurrent seats updated | `set-seat-count` | the owner changes how many can count at once |
 | A team member can't start a count | `notify-seat-denied` | to the **owner**, when someone is turned away |
 | All concurrent seats are in use | `notify-seat-denied` | to the **blocked person**, same event |

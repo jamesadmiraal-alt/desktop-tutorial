@@ -179,7 +179,10 @@ Deno.serve(async (req) => {
     const { data: org } = await admin
       .from("organisations").select("name, plan_tier").eq("id", orgId).maybeSingle();
     const orgName = str(org?.name) || "(unknown organisation)";
-    const plan = str(org?.plan_tier) || "unknown";
+    // Display names, not the stored keys (plans renamed 21 Oct 2026).
+    const PLAN_LABELS: Record<string, string> = { single: "Solo", multi: "Team", trial: "Trial", pending: "No plan" };
+    const tier = str(org?.plan_tier);
+    const plan = PLAN_LABELS[tier] ?? (tier || "unknown");
     const to = (Deno.env.get("CONTACT_TO") ?? DEFAULT_TO).trim() || DEFAULT_TO;
 
     let sent = 0;

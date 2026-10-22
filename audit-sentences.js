@@ -4,8 +4,8 @@
 // build step and no module system here. Loaded before the page's own <script>.
 //
 // This lives in its own file rather than being duplicated because BOTH surfaces
-// now render the log: admin.html (multi-venue owners/managers) and app.html's
-// #team-view (single-venue owners/managers, who previously had no way to see it
+// now render the log: admin.html (Team owners/managers) and app.html's
+// #team-view (Solo owners/managers, who previously had no way to see it
 // at all). A copy-pasted 25-entry map would drift the moment one file gained an
 // action the other didn't, and a missing entry degrades to a raw
 // "<actor> stocktake_items.qty_reduced" line in front of a customer.

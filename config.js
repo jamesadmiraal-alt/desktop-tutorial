@@ -20,9 +20,8 @@ window.BARSCAN_CONFIG = {
   // links below.
   // symbol/price(s) drive the displayed price (renderUpgradePrices() in
   // app.html) — keep them in sync with the actual Stripe price amounts.
-  // Single-venue links reused from the pre-org-tier "Barscan Pro" product
-  // (renamed to "Barscan Single-venue" — still named "Barscan..." in the
-  // live Stripe Dashboard as of the Gantry rebrand, see STRIPE-SETUP.md).
+  // Solo links reuse the pre-org-tier product's prices (the original pre-rebrand Pro plan,
+  // now named "Gantry Solo" in Stripe — renamed 22 Oct 2026, same price ids).
   upgradeUrls: {
     AUD: {
       single: {

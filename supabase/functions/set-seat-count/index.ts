@@ -1,10 +1,10 @@
-// Gantry multi-venue concurrent-seat billing — runs as a Supabase Edge Function.
+// Gantry Team concurrent-seat billing — runs as a Supabase Edge Function.
 //
-// Owner-only, multi-venue-tier-only. Lets the owner set how many
+// Owner-only, Team-tier-only. Lets the owner set how many
 // CONCURRENT seats they're paying for beyond themselves (they're always
 // free — see claim_seat() in schema.sql). Venues/locations carry no
 // billing consequence any more; this is the only billable knob left for
-// the multi-venue tier.
+// the Team tier.
 //
 // Unlike create-location/remove-location's recent refactor (where
 // service role turned out to be unnecessary because RLS already

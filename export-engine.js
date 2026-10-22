@@ -359,8 +359,8 @@ window.GANTRY_EXPORT_ENGINE = (function () {
 
   // ---- Picker helpers -------------------------------------------------------
   //
-  // The template picker exists twice: admin.html (head office, Multi-venue
-  // only) and app.html's Account → Exports (every plan, so single-venue and
+  // The template picker exists twice: admin.html (head office, Team
+  // only) and app.html's Account → Exports (every plan, so Solo and
   // trial venues can choose too). These are the parts both need to agree on,
   // so they live once, here. Still no DOM: each page builds its own <option>s.
 

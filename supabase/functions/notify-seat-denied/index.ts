@@ -98,7 +98,7 @@ Deno.serve(async (req) => {
     const occupied = Number(verdict.seats_occupied ?? 0);
 
     // The zero-seat case is worth calling out separately rather than reporting
-    // "0 of 0 seats in use", which reads like a bug. A multi-venue org that
+    // "0 of 0 seats in use", which reads like a bug. A Team org that
     // never bought seats blocks EVERY non-owner, and an owner who has just
     // upgraded has no reason to expect that.
     // Card name kept in step with admin.html, which now calls it "How many can

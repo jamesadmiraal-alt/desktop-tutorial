@@ -34,14 +34,13 @@ const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 // know about billing period at all — monthly and annual are just two
 // different prices mapping to the same tier, Stripe handles the amount/
 // interval on its own. Update this (and redeploy) every time a new
-// single/multi-venue Payment Link is created in the Stripe Dashboard — see
+// Solo/Team Payment Link is created in the Stripe Dashboard — see
 // STRIPE-SETUP.md's Phase D section. PLACEHOLDER: fill in the real price
 // ids once the products/prices exist.
 const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
-  // Reused from the pre-org-tier "Barscan Pro" product (renamed to "Barscan
-  // Single-venue" — same price ids, nothing about the price itself changed.
-  // Still named "Barscan..." in the live Stripe Dashboard as of the Gantry
-  // rebrand — see STRIPE-SETUP.md's note on renaming the live products).
+  // Reused from the pre-org-tier product (the original pre-rebrand Pro plan, now "Gantry
+  // Solo" in Stripe, renamed 22 Oct 2026) — same price ids, nothing about the
+  // price itself changed. Product names are cosmetic; ids are what matter here.
   "price_1TvX8tEiJERMRN7vG2cavZde": "single", // EUR annual  ($270/yr)
   "price_1TvVCKEiJERMRN7vJzOdO9Qp": "single", // EUR monthly ($27/mo)
   "price_1TvVC4EiJERMRN7vKoqap7Mj": "single", // GBP annual  (£250/yr)
@@ -54,12 +53,12 @@ const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
   "price_1TzmL3EiJERMRN7vOlaRkmPS": "multi", // AUD monthly (A$59/mo base)
   "price_1U0UYUEiJERMRN7vdmuqpNi6": "multi", // AUD annual  (A$590/yr base)
   // AUD-only for now (per dev decision — see the org-model planning doc /
-  // this session's history) — USD/GBP/EUR Multi-venue prices not created.
+  // this session's history) — USD/GBP/EUR Team prices not created.
   // Every non-AUD country already falls back to AUD's real links/prices
   // (upgradeLink()/renderUpgradePrices() in app.html, DEFAULT_CURRENCY),
   // so this isn't a gap, just a deliberately deferred currency.
   // "price_XXXXXXXXXXXXXX_AUD_MULTI_ANNUAL":  "multi",
-  // ...8 more once Multi-venue's prices exist (one per currency per period)
+  // ...8 more once Team's prices exist (one per currency per period)
 };
 
 const encoder = new TextEncoder();
@@ -306,7 +305,7 @@ Deno.serve(async (req) => {
       }
       case "customer.subscription.updated": {
         // Tier changed on an existing subscription (e.g. you switch someone
-        // between single/multi-venue prices directly in Stripe) — re-derive
+        // between Solo/Team prices directly in Stripe) — re-derive
         // the tier from the subscription's current price and keep
         // organisations.plan_tier in sync.
         const sub = event.data.object;
