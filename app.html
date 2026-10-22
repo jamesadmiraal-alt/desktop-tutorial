@@ -6025,7 +6025,7 @@
       // take Ready while Coolroom had the pad open; the pad sat there accepting
       // a quantity that could only be refused, and when it closed the barcode
       // box was simply gone, with no warning.
-      if (dialogOpen) { refreshTakeStatus(); return; }
+      if (dialogOpen) { refreshTakeStatus(); refreshPadLine(); return; }
       // Not while the first load is still going. Every call bumps
       // itemsRequestToken, so a tick landing mid-load would invalidate that
       // load's own reply — it would return early, never clear itemsLoading, and
@@ -6922,6 +6922,41 @@
   }
 
   // ---- Quantity dialog ----
+  // ---- The open pad stays current (P11, 22 Oct) ----------------------------
+  //
+  // The pad used to freeze the moment it opened: the "currently N" hint and
+  // the sync age stopped while it was up (1s -> 54s in a minute), so another
+  // phone's change to the same line was invisible to the person about to
+  // REPLACE it. Now the open line is re-read on every poll tick (7s) and the
+  // hint redrawn — the typed quantity is never touched. And a REPLACE re-reads
+  // the line just before saving: if it moved since the pad opened, it asks.
+  var padOpenedQty = null;
+  var replaceConflictChecked = false;
+  function renderQtyHint(qty, isEdit, changed) {
+    var hint = $('qty-hint');
+    if (qty === null) { hint.style.display = 'none'; return; }
+    hint.style.display = 'block';
+    var now = changed ? ' — just changed on another device' : '';
+    hint.textContent = isEdit
+      ? 'Editing: this will REPLACE the current quantity (' + qtyText(qty) + now + ').'
+      : 'Already scanned (qty ' + qtyText(qty) + now + '). This quantity will be ADDED to it.';
+  }
+  function refreshPadLine() {
+    if (!dialogOpen || !pendingCode || !currentTake || isOffline()) return;
+    var code = pendingCode, takeId = currentTake.id;
+    readLine(takeId, code, function (row) {
+      // Only if the pad is still open on the same line.
+      if (!dialogOpen || pendingCode !== code || !currentTake || currentTake.id !== takeId) return;
+      if (!row) return;   // gone or unreadable: can't tell which, so say nothing
+      lastItemsSyncAt = Date.now();
+      var isEdit = $('qty-overlay').dataset.mode === 'edit';
+      var shownBefore = items.find(function (it) { return it.barcode === code; });
+      var changed = !shownBefore || qtyNum(shownBefore.qty) !== qtyNum(row.qty) || (padOpenedQty !== null && qtyNum(row.qty) !== padOpenedQty);
+      mergeItem(row);
+      renderQtyHint(qtyNum(row.qty), isEdit, changed && padOpenedQty !== null && qtyNum(row.qty) !== padOpenedQty);
+    });
+  }
+
   function openQtyDialog(code, isEdit) {
     // Refuse before the keypad appears rather than after a quantity is typed.
     // Covers the scan path too — onScan() routes through here — so a scan into a
@@ -6951,16 +6986,10 @@
     dialogOpen = true;
     $('qty-code').textContent = code;
     renderQtyBarcodeName(code);
-    var hint = $('qty-hint');
-    if (existing && !isEdit) {
-      hint.style.display = 'block';
-      hint.textContent = 'Already scanned (qty ' + qtyText(existing.qty) + '). This quantity will be ADDED to it.';
-    } else if (existing && isEdit) {
-      hint.style.display = 'block';
-      hint.textContent = 'Editing: this will REPLACE the current quantity (' + qtyText(existing.qty) + ').';
-    } else {
-      hint.style.display = 'none';
-    }
+    // What the line held when the pad opened: the baseline a REPLACE is
+    // checked against (commitQty), and what the hint starts from.
+    padOpenedQty = existing ? qtyNum(existing.qty) : null;
+    renderQtyHint(existing ? qtyNum(existing.qty) : null, isEdit, false);
     $('qty-overlay').dataset.mode = isEdit ? 'edit' : 'scan';
     $('qty-input').value = isEdit && existing ? qtyText(existing.qty) : '';
     qtyLastGood = $('qty-input').value;
@@ -7441,6 +7470,34 @@
       queueIt(newRequestId(), 0, isOffline() ? 'kept on this phone, will sync when you’re back online' : 'queued behind earlier changes');
       return;
     }
+    // REPLACE overwrites whatever is there, so it must not silently undo a
+    // colleague's change made while this pad was open. Re-read first; if the
+    // line moved since the pad opened, ask. (Adding is unaffected — the server
+    // adds to whatever is stored.) Checked here rather than with a server-side
+    // expected-qty parameter, which would need a migration; the remaining
+    // window is the round trip of the save itself.
+    if (isEdit && padOpenedQty !== null && !replaceConflictChecked) {
+      readLine(takeId, code, function (row) {
+        done();
+        if (!$('qty-overlay').classList.contains('open') || pendingCode !== code) return;
+        if (row && qtyNum(row.qty) !== padOpenedQty) {
+          var now = qtyNum(row.qty);
+          mergeItem(row);
+          if (currentTake && currentTake.id === takeId) renderItems();
+          if (!confirm('Someone changed this to ' + qtyText(now) + ' while you were counting — replace with '
+                       + qtyText(qty) + ' anyway?')) {
+            // They've now seen the new number: it becomes the baseline.
+            padOpenedQty = now;
+            renderQtyHint(now, true, true);
+            return;
+          }
+        }
+        replaceConflictChecked = true;
+        commitQty();
+      });
+      return;
+    }
+    replaceConflictChecked = false;
     requestIdFor(key, takeId, code, function (requestId) {
       if (!requestId) { done(); closeQtyDialog(); return; } // the earlier save landed — told above
       sendItemWrite(rpc, { p_stocktake_id: takeId, p_barcode: code, p_qty: qty, p_request_id: requestId },
