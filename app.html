@@ -7943,11 +7943,11 @@
     var org = currentOrg;
     if (!org) { if (cb) cb(null, { message: 'No organisation' }); return; }
     var byLegacy = function () {
-      return sb.from('export_templates').select(TEMPLATE_COLUMNS)
+      return sb.from('export_templates').select(BUILDER_COLUMNS)
         .eq('is_system', true).eq('code', legacyTemplateCode(org)).maybeSingle();
     };
     var first = org.exportTemplateId
-      ? sb.from('export_templates').select(TEMPLATE_COLUMNS).eq('id', org.exportTemplateId).maybeSingle()
+      ? sb.from('export_templates').select(BUILDER_COLUMNS).eq('id', org.exportTemplateId).maybeSingle()
       : byLegacy();
     Promise.resolve(first).then(function (res) {
       if (!res.error && !res.data && org.exportTemplateId) return byLegacy();
@@ -8482,6 +8482,42 @@
       }, function () { proceed(); });
   }
 
+  // What the operator should know before this file leaves the app.
+  //
+  //   * A POS that ADDS imported counts to stock (H&L's PDE import does —
+  //     import_behaviour 'add', or a template tagged for H&L): importing the
+  //     same file twice doubles the stock, so it is said every time.
+  //   * Re-exporting a Completed take: it has been exported before, and a
+  //     second import into an adding POS is the same doubling.
+  //   * An Item name column with names missing: Gantry only knows the names
+  //     typed into its own barcode directory until the POS product list exists
+  //     (Phase 2), so the column can be partly or wholly blank. Said, not
+  //     silently handed over.
+  function exportWarnings(template, take, takeItems) {
+    var out = [];
+    var adds = template.import_behaviour === 'add' || template.pos_system === 'hl';
+    if (adds) {
+      out.push('H&L adds imported counts to existing stock. Only import this file once, into a zeroed count.\n\nExport it?');
+    } else if (take.status === 'completed') {
+      out.push('"' + take.name + '" has been exported before. If your system ADDS imported counts '
+        + '(like H&L), importing this file again will double them — only import it once.\n\nExport it again?');
+    }
+    if (take.status === 'completed' && adds) {
+      out[out.length - 1] = '"' + take.name + '" has been exported before.\n\n' + out[out.length - 1];
+    }
+    var usesName = (template.columns || []).some(function (c) { return c && c.source === 'item_name'; });
+    if (usesName) {
+      var missing = 0;
+      takeItems.forEach(function (it) { if (!barcodeNameFor(it.barcode)) missing++; });
+      if (missing === takeItems.length) {
+        out.push('Product names aren’t available yet, so the "Item name" column will be empty for every line.\n\nExport anyway?');
+      } else if (missing) {
+        out.push(missing + ' of ' + takeItems.length + ' lines have no product name yet, so their "Item name" will be blank.\n\nExport anyway?');
+      }
+    }
+    return out;
+  }
+
   function doExport() {
     // Snapshot up front: the overlay closes below and actionsTake can be
     // repointed by the next ⋯ tap before the async work finishes.
@@ -8525,6 +8561,12 @@
       // the line count can legitimately be lower in the file than on the card
       // when two paddings of one product merged, and the card describes what the
       // stocktake holds.
+      // Ask before handing over a file that could do harm, or be quietly
+      // incomplete (22 Oct). Each is a confirm, so Cancel exports nothing.
+      var warnings = exportWarnings(template, take, takeItems);
+      for (var w = 0; w < warnings.length; w++) {
+        if (!confirm(warnings[w])) { toast('Export cancelled — nothing was downloaded', '#b45309'); return; }
+      }
       syncTakeSnapshot(take, takeItems);
       closeTakeActions();
 
