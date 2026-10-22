@@ -30,6 +30,10 @@ import { ADMIN_URL, brandedHtml, mailFooter, sendEmail } from "../_shared/email.
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+// Most extra people counting at once this function will bill, and the point
+// above which an increase must be confirmed by the caller (confirm: true).
+const MAX_SEATS = 50;
+const CONFIRM_ABOVE = 10;
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 const CORS_HEADERS = {
@@ -127,19 +131,34 @@ Deno.serve(async (req) => {
   const user = auth.user;
 
   let seats = -1;
+  let confirmed = false;
   try {
     const body = await req.json();
     seats = Number(body?.seats);
+    confirmed = body?.confirm === true;
   } catch {
     // no/invalid body — seats stays -1, caught below
   }
   if (!Number.isInteger(seats) || seats < 0) return jsonResponse({ error: "seats must be a non-negative whole number." }, 400);
+  // A ceiling, so a typo (1000 for 10) can't become a bill. Anyone genuinely
+  // needing more is a conversation, not a text box.
+  if (seats > MAX_SEATS) {
+    return jsonResponse({
+      error: `At most ${MAX_SEATS} extra people counting at the same time — email support@gantrystocktake.com if you need more.`,
+    }, 400);
+  }
 
   try {
     const memberRes = await userDb(
       authHeader,
       `memberships?user_id=eq.${encodeURIComponent(user.id)}&select=role,organisations(id,name,plan_tier,stripe_subscription_id,stripe_subscription_item_id,concurrent_seats,seats_increased_at)`,
     );
+    // A failed lookup (RLS, key, network) is OUR fault, not proof the caller
+    // isn't the owner — saying "Only the owner…" sent owners in circles.
+    if (!memberRes.ok) {
+      console.error("set-seat-count: membership lookup failed", memberRes.status, await memberRes.text());
+      return jsonResponse({ error: "Could not check your organisation — try again in a moment." }, 500);
+    }
     const members = await memberRes.json();
     const membership = members?.[0];
     if (!membership || membership.role !== "owner") {
@@ -181,6 +200,17 @@ Deno.serve(async (req) => {
       }
     }
 
+    // A big increase is said out loud before it's billed. The app asks and
+    // resends with confirm: true; anything else (an old page, a script) gets
+    // the question back instead of a charge.
+    if (seats > CONFIRM_ABOVE && seats > currentSeats && !confirmed) {
+      return jsonResponse({
+        error: `This will bill $29 × ${seats} per month for extra people counting at the same time. Confirm to continue.`,
+        needsConfirm: true,
+        seats,
+      }, 409);
+    }
+
     // +1 for the base tier slot (up to 1 unit = the $59 flat fee covering
     // the owner) — same graduated-pricing arithmetic the old location
     // quantity sync used, just repointed at seats instead of locations.
@@ -191,11 +221,28 @@ Deno.serve(async (req) => {
       throw new Error(`Stripe quantity update failed: ${stripeRes.status} ${await stripeRes.text()}`);
     }
 
-    const updateRes = await db(`organisations?id=eq.${encodeURIComponent(org.id)}`, {
-      method: "PATCH",
-      headers: { Prefer: "return=representation" },
-      body: JSON.stringify({ concurrent_seats: seats }),
-    });
+    // From here Stripe has moved. A database write that THROWS (network,
+    // timeout) must roll Stripe back exactly like one that answers !ok —
+    // previously only the latter did, so a dropped connection left Stripe
+    // billing a quantity the database never recorded.
+    let updateRes: Response;
+    try {
+      updateRes = await db(`organisations?id=eq.${encodeURIComponent(org.id)}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ concurrent_seats: seats }),
+      });
+    } catch (err) {
+      const rollback = await stripePatch(`subscription_items/${org.stripe_subscription_item_id}`, {
+        quantity: String(1 + currentSeats),
+      }).catch((e) => ({ ok: false, text: async () => String(e) }) as unknown as Response);
+      if (!rollback.ok) {
+        console.error("set-seat-count: Stripe rollback FAILED after a thrown DB write, org", org.id, await rollback.text());
+      } else {
+        console.error("set-seat-count: DB write threw; Stripe rolled back to", 1 + currentSeats, "for org", org.id);
+      }
+      throw err;
+    }
     if (!updateRes.ok) {
       const bodyText = await updateRes.text();
       let pg: { code?: string; message?: string } = {};

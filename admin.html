@@ -1366,8 +1366,22 @@
       $('seat-count-input').value = currentOrg.concurrentSeats;
       return;
     }
+    // Same limits set-seat-count enforces: at most 50, and a big increase is
+    // confirmed with its monthly cost before anything is billed. The server
+    // refuses an unconfirmed one too (409 needsConfirm), so this is the
+    // courtesy, not the boundary.
+    if (seats > 50) { toast('At most 50 extra people — email support@gantrystocktake.com if you need more', '#b91c1c'); return; }
+    var confirmed = false;
+    if (seats > 10 && seats > currentOrg.concurrentSeats) {
+      if (!confirm('This will bill $29 × ' + seats + ' = $' + (29 * seats) + ' per month for extra people counting '
+                   + 'at the same time, on top of your Team plan.\n\nContinue?')) {
+        $('seat-count-input').value = currentOrg.concurrentSeats;
+        return;
+      }
+      confirmed = true;
+    }
     $('seat-count-save').disabled = true;
-    sb.functions.invoke('set-seat-count', { body: { seats: seats } }).then(function (res) {
+    sb.functions.invoke('set-seat-count', { body: { seats: seats, confirm: confirmed } }).then(function (res) {
       $('seat-count-save').disabled = false;
       if (res.error || (res.data && res.data.error)) {
         failFn(res, 'Could not update how many can count at once');
