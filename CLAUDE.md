@@ -261,10 +261,17 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - **A lost reply is UNKNOWN, never "failed".** Every item write carries a request id
   (`p_request_id`, `crypto.randomUUID()`); `add_stocktake_item`/`set_stocktake_item_qty`
   apply an id at most once (`stocktake_item_requests`, 20261014_01). On status 0 / timeout /
-  5xx the app asks `stocktake_item_request_applied()`, re-reads the line, and says "saved" or
-  "Couldn't confirm that save. Check the line before re-entering." **Never write "Nothing was
-  recorded"** — that claim plus an honest retry turned 2 into 4. An unconfirmed action stays
-  pending; repeating it re-asks first, and is not sent if the earlier one landed.
+  5xx the app asks `stocktake_item_request_applied()`, re-reads the line, and says "saved" —
+  or, if it still can't tell, puts the write in the **outbox** with the SAME request id.
+  **Never write "Nothing was recorded"** — that claim plus an honest retry turned 2 into 4.
+- **The outbox** (22 Oct): ± taps and keypad saves made offline, or whose outcome is unknown,
+  are kept in `localStorage` (`gantry-outbox:<user id>`) as `{ id, takeId, barcode, rpc, qty }`,
+  shown on the line at once (`displayQty()`, pending style, placeholder rows once the take's real
+  lines have loaded) and counted in the amber `.outbox-bar`. `flushOutbox()` sends them in order
+  on `online`, every poll, login and each enqueue; a lost reply keeps the op, a refusal drops it
+  into the red "Not saved: …" bar that stays until OK. While a line has queued ops, new taps on
+  it queue behind them, never jump ahead. The request id IS the op id, and the server dedupes it
+  for 7 days — never mint a new id for a retry. No migration was needed for any of this.
 - **Every request is bounded** and re-reads state on timeout: item writes 15s, item loads
   20s, status 12s, create 15s, Home 20s. The newest request owns a loading flag, quiet or not —
   a quiet refresh that supersedes a load must also be what ends "Loading…".

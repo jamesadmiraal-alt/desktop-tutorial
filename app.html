@@ -152,6 +152,15 @@
   }
   .link-btn:active { opacity: 0.7; }
 
+  /* Changes kept on this phone until they reach the server. Amber while they
+     wait; red only when the server refused some (the list stays until OK). */
+  .outbox-bar { margin: 8px 12px 0; padding: 9px 12px; border-radius: 10px; font-size: 0.85rem;
+    line-height: 1.4; background: var(--surface); border-left: 3px solid var(--warning);
+    color: var(--text-body); display: flex; align-items: center; gap: 10px; }
+  .outbox-bar.failed { border-left-color: var(--danger); }
+  .outbox-bar .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .outbox-bar button { width: auto; padding: 6px 12px; font-size: 0.8rem; flex: none; }
+
   /* Help & support. The context line is shown, not hidden: the operator sees
      exactly what is sent with their message. */
   .help-include { font-size: 0.78rem; color: var(--text-dim); line-height: 1.45; margin-top: 10px;
@@ -1401,6 +1410,7 @@
 <div id="home-view" class="view">
   <button id="new-stocktake" class="primary">＋ New stocktake</button>
   <div id="home-status" class="home-status" role="status" aria-live="polite" style="display:none"></div>
+  <div id="outbox-bar-home" class="outbox-bar" style="display:none" role="status" aria-live="polite"></div>
   <!-- Order: In Progress, then Ready for export, then Completed — the workflow's
        own order, and the order of relevance to whoever is holding the phone. This
        app is used by the person counting, so their unfinished work belongs at the
@@ -1453,6 +1463,7 @@
   <!-- Text set by applyTakeReadOnly(): the way out differs — a Ready count goes
        back to In Progress from ⋯; a Completed one needs a manager to reopen. -->
   <div id="readonly-note" style="display:none"></div>
+  <div id="outbox-bar-scan" class="outbox-bar" style="display:none" role="status" aria-live="polite"></div>
   <div id="sync-debug" style="display:none;font-size:0.72rem;color:var(--text-faint);text-align:center;padding:2px 0"></div>
   <div id="reader-wrap">
     <div id="reader"></div>
@@ -3043,6 +3054,10 @@
 
   function enterApp(user) {
     currentUser = { id: user.id, email: user.email, name: '' };
+    // This person's changes from an earlier session (offline, or reloaded
+    // before they synced): shown at once, sent when there's a connection.
+    loadOutbox();
+    setTimeout(flushOutbox, 0);
     $('auth-pass').value = ''; $('auth-pass2').value = '';
     refreshOrgStatus(function () {
       // Defensive: this is the normal path whenever email confirmation was
@@ -4823,6 +4838,7 @@
       // takes too: the next person to sign in on this phone must not see the
       // last one's list while theirs loads.
       currentUser = null; currentOrg = null; currentTake = null; items = []; locations = []; takes = [];
+      outbox = []; outboxFailures = []; outboxFlushing = false; renderOutboxBar();
       resetAuthUiState();
       setAuthMode('login');
       if (message) $('auth-sub').textContent = message;
@@ -5030,6 +5046,7 @@
     // One at a time, for the same reason as the item poll: a slow reply must
     // land rather than be superseded by the next tick, forever.
     if (homeRefreshInFlight || homeFromCache) return;
+    flushOutbox();
     loadTakes(false, true);
   }
   setInterval(homePollTick, HOME_POLL_MS);
@@ -5882,8 +5899,9 @@
         itemsLoading = false;
         itemsLoadFailed = false;
         var fresh = res.data || [];
-        var changed = itemsSignature(fresh) !== itemsSignature(items);
+        var changed = itemsSignature(fresh) !== itemsSignature(items.filter(function (it) { return !it._local; }));
         items = fresh;
+        ensureOutboxPlaceholders();
         // A quiet refresh that finds nothing new still has to repaint if it is
         // the one ending "Loading…" — otherwise the screen keeps saying it.
         if (changed || !quiet || stateChanged) renderItems();
@@ -5966,6 +5984,7 @@
       // tick is all that takes.
       if (itemsLoading) return;
       if (itemsPollInFlight) return;   // the last one is still out — let it land
+      flushOutbox();
       loadItems(null, true);
       // Status too: Mark ready on another phone must lock this one within one
       // tick, not at its next refused write.
@@ -6196,7 +6215,7 @@
       var line = lineFromRow();
       // Floor check against what the operator SEES (stored + pending), so a run
       // of − taps on a slow connection can't queue more decrements than exist.
-      if (line && qtyNum(line.qty) + pendingStepFor(line.barcode) > 0) stepItemQty(line, -1);
+      if (line && displayQty(line) > 0) stepItemQty(line, -1);
     };
     plus.onclick = function (e) {
       if (e) e.stopPropagation();
@@ -6219,6 +6238,12 @@
       if (e) e.stopPropagation();
       var line = lineFromRow();
       if (!line) { toast('That line has changed — try again', '#b91c1c'); renderItems(); return; }
+      if (line._local) {
+        if (!confirm('Remove ' + line.barcode + '? Its changes haven’t synced yet, so they’ll be dropped.')) return;
+        outbox = outbox.filter(function (o) { return !(o.takeId === line.stocktake_id && o.barcode === line.barcode); });
+        saveOutbox(); renderOutboxBar(); renderItems();
+        return;
+      }
       if (!confirm('Remove ' + line.barcode + '?')) return;
       // RPC, not a direct .delete(): DELETE on stocktake_items is revoked from
       // `authenticated` (schema.sql), so every removal lands in the activity
@@ -6228,6 +6253,9 @@
         if (res.error) { fail(res.error, 'Delete failed'); return; }
         var at = items.indexOf(line);
         if (at !== -1) items.splice(at, 1);
+        // Removed on purpose: changes still queued for it must not re-create it.
+        outbox = outbox.filter(function (o) { return !(o.takeId === line.stocktake_id && o.barcode === line.barcode); });
+        saveOutbox(); renderOutboxBar();
         renderItems();
       });
     };
@@ -6246,10 +6274,10 @@
     el.name.style.display = savedName ? '' : 'none';
     var meta = 'Last: ' + new Date(it.last_scanned).toLocaleTimeString();
     if (el.meta.textContent !== meta) el.meta.textContent = meta;
-    var pend = pendingStepFor(it.barcode);
-    var shown = qtyText(Math.max(qtyNum(it.qty) + pend, 0));
+    var shown = qtyText(displayQty(it));
     if (el.val.textContent !== shown) el.val.textContent = shown;
-    el.val.classList.toggle('pending', !!pend);
+    el.val.classList.toggle('pending', !!pendingStepFor(it.barcode)
+      || !!(currentTake && outboxHasLine(currentTake.id, it.barcode)));
     // A completed or ready count is read-only — the database refuses these
     // writes, so the ± and ✕ are disabled. The qty chip stays wired:
     // openQtyDialog() refuses and says why, which reads better than a dead tap.
@@ -6261,7 +6289,8 @@
   // ---- Items in current stocktake ----
   function renderItems() {
     var listEl = $('list');
-    var qty = items.reduce(function (s, it) { return s + qtyNum(it.qty); }, 0);
+    ensureOutboxPlaceholders();
+    var qty = items.reduce(function (s, it) { return s + displayQty(it); }, 0);
     // Only once THIS take's full list has arrived. Before that, `items` can be a
     // fragment — a save's reply merged in while the first load was still out —
     // and the header read "1 items · 14 total qty" over a 44-line count (14 Oct).
@@ -6530,6 +6559,205 @@
 
   var COULD_NOT_CONFIRM = "Couldn't confirm that save. Check the line before re-entering.";
 
+  // ---- Outbox: changes kept on this phone until the server has them -------
+  //
+  // 22 Oct: offline, a +1 gave a red "Couldn't confirm…" and was never
+  // applied after reconnecting (Main Bar); a second offline +1 showed nothing
+  // at all (Cellar). Now every ± tap and keypad save made without a
+  // connection — or whose reply went missing — is kept here, shown on its line
+  // at once (pending style), and sent when the connection is back.
+  //
+  // Each op carries the request id it was (or will be) sent with, and that id
+  // never changes: add_stocktake_item / set_stocktake_item_qty apply an id at
+  // most once (20261014_01), so a retry after a lost reply, a reload, or a
+  // flaky reconnect can't count anything twice. The server keeps ids for 7
+  // days, which bounds how long an op can safely wait.
+  //
+  // Stored per user in localStorage, so it survives a reload while offline.
+  // Sent strictly in order, one at a time; a line's later taps queue behind
+  // its earlier ones (outboxHasLine) so the running total stays in the
+  // operator's order. If the server refuses one — the take was marked ready,
+  // completed, deleted, or hit the trial cap — it is dropped and named in a
+  // red bar that stays until dismissed, so nothing is lost silently.
+  var OUTBOX_PREFIX = 'gantry-outbox:';
+  var outbox = [];            // [{ id, takeId, takeName, barcode, rpc: 'add'|'set', qty, ts, tries }]
+  var outboxFlushing = false;
+  var outboxFailures = [];    // refused ops, shown until dismissed
+  var offlineNoticeShown = false;
+
+  function escapeHtml(t) {
+    return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function outboxKey() { return currentUser ? OUTBOX_PREFIX + currentUser.id : null; }
+  function loadOutbox() {
+    outbox = [];
+    var k = outboxKey();
+    if (k) {
+      try { var raw = localStorage.getItem(k); outbox = raw ? (JSON.parse(raw) || []) : []; } catch (e) { outbox = []; }
+    }
+    renderOutboxBar();
+  }
+  function saveOutbox() {
+    var k = outboxKey();
+    if (!k) return;
+    try {
+      if (outbox.length) localStorage.setItem(k, JSON.stringify(outbox));
+      else localStorage.removeItem(k);
+    } catch (e) { /* storage full or blocked: the in-memory queue still syncs */ }
+  }
+  function isOffline() { return navigator.onLine === false; }
+  function outboxOpsFor(takeId, barcode) {
+    return outbox.filter(function (o) { return o.takeId === takeId && o.barcode === barcode; });
+  }
+  function outboxHasLine(takeId, barcode) { return outboxOpsFor(takeId, barcode).length > 0; }
+
+  // What a line shows: the server's qty, with this phone's queued changes
+  // applied in order, plus taps still in flight.
+  function displayQty(it) {
+    var q = qtyNum(it.qty);
+    if (currentTake) {
+      outboxOpsFor(currentTake.id, it.barcode).forEach(function (o) {
+        q = o.rpc === 'set' ? qtyNum(o.qty) : Math.max(qtyRound(q + qtyNum(o.qty)), 0);
+      });
+    }
+    return Math.max(qtyRound(q + pendingStepFor(it.barcode)), 0);
+  }
+
+  // A queued change to a barcode the server doesn't have yet still needs a row
+  // on screen to show it — and to be tapped again.
+  //
+  // Only once this take's real lines have loaded: until then the base is
+  // unknown, and a queued +5 drawn on a 0 would read as a total of 5 (an
+  // offline reload). The bar still says how many changes are waiting.
+  function ensureOutboxPlaceholders() {
+    if (!currentTake) return;
+    var tid = currentTake.id;
+    if (itemsLoadedTakeId !== tid) return;
+    var have = {};
+    items = items.filter(function (it) { return !it._local || outboxHasLine(tid, it.barcode); });
+    items.forEach(function (it) { have[it.barcode] = true; });
+    outbox.forEach(function (o) {
+      if (o.takeId !== tid || have[o.barcode]) return;
+      have[o.barcode] = true;
+      items.unshift({ id: null, stocktake_id: tid, barcode: o.barcode, qty: 0,
+                      last_scanned: new Date(o.ts).toISOString(), _local: true });
+      if (displayOrder.indexOf(o.barcode) === -1) displayOrder.unshift(o.barcode);
+    });
+  }
+
+  function enqueueOp(op) {
+    op.tries = op.tries || 0;
+    outbox.push(op);
+    saveOutbox();
+    if (currentTake && currentTake.id === op.takeId) renderItems();
+    renderOutboxBar();
+    if (isOffline()) {
+      // Said once per offline spell; after that the line and the bar are the
+      // feedback for every tap.
+      if (!offlineNoticeShown) {
+        offlineNoticeShown = true;
+        toast('You’re offline — changes are kept on this phone and will sync when you’re back', '#b45309');
+      }
+    } else {
+      setTimeout(flushOutbox, 0);
+    }
+  }
+
+  function flushOutbox() {
+    if (outboxFlushing || !currentUser || !outbox.length || isOffline()) { renderOutboxBar(); return; }
+    outboxFlushing = true;
+    renderOutboxBar();
+    var epoch = sessionEpoch;
+    var refused = [];
+    var end = function () {
+      outboxFlushing = false;
+      renderOutboxBar();
+      if (refused.length) reportRefusedOps(refused);
+    };
+    (function nextOp() {
+      if (epoch !== sessionEpoch) { outboxFlushing = false; return; }
+      var op = outbox[0];
+      if (!op) { end(); return; }
+      if (isOffline()) { end(); return; }
+      op.tries = (op.tries || 0) + 1;
+      saveOutbox();
+      sendItemWrite(op.rpc === 'set' ? 'set_stocktake_item_qty' : 'add_stocktake_item', {
+        p_stocktake_id: op.takeId, p_barcode: op.barcode, p_qty: op.qty, p_request_id: op.id
+      }, function (out) {
+        if (epoch !== sessionEpoch) { outboxFlushing = false; return; }
+        // No answer: keep it, same id, and try again later.
+        if (out.lost) { end(); return; }
+        outbox = outbox.filter(function (o) { return o.id !== op.id; });
+        saveOutbox();
+        if (out.row) {
+          if (currentTake && currentTake.id === op.takeId) mergeItem(out.row);
+        } else {
+          refused.push({ op: op, error: out.error });
+        }
+        if (currentTake && currentTake.id === op.takeId) renderItems();
+        renderOutboxBar();
+        nextOp();
+      });
+    })();
+  }
+
+  function describeOps(list) {
+    // "9300000000016 +3", "9300000000023 set to 5" — adds to one line summed.
+    var byLine = {}, order = [];
+    list.forEach(function (o) {
+      var k = o.barcode + '|' + o.rpc;
+      if (!byLine[k]) { byLine[k] = { barcode: o.barcode, rpc: o.rpc, qty: 0 }; order.push(k); }
+      byLine[k].qty = o.rpc === 'set' ? qtyNum(o.qty) : qtyRound(byLine[k].qty + qtyNum(o.qty));
+    });
+    return order.map(function (k) {
+      var l = byLine[k];
+      return l.barcode + (l.rpc === 'set' ? ' set to ' + qtyText(l.qty) : ' ' + (l.qty >= 0 ? '+' : '') + qtyText(l.qty));
+    }).join(', ');
+  }
+
+  function reportRefusedOps(refused) {
+    var trial = refused.some(function (r) { return isTrialLimit(r.error); });
+    var locked = refused.some(function (r) { return /completed|ready/i.test((r.error && r.error.message) || ''); });
+    outboxFailures = outboxFailures.concat(refused.map(function (r) { return r.op; }));
+    renderOutboxBar();
+    if (trial) showTrialLimit();
+    if (locked && currentTake) refreshTakeStatus(true);
+    errorToast('Some changes made offline were NOT saved: ' + describeOps(refused.map(function (r) { return r.op; })));
+  }
+
+  function renderOutboxBar() {
+    var html = '', failed = false;
+    if (outboxFailures.length) {
+      failed = true;
+      var names = {};
+      outboxFailures.forEach(function (o) { names[o.takeName || 'a stocktake'] = true; });
+      html = '<span class="msg"><b>Not saved:</b> ' + escapeHtml(describeOps(outboxFailures))
+        + ' — "' + escapeHtml(Object.keys(names).join('", "')) + '" refused them (marked ready, completed or removed).'
+        + ' Enter them again once it’s back in progress.</span><button data-act="ok">OK</button>';
+    } else if (outbox.length) {
+      var n = outbox.length, word = n === 1 ? 'change' : 'changes';
+      if (isOffline()) html = '<span class="msg">Offline — ' + n + ' ' + word + ' will sync when you’re back online.</span>';
+      else if (outboxFlushing) html = '<span class="msg">Syncing ' + n + ' ' + word + '…</span>';
+      else html = '<span class="msg">' + n + ' ' + word + ' waiting to sync.</span><button data-act="retry">Retry</button>';
+    }
+    ['outbox-bar-scan', 'outbox-bar-home'].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      el.style.display = html ? '' : 'none';
+      el.classList.toggle('failed', failed);
+      if (el._html !== html) { el.innerHTML = html; el._html = html; }
+    });
+  }
+  ['outbox-bar-scan', 'outbox-bar-home'].forEach(function (id) {
+    $(id).addEventListener('click', function (e) {
+      var act = e.target && e.target.getAttribute && e.target.getAttribute('data-act');
+      if (act === 'ok') { outboxFailures = []; renderOutboxBar(); }
+      else if (act === 'retry') flushOutbox();
+    });
+  });
+  window.addEventListener('online', function () { offlineNoticeShown = false; renderOutboxBar(); flushOutbox(); });
+  window.addEventListener('offline', renderOutboxBar);
+
   // The −/+ steppers. Sends the DELTA (±1), never a computed absolute.
   //
   // This used to read the on-screen qty, add one in JavaScript, and write the
@@ -6560,6 +6788,12 @@
     var takeId = currentTake.id;
     var barcode = it.barcode;
     var amount = qtyRound(delta);
+    // Offline, or this line already has changes waiting: queue it behind them.
+    if (isOffline() || outboxHasLine(takeId, barcode)) {
+      enqueueOp({ id: newRequestId(), takeId: takeId, takeName: currentTake.name, barcode: barcode,
+                  rpc: 'add', qty: amount, ts: Date.now() });
+      return;
+    }
     // Visible NOW, not when the reply arrives. On 14 Oct replies took 10–25s and
     // the line didn't move, so the operator tapped again — each tap a real +1.
     addPendingStep(takeId, barcode, amount);
@@ -6579,8 +6813,15 @@
       if (q.queued) {
         var a = q.queued;
         q.queued = 0;
-        sendStep(takeId, barcode, a, q, qk);
-        return;
+        // Gone offline, or an earlier change is now queued: these follow it.
+        if (isOffline() || outboxHasLine(takeId, barcode)) {
+          addPendingStep(takeId, barcode, -a);
+          enqueueOp({ id: newRequestId(), takeId: takeId, takeName: currentTake ? currentTake.name : '',
+                      barcode: barcode, rpc: 'add', qty: a, ts: Date.now() });
+        } else {
+          sendStep(takeId, barcode, a, q, qk);
+          return;
+        }
       }
       q.busy = false;
       delete stepQueues[qk];
@@ -6620,7 +6861,11 @@
         resolveLostWrite(key, requestId, takeId, barcode,
           function () { /* landed: the line is already redrawn from the server */ next(); },
           function () {
-            errorToast("Couldn't confirm that change to " + barcode + '. Check the line before tapping again.');
+            // Couldn't find out. Kept on this phone with the SAME request id:
+            // if it did land, the retry is a no-op; if not, it lands then.
+            delete pendingWrites[key];
+            enqueueOp({ id: requestId, takeId: takeId, takeName: currentTake ? currentTake.name : '',
+                        barcode: barcode, rpc: 'add', qty: amount, ts: Date.now(), tries: 1 });
             next();
           });
       });
@@ -7135,6 +7380,18 @@
       }
     };
 
+    // Offline, or this line has changes waiting: keep it on the phone, in order.
+    var queueIt = function (requestId, tries, why) {
+      enqueueOp({ id: requestId, takeId: takeId, takeName: currentTake ? currentTake.name : '', barcode: code,
+                  rpc: isEdit ? 'set' : 'add', qty: qty, ts: Date.now(), tries: tries });
+      done();
+      closeQtyDialog();
+      toast(code + (isEdit ? ' set to ' + qtyText(qty) : '  ×' + qtyText(qty)) + ' — ' + why, '#b45309');
+    };
+    if (isOffline() || outboxHasLine(takeId, code)) {
+      queueIt(newRequestId(), 0, isOffline() ? 'kept on this phone, will sync when you’re back online' : 'queued behind earlier changes');
+      return;
+    }
     requestIdFor(key, takeId, code, function (requestId) {
       if (!requestId) { done(); closeQtyDialog(); return; } // the earlier save landed — told above
       sendItemWrite(rpc, { p_stocktake_id: takeId, p_barcode: code, p_qty: qty, p_request_id: requestId },
@@ -7171,12 +7428,10 @@
               closeQtyDialog();
             },
             function () {
-              done();
-              // Close the keypad so the line behind it — just re-read from the
-              // server — can be checked. Repeating this exact save re-asks first
-              // and reuses the id, so it can't count twice.
-              closeQtyDialog();
-              errorToast(COULD_NOT_CONFIRM);
+              // Couldn't find out: kept on this phone with the SAME id, so it is
+              // applied exactly once whether or not this attempt landed.
+              delete pendingWrites[key];
+              queueIt(requestId, 1, 'no reply yet, kept on this phone and will retry');
             });
         });
     });
