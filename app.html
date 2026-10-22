@@ -151,6 +151,11 @@
     font-weight: 600; width: auto; text-decoration: underline;
   }
   .link-btn:active { opacity: 0.7; }
+  /* A spinner on a button that is working (Create account, Log in). */
+  button.busy::before { content: ""; display: inline-block; width: 0.9em; height: 0.9em; margin-right: 8px;
+    vertical-align: -0.12em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+    animation: btn-spin 0.8s linear infinite; }
+  @keyframes btn-spin { to { transform: rotate(360deg); } }
   /* "3 of 5 trial products used" under the take header (trial orgs only). */
   .trial-usage { margin: 6px 12px 0; font-size: 0.82rem; color: var(--text-dim); text-align: center; }
   .trial-usage.full { color: var(--warning); font-weight: 600; }
@@ -427,7 +432,7 @@
      stock system will match on — the name is there to make a line
      recognisable to a person, not to replace the thing being counted. */
   .item .prod-name { font-size: 0.85rem; color: var(--text-body); margin-top: 2px; }
-  .item .meta { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
+  .item .meta { font-size: 0.8125rem; color: var(--text-dim); margin-top: 2px; }
   /* Same idea inside the quantity dialog and the saved-names list. */
   .dialog .prod-name { font-size: 0.9rem; color: var(--text-body); margin: -4px 0 10px; }
   .barcode-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -443,13 +448,17 @@
      below the header's 60, same as the rest. */
   #barcode-name-overlay { z-index: 55; }
   .qty-controls { display: flex; align-items: center; gap: 6px; }
-  .qty-controls button { padding: 8px 12px; font-size: 1.1rem; border-radius: 8px; }
+  /* 44px minimum: a thumb on a cold bar floor, not a cursor (22 Oct, P18). */
+  .qty-controls button { padding: 8px 12px; font-size: 1.1rem; border-radius: 8px; min-width: 44px; min-height: 44px; }
   .qty-val {
     min-width: 44px; text-align: center; font-size: 1.05rem; font-weight: 700;
     background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 8px 4px; color: var(--text);
   }
-  .item .del { background: transparent; color: var(--delete-icon); font-size: 1.2rem; padding: 8px; }
+  /* On the row's LEFT edge, the far side from + — a slip off + can't remove a
+     line (it sat right next to it until 22 Oct). */
+  .item .del { background: transparent; color: var(--delete-icon); font-size: 1.2rem; padding: 8px;
+    min-width: 44px; min-height: 44px; margin-left: -8px; }
 
   /* ---- Modals ---- */
   .overlay {
@@ -476,7 +485,7 @@
   .dialog .title { font-weight: 600; }
   .dialog .code { font-family: ui-monospace, Menlo, monospace; word-break: break-all;
     background: var(--bg); padding: 10px; border-radius: 8px; margin: 10px 0; }
-  .dialog .hint { font-size: 0.8rem; color: var(--warning); margin-bottom: 8px; }
+  .dialog .hint { font-size: 0.8125rem; color: var(--warning); margin-bottom: 8px; }
   #qty-input { font-size: 1.6rem; text-align: center; margin-bottom: 14px; }
   /* Keypad: three columns, generous targets. 52px min height clears the ~44px
      touch-target floor with room to spare, because this gets hit hundreds of
@@ -769,12 +778,12 @@
     <button id="org-setup-logout" class="link-btn" style="display:none">Log out</button>
     <div id="org-mode-row" style="display:none">
       <div class="auth-tabs">
-        <button id="org-mode-create" class="on" type="button">Create organisation</button>
+        <button id="org-mode-create" class="on" type="button">Create a business</button>
         <button id="org-mode-join" type="button">Join with code</button>
       </div>
     </div>
     <div id="org-create-row" style="display:none">
-      <label for="org-name">Organisation name</label>
+      <label for="org-name">Venue / business name</label>
       <input id="org-name" type="text" placeholder="e.g. The Local Bar">
       <label for="org-country">Country <small style="color:var(--text-dim)">(sets your billing currency)</small></label>
       <select id="org-country" autocomplete="country"></select>
@@ -783,6 +792,7 @@
            'Main' location, so this is a description of the outcome, not a promise
            made somewhere else. No card is collected anywhere in this flow. -->
       <div class="auth-note">Starts on the free trial — 5 products per stocktake, exports included, no card needed.</div>
+      <div class="auth-note">Later: <b>Solo</b> is one venue, just you. <b>Team</b> adds your staff, counting together.</div>
       <!-- Someone who already knows they need it shouldn't have to fill a
            stocktake to five products and get stopped to find the plans. This
            creates the organisation exactly as normal — it still lands on
@@ -792,7 +802,7 @@
       <button id="skip-trial-btn" class="link-btn" type="button">Know you need it already? Choose a plan</button>
     </div>
     <div id="org-join-row" style="display:none">
-      <label for="org-join-code">Organisation code</label>
+      <label for="org-join-code">Business code</label>
       <input id="org-join-code" type="text" autocapitalize="none" placeholder="Code from your manager">
       <label for="org-daily-code">Today's code</label>
       <input id="org-daily-code" type="text" autocapitalize="none" placeholder="Shown live on the admin screen today">
@@ -991,7 +1001,7 @@
     </div>
   </div>
   <div class="acct-card">
-    <h3>Organisation</h3>
+    <h3>Venue / business</h3>
     <div class="acct-email" id="acct-org-name"></div>
     <div class="plan-desc" id="acct-org-role" style="margin-top:2px"></div>
     <label>Billing country <small style="color:var(--text-dim)">(sets checkout currency)</small></label>
@@ -2500,10 +2510,10 @@
 
   function validateOrgFields() {
     if (orgSignupMode === 'create') {
-      if (!$('org-name').value.trim()) return 'Enter your organisation name';
+      if (!$('org-name').value.trim()) return 'Enter your venue or business name';
       if (!$('org-country').value) return 'Choose your country';
     } else {
-      if (!$('org-join-code').value.trim()) return 'Enter the organisation code';
+      if (!$('org-join-code').value.trim()) return 'Enter the business code';
       if (!$('org-daily-code').value.trim()) return "Enter today's code";
     }
     return null;
@@ -2521,7 +2531,7 @@
     needsOrgSetup = true;
     $('auth-credentials').style.display = 'none';
     $('account-btn').style.display = 'none';
-    $('auth-heading').textContent = 'Set up your organisation';
+    $('auth-heading').textContent = 'Set up your venue / business';
     $('auth-sub').textContent = 'One more step before you can start scanning';
     $('org-setup-email').textContent = currentUser ? currentUser.email : '';
     $('org-setup-note').style.display = '';
@@ -2554,7 +2564,7 @@
     $('org-join-row').style.display = 'none';
     $('auth-submit').style.display = 'none';
     $('payment-pending-row').style.display = '';
-    $('pending-org-name').textContent = currentOrg ? currentOrg.name : 'your organisation';
+    $('pending-org-name').textContent = currentOrg ? currentOrg.name : 'your business';
     renderUpgradePrices();
     showView('auth');
   }
@@ -2577,7 +2587,7 @@
     $('org-join-row').style.display = 'none';
     $('payment-pending-row').style.display = 'none';
     $('auth-submit').style.display = 'none';
-    var orgName = currentOrg ? currentOrg.name : 'Your organisation';
+    var orgName = currentOrg ? currentOrg.name : 'Your business';
     if (reason === 'single_venue_owner_only') {
       // Not a seat problem at all, so none of the seat advice applies. Telling
       // this person to "ask a teammate to log out" or "add a seat from the admin
@@ -2652,7 +2662,7 @@
     rpcCall.then(function (res) {
       $('auth-submit').disabled = false;
       $('skip-trial-btn').disabled = false;
-      if (res.error) { fail(res.error, 'Could not set up organisation'); return; }
+      if (res.error) { fail(res.error, 'Could not set up your business'); return; }
       needsOrgSetup = false;
       toast('Account created — welcome!');
       // Trial welcome, on the CREATE path only. Joining an existing org is not
@@ -2699,6 +2709,9 @@
   }
 
   function submitAuth() {
+    // Enter on the password fields calls this too, so the disabled button alone
+    // didn't stop a second submit (22 Oct, P18).
+    if ($('auth-submit').disabled) return;
     if (needsOrgSetup) { completeOrgSetup(); return; }
     var email = $('auth-email').value.trim();
     var pw = $('auth-pass').value;
@@ -2706,7 +2719,14 @@
     $('auth-submit').disabled = true;
     // The operator is signing in on purpose: this tab may hold a session again.
     setTabSignedOut(false);
-    var done = function () { $('auth-submit').disabled = false; };
+    var submitLabel = $('auth-submit').textContent;
+    $('auth-submit').textContent = authMode === 'signup' ? 'Creating account…' : 'Logging in…';
+    $('auth-submit').classList.add('busy');
+    var done = function () {
+      $('auth-submit').disabled = false;
+      $('auth-submit').textContent = submitLabel;
+      $('auth-submit').classList.remove('busy');
+    };
     if (authMode === 'signup') {
       var name = $('auth-name').value.trim();
       if (!name) { toast('Enter your name', '#b91c1c'); done(); return; }
@@ -2919,7 +2939,7 @@
         // setup/login screens. An operator mid-count on venue wifi does not need
         // to be logged out because one request timed out; the next refresh asks
         // again. Keep what we already knew.
-        fail(memberRes.error, 'Could not refresh your organisation');
+        fail(memberRes.error, 'Could not refresh your business details');
       } else {
         // No error, genuinely no membership — or no prior org to fall back on.
         currentOrg = null;
@@ -3287,7 +3307,7 @@
       userAgent: navigator.userAgent,
     };
     // Said plainly, so nothing goes that the operator can't see.
-    var parts = ['your account and venue (' + ((currentOrg && currentOrg.name) || 'no organisation yet') + ')'];
+    var parts = ['your account and venue (' + ((currentOrg && currentOrg.name) || 'no business set up yet') + ')'];
     if (takeText) parts.push('this count: ' + takeText);
     if (error) parts.push('the last error: “' + error + '”');
     parts.push('your device and app version (' + helpContext.version + ')');
@@ -4712,9 +4732,9 @@
       removeBtn.textContent = '✕';
       removeBtn.style.display = ownerOnly ? '' : 'none';
       removeBtn.disabled = isSelf;
-      removeBtn.title = isSelf ? "Can't remove yourself here" : 'Remove from organisation';
+      removeBtn.title = isSelf ? "Can't remove yourself here" : 'Remove from this business';
       removeBtn.onclick = function () {
-        if (!confirm('Remove ' + (m.full_name || m.email) + ' from the organisation?')) return;
+        if (!confirm('Remove ' + (m.full_name || m.email) + ' from this business?')) return;
         sb.from('memberships').delete()
           .eq('org_id', currentOrg.id).eq('user_id', m.user_id).then(function (res) {
             if (res.error) { fail(res.error, 'Could not remove member'); return; }
@@ -5655,7 +5675,7 @@
     $('name-input').value = suggestTakeName($('name-location').value);
   };
   $('new-stocktake').onclick = function () {
-    if (!locations.length) { toast('No locations set up yet — ask your organisation owner', '#b91c1c'); return; }
+    if (!locations.length) { toast('No locations set up yet — ask the owner', '#b91c1c'); return; }
     if (locations.length > 1) {
       $('name-location-row').style.display = '';
       $('name-location').innerHTML = '';
@@ -6405,7 +6425,7 @@
       }, function (err) { restoreLine(err, 'lost'); });
     };
 
-    row.appendChild(info); row.appendChild(qc); row.appendChild(del);
+    row.appendChild(del); row.appendChild(info); row.appendChild(qc);
     row._els = { name: nameEl, meta: meta, val: val, minus: minus, plus: plus, del: del };
     return row;
   }
