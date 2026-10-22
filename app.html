@@ -7512,7 +7512,9 @@
     // what it must never do is grey itself out and say nothing.
     raw = raw.trim().replace(/\.$/, '');
     var qty = qtyRound(parseFloat(raw));
-    if (raw === '' || !isFinite(parseFloat(raw)) || qty < 0) {
+    // Nothing typed yet is a prompt, not an error — amber, and plain.
+    if (raw === '') { toast('Type a count first', '#b45309'); return; }
+    if (!isFinite(parseFloat(raw)) || qty < 0) {
       toast('Enter a quantity of 0 or more', '#b91c1c'); return;
     }
     var code = pendingCode;
@@ -7671,7 +7673,14 @@
     });
   }
 
-  $('qty-ok').onclick = commitQty;
+  // Same grace as Enter (QTY_ENTER_GRACE_MS, below): a tap that opened the pad
+  // — Capture, a scan button, the line's number — can land a stray click on
+  // Save as the pad appears under the finger, which showed a red "Enter a
+  // quantity" error on a pad nobody had touched yet (22 Oct, P16).
+  $('qty-ok').onclick = function () {
+    if (Date.now() - qtyOpenedAt < QTY_ENTER_GRACE_MS) return;
+    commitQty();
+  };
   // Cancel clears the field BEFORE closing, so there is nothing left for a stray
   // click to send. ST5 reported Cancel-with-a-quantity still saving the line
   // (and Cancel with an empty field not doing so), which is exactly that shape.
