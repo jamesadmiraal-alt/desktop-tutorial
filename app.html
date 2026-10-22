@@ -6280,7 +6280,11 @@
     displayOrder.forEach(function (bc) {
       if (seen[bc]) return;
       if (byBc[bc]) { out.push(byBc[bc]); seen[bc] = true; }
-      else if (settling && rowCache[bc] && rowCache[bc]._item) { out.push(rowCache[bc]._item); seen[bc] = true; held = true; }
+      // (A line deleted HERE is not held — that removal is the operator's own.)
+      else if (settling && rowCache[bc] && rowCache[bc]._item
+               && !(currentTake && pendingLineDeletes[currentTake.id + '|' + bc])) {
+        out.push(rowCache[bc]._item); seen[bc] = true; held = true;
+      }
     });
     if (held && !settleTimer) {
       settleTimer = setTimeout(function () {
@@ -6372,19 +6376,33 @@
         return;
       }
       if (!confirm('Remove ' + line.barcode + '?')) return;
+      // Gone from the list NOW, not when the server answers (22 Oct, P17: a
+      // deleted line lingered ~6s on a slow connection, and looked like the ✕
+      // hadn't worked). Held out of any poll that lands meanwhile, and put back
+      // with a message if the server refuses or doesn't answer.
+      var delKey = line.stocktake_id + '|' + line.barcode;
+      pendingLineDeletes[delKey] = true;
+      renderItems();
+      var restoreLine = function (err, what) {
+        delete pendingLineDeletes[delKey];
+        if (currentTake && currentTake.id === line.stocktake_id) loadItems(null, true);
+        if (what === 'lost') errorToast('Couldn’t confirm ' + line.barcode + ' was removed — check the list');
+        else fail(err, 'Delete failed');
+      };
       // RPC, not a direct .delete(): DELETE on stocktake_items is revoked from
       // `authenticated` (schema.sql), so every removal lands in the activity
       // log with its barcode and quantity. Array-shaped because the RPC logs
       // one row per user action — a future multi-select removal is one call.
       sb.rpc('delete_stocktake_items', { p_item_ids: [line.id] }).then(function (res) {
-        if (res.error) { fail(res.error, 'Delete failed'); return; }
+        if (res.error) { restoreLine(res.error, replyWasLost(res) ? 'lost' : 'refused'); return; }
+        delete pendingLineDeletes[delKey];
         var at = items.indexOf(line);
         if (at !== -1) items.splice(at, 1);
         // Removed on purpose: changes still queued for it must not re-create it.
         outbox = outbox.filter(function (o) { return !(o.takeId === line.stocktake_id && o.barcode === line.barcode); });
         saveOutbox(); renderOutboxBar();
         renderItems();
-      });
+      }, function (err) { restoreLine(err, 'lost'); });
     };
 
     row.appendChild(info); row.appendChild(qc); row.appendChild(del);
@@ -6433,9 +6451,14 @@
       + (used >= TRIAL_PRODUCT_LIMIT ? ' — pick a plan to count more' : '');
   }
 
+  var pendingLineDeletes = {};   // take|barcode -> true while its delete is out
   function renderItems() {
     var listEl = $('list');
     ensureOutboxPlaceholders();
+    if (currentTake) {
+      var tid = currentTake.id;
+      items = items.filter(function (it) { return !pendingLineDeletes[tid + '|' + it.barcode]; });
+    }
     renderTrialUsage();
     var qty = items.reduce(function (s, it) { return s + displayQty(it); }, 0);
     // Only once THIS take's full list has arrived. Before that, `items` can be a
@@ -7414,6 +7437,7 @@
     // wants to see the line settle at the real total. currentView is already the
     // NEW view when showView() calls this, so leaving the take doesn't fire it.
     if (wasOpen && currentView === 'scan' && currentTake) loadItems(null, true);
+    if (wasOpen) refocusScanInput();
   }
 
   // ---- Commit guards ----
@@ -7735,11 +7759,63 @@
   // QUANTITY field. ST5 recorded the result exactly — barcode 935114200, qty 85,
   // one code split across two fields — and the wedge's trailing Enter then
   // committed it without anyone tapping Save.
+  //
+  // UPDATED 22 Oct (P17): text in the box, or a key in the last 400ms — NOT
+  // mere focus. Focus now returns to this box after every pad and tap so a
+  // hardware scanner keeps working (refocusScanInput), and "focused" no longer
+  // means "someone is typing"; with the old test the camera would have ignored
+  // every scan for as long as the box held focus.
+  var lastManualKeyAt = 0;
   function manualEntryInProgress() {
     var el = $('manual-input');
     if (!el) return false;
-    return document.activeElement === el || el.value.trim() !== '';
+    return el.value.trim() !== '' || (Date.now() - lastManualKeyAt < 400);
   }
+
+  // A keyboard-wedge scanner (USB, or Bluetooth in keyboard mode) types into
+  // whatever has focus, so after the pad closes or a button takes focus, put it
+  // back on the barcode box — unless another field has it. Not on a touch
+  // phone with no scanner seen: focusing a text box there raises the on-screen
+  // keyboard over the camera. A scanner is "seen" from its signature: 6+ keys
+  // arriving under 50ms apart, ending in Enter.
+  var WEDGE_SEEN_KEY = 'gantry-wedge-seen';
+  var wedgeSeen = (function () { try { return sessionStorage.getItem(WEDGE_SEEN_KEY) === '1'; } catch (e) { return false; } })();
+  var wedgeBurst = { n: 0, at: 0 };
+  $('manual-input').addEventListener('keydown', function (e) {
+    var now = Date.now();
+    lastManualKeyAt = now;
+    if (e.key === 'Enter') {
+      if (wedgeBurst.n >= 6 && !wedgeSeen) {
+        wedgeSeen = true;
+        try { sessionStorage.setItem(WEDGE_SEEN_KEY, '1'); } catch (err) {}
+      }
+      wedgeBurst = { n: 0, at: now };
+      return;
+    }
+    wedgeBurst = (now - wedgeBurst.at < 50) ? { n: wedgeBurst.n + 1, at: now } : { n: 1, at: now };
+  }, true);
+  function refocusScanInput() {
+    setTimeout(function () {
+      if (currentView !== 'scan' || !currentTake || takeIsReadOnly()) return;
+      if (hasTouchKeypad() && !wedgeSeen) return;
+      if (typeof tutorialActive !== 'undefined' && tutorialActive) return;
+      if (document.querySelector('.overlay.open')) return;
+      var a = document.activeElement;
+      // Another VISIBLE field keeps focus (Filter, a form). One left focused
+      // inside a pad that just closed doesn't count.
+      if (a && a !== document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.id !== 'manual-input'
+          && a.offsetParent !== null) return;
+      var el = $('manual-input');
+      if (el && el.offsetParent !== null && document.activeElement !== el) el.focus({ preventScroll: true });
+    }, 0);
+  }
+  // A tap on a button in the scan view (±, the qty chip, Add, Capture…) takes
+  // focus off the box; give it back once the tap has done its work.
+  $('scan-view').addEventListener('click', function (e) {
+    var t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    refocusScanInput();
+  });
 
   // A different code while the pad is open. Not added — the pad's entry hasn't
   // been confirmed, and committing it on a stray decode would save a quantity
