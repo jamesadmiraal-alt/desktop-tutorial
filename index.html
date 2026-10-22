@@ -385,6 +385,15 @@
      Anon key is public; JWT verify is off for that function only. -->
 <script src="config.js"></script>
 <script>
+// An auth link (confirm, reset, or one that failed) that landed on the
+// landing page instead of the app — Supabase does that when the redirect URL
+// isn't allowlisted. Hand it to app.html with the hash intact.
+(function () {
+  var h = location.hash || '', q = location.search || '';
+  if (/(^|[#&?])(access_token|error_code|error|type=signup|type=recovery|code)=/.test(h + '&' + q)) {
+    location.replace('app.html' + q + h);
+  }
+})();
 (function () {
   var form = document.getElementById('contact-form');
   if (!form) return;

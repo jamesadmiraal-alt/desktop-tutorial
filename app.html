@@ -1584,6 +1584,27 @@
      It names the address, because a typo here is the single most common reason
      the email "never arrives", and it says to check spam, because on the
      default Supabase sender it very often is there. -->
+<!-- ===== An auth link that didn't work =====
+     Supabase sends an expired or already-used confirmation link back here with
+     the reason in the URL hash (#error_code=otp_expired…). It used to load the
+     page as if nothing had happened, so the person tried to log in with an
+     unconfirmed account and got nowhere. -->
+<div id="link-expired-overlay" class="overlay">
+  <div class="dialog">
+    <div class="title">This link has expired</div>
+    <p class="plan-desc" id="link-expired-text" style="margin:10px 0 8px">
+      Confirmation links only work once, for a limited time. We can send you a new one.
+    </p>
+    <label for="link-expired-email">Your email</label>
+    <input id="link-expired-email" type="email" autocomplete="email" placeholder="you@venue.com">
+    <div class="dialog-actions" style="margin-top:12px">
+      <button id="link-expired-close" class="flex">Close</button>
+      <button id="link-expired-resend" class="primary flex">Send a new confirmation email</button>
+    </div>
+    <p class="plan-desc" style="margin-top:10px;font-size:0.8rem">Was it a password reset link? Use “Forgot password?” on the login screen instead.</p>
+  </div>
+</div>
+
 <div id="signup-sent-overlay" class="overlay">
   <div class="dialog">
     <div class="title">Check your email</div>
@@ -2311,6 +2332,22 @@
   // tab (or a refresh still in flight here) puts in the shared key. It lives
   // in sessionStorage: per tab, and it survives this tab's reload, which is
   // exactly when a stored session would otherwise be adopted.
+  // An auth link that failed comes back with its reason in the hash (or, for
+  // the PKCE flow, the query): error, error_code, error_description. Read once,
+  // before the client is created, then removed from the address bar so a
+  // reload doesn't show it again.
+  var authLinkError = (function () {
+    var raw = (location.hash || '').replace(/^#/, '') + '&' + (location.search || '').replace(/^\?/, '');
+    var params = {};
+    raw.split('&').forEach(function (kv) {
+      var i = kv.indexOf('=');
+      if (i > 0) { try { params[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1).replace(/\+/g, ' ')); } catch (e) {} }
+    });
+    if (!params.error && !params.error_code) return null;
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    return { error: params.error || '', code: params.error_code || '', description: params.error_description || '' };
+  })();
+
   var SIGNED_OUT_KEY = 'gantry-signed-out';
   function tabSignedOut() { try { return sessionStorage.getItem(SIGNED_OUT_KEY) === '1'; } catch (e) { return false; } }
   function setTabSignedOut(on) {
@@ -2414,6 +2451,39 @@
   // deliberately silent once signed in: showOrgSetupPrompt() and friends reuse
   // this same view for a different purpose, and setAuthMode() there would put
   // the credentials fields back on screen.
+  function showAuthLinkError() {
+    if (!authLinkError) return;
+    var e = authLinkError;
+    authLinkError = null;
+    var expired = e.code === 'otp_expired' || /expired|invalid/i.test(e.description);
+    $('link-expired-text').textContent = expired
+      ? 'Confirmation links only work once, for a limited time. We can send you a new one.'
+      : 'That link didn’t work' + (e.description ? ' (' + e.description + ')' : '') + '. We can send you a new confirmation email.';
+    $('link-expired-email').value = ($('auth-email') && $('auth-email').value) || '';
+    $('link-expired-overlay').classList.add('open');
+  }
+  $('link-expired-close').onclick = function () {
+    $('link-expired-overlay').classList.remove('open');
+    shieldGhostClicks();
+  };
+  $('link-expired-resend').onclick = function () {
+    var email = $('link-expired-email').value.trim();
+    if (!email || email.indexOf('@') === -1) { toast('Enter the email you signed up with', '#b91c1c'); $('link-expired-email').focus(); return; }
+    var btn = $('link-expired-resend');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    sb.auth.resend({ type: 'signup', email: email, options: { emailRedirectTo: location.origin + location.pathname } })
+      .then(function (res) {
+        btn.disabled = false; btn.textContent = 'Send a new confirmation email';
+        if (res && res.error) { fail(res.error, 'Could not send a new link'); return; }
+        $('link-expired-overlay').classList.remove('open');
+        $('auth-email').value = email;
+        toast('New confirmation email sent to ' + email + ' — check spam too');
+      }, function (err) {
+        btn.disabled = false; btn.textContent = 'Send a new confirmation email';
+        fail(err, 'Could not send a new link');
+      });
+  };
+
   function applyAuthHash() {
     if (currentUser) return;
     if (/^#\/?signup$/.test(location.hash)) setAuthMode('signup');
@@ -9000,6 +9070,7 @@
     // After the session check, not before: applyAuthHash() no-ops for a
     // signed-in user, and currentUser is only set by the two branches above.
     applyAuthHash();
+    showAuthLinkError();
     // Returning from Stripe checkout (Payment Link after-payment redirect).
     // The webhook that actually flips plan_tier races this redirect and often
     // hasn't landed yet, so the first refreshOrgStatus() in enterApp() can
