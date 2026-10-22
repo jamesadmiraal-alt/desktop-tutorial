@@ -8570,11 +8570,23 @@
         // always calls back, within STATUS_TIMEOUT_MS plus a read-back).
         var label = btn.textContent;
         btn.disabled = true;
-        btn.textContent = 'Saving…';
-        setTakeStatus(t, act.status, 'manual', function () {
-          btn.disabled = false;
-          btn.textContent = label;
-        });
+        var go = function () {
+          btn.textContent = 'Saving…';
+          setTakeStatus(t, act.status, 'manual', function () {
+            btn.disabled = false;
+            btn.textContent = label;
+          });
+        };
+        if (act.status === 'ready_for_export' && t.status === 'in_progress') {
+          btn.textContent = 'Checking…';
+          recentCounterCheck(t, function (ok) {
+            if (ok) { go(); return; }
+            btn.disabled = false;
+            btn.textContent = label;
+          });
+          return;
+        }
+        go();
       };
     }
 
@@ -8802,15 +8814,15 @@
       toast('Mark this stocktake ready for export first', '#b91c1c');
       return;
     }
-    // Is anyone still counting this take right now? A file handed over while
-    // lines are still being written is a file that was wrong before it
-    // downloaded — and ST5 did exactly that, exporting 8·104 while Floor was
-    // mid-count and then marking the take Completed underneath them.
-    //
-    // "Ready for export" is a claim by whoever set it, not a lock, so it is not
-    // enough on its own. This asks the database instead: has anything been
-    // written in the last two minutes?
-    guardAgainstLiveCount(actionsTake, function () { doExport(); });
+    // No "still counting" check here any more (22 Oct, P19). Export only ever
+    // runs on Ready or Completed, and since 20261014_02 the database refuses
+    // EVERY item write on a take that isn't In Progress — nobody can still be
+    // counting it. The old check compared the newest line's server timestamp
+    // with THIS phone's clock, so a phone a few minutes slow (or a line written
+    // just before Mark ready) refused the export with "Someone is still
+    // counting" when nobody was. The question now belongs to Mark ready, where
+    // it can still matter — see recentCounterCheck().
+    doExport();
   }
 
   // How recently a line has to have been touched for the count to be treated as
@@ -8819,6 +8831,42 @@
   // an argument.
   var LIVE_COUNT_WINDOW_MS = 2 * 60 * 1000;
 
+  // Before Mark ready on an In Progress take: has SOMEONE ELSE written a line
+  // in the last LIVE_COUNT_WINDOW_MS? Marking ready locks them out mid-count,
+  // so ask — naming who and how long ago — but never block: the manager
+  // decides. cb(proceed: boolean). A failed or slow check says nothing and
+  // proceeds; a timestamp in the future (this phone's clock is behind) is
+  // treated as "just now", which at worst asks a harmless question.
+  function recentCounterCheck(take, cb) {
+    var done = false;
+    var finish = function (go) { if (!done) { done = true; clearTimeout(timer); cb(go); } };
+    var timer = setTimeout(function () { finish(true); }, 8000);
+    sb.from('stocktake_items').select('barcode,last_scanned,last_scanned_by')
+      .eq('stocktake_id', take.id)
+      .order('last_scanned', { ascending: false }).limit(1)
+      .then(function (res) {
+        if (done) return;
+        var row = !res.error && res.data && res.data[0];
+        if (!row || !row.last_scanned) { finish(true); return; }
+        if (currentUser && row.last_scanned_by === currentUser.id) { finish(true); return; }   // that was me
+        var age = Date.now() - new Date(row.last_scanned).getTime();
+        if (age >= LIVE_COUNT_WINDOW_MS) { finish(true); return; }
+        var ask = function (who) {
+          var secs = Math.max(0, Math.round(age / 1000));
+          var when = secs < 10 ? 'just now' : secs < 90 ? secs + ' seconds ago' : Math.round(secs / 60) + ' minutes ago';
+          clearTimeout(timer);
+          if (done) return;
+          finish(confirm((who || 'Someone') + ' was counting "' + take.name + '" ' + when
+            + ' (last line: ' + row.barcode + ').\n\nMark it ready anyway? Nobody can save to it after that.'));
+        };
+        if (!row.last_scanned_by) { ask(null); return; }
+        if (creatorNames[row.last_scanned_by]) { ask(creatorNames[row.last_scanned_by]); return; }
+        sb.from('profiles').select('full_name').eq('id', row.last_scanned_by).maybeSingle()
+          .then(function (p) { ask(p && p.data && p.data.full_name); }, function () { ask(null); });
+      }, function () { finish(true); });
+  }
+
+  // Kept for reference only: the export-time check removed on 22 Oct (P19).
   function guardAgainstLiveCount(take, proceed) {
     sb.from('stocktake_items').select('last_scanned')
       .eq('stocktake_id', take.id)

@@ -338,6 +338,11 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   22 Oct). Match by id. Deleting goes through `deleteTake()`: `.select('id')` on the DELETE
   (an RLS-filtered delete is a 204 that removed nothing), bounded with a re-check, cache
   rewritten, and `deletedTakeAt` stops a Home load started before the delete from bringing it back.
+- **Export never checks for "someone still counting"** (removed 22 Oct): export only runs on
+  Ready/Completed, which the DB already locks against item writes. The old check compared a
+  server `last_scanned` with the phone's clock, so a slow clock blocked exports with nobody
+  counting. The question lives on **Mark ready** instead (`recentCounterCheck`): someone ELSE
+  wrote a line in the last 2 minutes -> a confirm naming who and when. It never hard-blocks.
 - **Never navigate away from an open take** in `loadTakes()` (late post-login chains did).
   The open take lives in the URL as `#take=<id>` (`replaceState`, no history entries) and is
   reopened after a reload once the fresh list arrives.
