@@ -733,17 +733,16 @@
           <button type="button" class="pw-toggle" data-for="auth-pass2" title="Show password">Show</button>
         </div>
       </div>
-      <!-- Signup only, and pre-ticked by request: opt-out rather than opt-in.
-           Whichever way it is left, handle_new_user() records the actual answer
-           with a timestamp, so the record is of what they submitted rather than
-           what we assumed. The label stays plain and the box stays visible above
-           the button — a pre-ticked box that is also easy to miss is the part
-           that gets a sender blocklisted. Anyone can turn it off later in
-           Account (set_marketing_opt_in), which is what makes opt-out fair. -->
+      <!-- Signup only, and UNTICKED: opt-in (changed 22 Oct 2026 — it was
+           pre-ticked by request until then). Consent has to be something the
+           person did, not something we assumed. handle_new_user() records the
+           actual answer, and stamps marketing_opt_in_at only on a yes, so an
+           untouched box is stored as false with no timestamp. Anyone can
+           change it later in Account (set_marketing_opt_in). -->
       <div id="marketing-row" style="display:none">
         <label class="checkbox-row" style="margin-top:12px">
-          <input type="checkbox" id="auth-marketing" checked>
-          <span>Email me tips and updates about Gantry</span>
+          <input type="checkbox" id="auth-marketing">
+          <span>Send me product news (optional)</span>
         </label>
         <!-- Signup-only, and stated rather than buried: this is the moment the
              terms are being agreed to, so it is the moment they have to be
@@ -900,7 +899,7 @@
         <button id="acct-name-save" class="primary flex">Save name</button>
       </div>
     </div>
-    <!-- The off switch for the pre-ticked signup box. It lives here, in the
+    <!-- The on/off switch for the signup box. It lives here, in the
          personal card, because that is where someone looks for "settings about
          me" — and it has to exist somewhere findable, or the only way to stop
          the email is to mark it as spam. Writes via set_marketing_opt_in()

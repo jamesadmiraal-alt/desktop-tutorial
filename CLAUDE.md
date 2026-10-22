@@ -37,7 +37,8 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   and bypasses policies, so a policy would miss the app's own scan path. The exception
   message is prefixed `Trial limit reached`; `app.html` matches on that prefix to raise
   the upgrade dialog instead of a red toast, so keep the prefix if you reword it.
-- **Marketing consent**: the signup box is **pre-ticked** (opt-out, by request).
+- **Marketing consent**: the signup box is **unticked** — opt-in, "Send me product news
+  (optional)" (changed 22 Oct 2026; it was pre-ticked by request before that).
   `handle_new_user()` records what was actually submitted plus a timestamp.
   `profiles.marketing_opt_in` is NOT in the client-writable column GRANT — the only way
   to change it is `set_marketing_opt_in()`, which is self-only and is what the Account →
