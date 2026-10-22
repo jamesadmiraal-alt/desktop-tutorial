@@ -8161,10 +8161,25 @@
     if (currentView === 'home') renderHome();
   }
 
+  // In a fixed order: first scanned, then barcode (22 Oct, P10). Unordered,
+  // Postgres hands rows back in whatever order is cheapest, and an update
+  // moves a row — so two exports of an unchanged take could list lines
+  // differently, and a diff between them showed changes nobody made. Sorted
+  // here too, so the file never depends on the server honouring .order().
+  // The export's merge keeps first appearance, which this makes stable.
+  function sortForExport(rows) {
+    return (rows || []).slice().sort(function (a, b) {
+      var fa = a.first_scanned || '', fb = b.first_scanned || '';
+      if (fa !== fb) return fa < fb ? -1 : 1;
+      return a.barcode < b.barcode ? -1 : a.barcode > b.barcode ? 1 : 0;
+    });
+  }
   function fetchTakeItems(takeId, cb) {
-    sb.from('stocktake_items').select('*').eq('stocktake_id', takeId).then(function (res) {
+    sb.from('stocktake_items').select('*').eq('stocktake_id', takeId)
+      .order('first_scanned', { ascending: true }).order('barcode', { ascending: true })
+      .then(function (res) {
       if (res.error) { fail(res.error, 'Could not load items'); return; }
-      cb(res.data);
+      cb(sortForExport(res.data));
     }, function (err) {
       // Without this a dropped connection rejects into nothing: no toast, no
       // download, and an operator left assuming the export worked.
