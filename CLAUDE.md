@@ -263,6 +263,25 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - Quantity precision is 2 dp in THREE places — the numpad's input guard, `QTY_DP` in
   app.html, and `qty numeric(12,2)` in schema.sql. Anything finer needs all three.
 
+## Receiving invoices (coming soon) — built behind a wall
+
+- **Its own page, `receiving.html`,** like admin.html, so it cannot affect the app, stocktakes or
+  exports. Open only to owners/managers of an org with `organisations.receiving_enabled = true`,
+  which is NOT client-writable — set it by hand in SQL, per org. Everyone else sees "Coming soon".
+- **Read the flag on its own, and treat a failed read as off** (receiving.html, and
+  `loadReceivingCard()` on app.html's Account). Never add `receiving_enabled` to
+  `refreshOrgStatus()`'s org query: a missing column there takes the whole org refresh down.
+- **Phase 1 is the product master**: `product-import.js` (pure: CSV parse, column guessing,
+  validation — `node scripts/test-product-import.js`) feeds `start_product_import` ->
+  `import_products_batch` (≤1000 per call; the page sends 500) -> `finish_product_import`.
+  Barcodes are stored as imported and matched on `barcode_key()` (digits -> 14, GTIN-14),
+  which exists twice (SQL + `barcodeKey()`) and the test checks they agree. A product's
+  barcode set is replaced by each import's; products are never deleted, only made inactive.
+- **Invoices will come from AccountsFlow** (both H&L and Bepoz venues use it), not screen
+  capture. Phases 2+ (invoice inbox, receiving in the app, reconciliation) are not built yet.
+  `ctx.products` in export-engine.js is still NOT fed from the product master — every export
+  is unchanged, and wiring it is a separate decision.
+
 ## Network truthfulness (14 Oct 2026 stress test — don't regress these)
 
 - **A lost reply is UNKNOWN, never "failed".** Every item write carries a request id

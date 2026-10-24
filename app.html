@@ -1000,6 +1000,18 @@
       <button id="acct-export-request" class="link-btn" style="margin-top:8px">My system needs something the builder can't do</button>
     </div>
   </div>
+  <!-- ===== Receiving invoices (coming soon) =====
+       A feature being built behind a wall: receiving.html, its own page, open
+       only when organisations.receiving_enabled is set by hand (20261024_01).
+       Everyone else sees "Coming soon". The flag is read on its own when
+       Account opens — never added to refreshOrgStatus()'s org query, where a
+       missing column (migration not yet run) would take the whole org refresh
+       down with it. A failed read is "coming soon". -->
+  <div class="acct-card" id="acct-receiving-card">
+    <h3>Receiving invoices <span class="plan-badge free" id="acct-receiving-badge" style="margin-left:6px">Coming soon</span></h3>
+    <div class="plan-desc">Scan deliveries as they arrive and check them against the supplier invoice before it’s received in your POS.</div>
+    <button id="acct-receiving-open" class="acct-nav-btn" style="display:none;margin-top:10px">Open receiving</button>
+  </div>
   <div class="acct-card">
     <h3>Venue / business</h3>
     <div class="acct-email" id="acct-org-name"></div>
@@ -4396,12 +4408,34 @@
     hideImportFeedback();
   };
 
+  // ---- Receiving invoices (coming soon) ----
+  function loadReceivingCard() {
+    $('acct-receiving-open').style.display = 'none';
+    $('acct-receiving-badge').textContent = 'Coming soon';
+    if (!currentOrg || !currentOrg.id) return;
+    var canManage = currentOrg.role === 'owner' || currentOrg.role === 'manager';
+    var epoch = sessionEpoch;
+    try {
+      sb.from('organisations').select('receiving_enabled').eq('id', currentOrg.id).maybeSingle().then(function (res) {
+        if (epoch !== sessionEpoch) return;
+        var open = !res.error && res.data && res.data.receiving_enabled === true;
+        if (!open) return;
+        $('acct-receiving-badge').textContent = 'Early access';
+        // Phase 1 is setting up the product list — owner/manager work.
+        $('acct-receiving-open').style.display = canManage ? '' : 'none';
+      }, function () { /* stays "coming soon" */ });
+    } catch (e) { /* stays "coming soon" */ }
+  }
+  // Opened like admin.html: a page of its own, outside the native bundle.
+  $('acct-receiving-open').onclick = function () { openExternal(SITE_URL + 'receiving.html'); };
+
   function openAccount() {
     $('acct-email').textContent = currentUser.email;
     renderAccountName();
     renderMarketingPref();
     renderScanPrefs();
     loadAccountExportTemplates();
+    loadReceivingCard();
     renderOrgAccountInfo();
     renderPlan();
     renderUpgradePrices();

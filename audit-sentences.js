@@ -58,6 +58,14 @@ window.GANTRY_AUDIT = (function () {
     'location.renamed': function (r) { return r.actor_label + ' renamed location "' + r.before.name + '" to "' + r.after.name + '"'; },
     'location.moved': function (r) { return r.actor_label + ' moved location "' + r.target_label + '" to a different venue'; },
     'location.removed': function (r) { return r.actor_label + ' removed location "' + r.target_label + '"'; },
+    // Receiving invoices (20261024_01): a POS product list imported in receiving.html.
+    'products.imported': function (r) {
+      var a = r.after || {};
+      var pos = { hl: 'H&L', bepoz: 'Bepoz', other: 'a POS' }[a.pos_system] || 'a POS';
+      return r.actor_label + ' imported a product list from ' + pos + (r.target_label ? ' ("' + r.target_label + '")' : '')
+        + ': ' + (a.created || 0) + ' new, ' + (a.updated || 0) + ' updated'
+        + (a.deactivated ? ', ' + a.deactivated + ' marked inactive' : '');
+    },
     'location.archived': function (r) {
       var s = r.actor_label + ' archived location "' + r.target_label + '"';
       if (r.after && hasNum(r.after.stocktakes_affected)) {

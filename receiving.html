@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#111827">
+<title>Gantry Receiving</title>
+<link rel="icon" type="image/svg+xml" href="icons/favicon.svg">
+<!--
+  Receiving invoices — built behind a wall.
+
+  Its own page, like admin.html, so nothing here can affect the app, the
+  stocktakes or the exports. Open only to owners and managers of an
+  organisation with organisations.receiving_enabled = true, which is set by
+  hand in the SQL editor (20261024_01). Everyone else sees "coming soon".
+  A failed read of the flag (e.g. the migration not yet applied) is "off".
+
+  Phase 1 (this page today): the product master — import a POS product
+  export (H&L, Bepoz, any CSV) so deliveries can be matched by barcode and
+  product code. Deliveries and invoice matching follow in later phases.
+-->
+<script>
+  // Lucide glyph as an HTML string, for icons set from JS
+  const ICO = (n, cls) => '<span class="ico' + (cls ? ' ' + cls : '') + '" style="--i:url(icons/' + n + '.svg)"></span>';
+// Same no-FOUC pattern as app.html / admin.html.
+(function () {
+  var stored = null;
+  try { stored = localStorage.getItem('barscan-theme'); } catch (e) {}
+  var theme = stored || ((window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', theme);
+})();
+</script>
+<script src="supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="product-import.js"></script>
+<link rel="stylesheet" href="styles.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header {
+    padding: 14px 20px; display: flex; align-items: center; justify-content: space-between;
+    background: var(--surface); position: sticky; top: 0; z-index: 10; gap: 10px;
+  }
+  header h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; }
+  header .right { display: flex; align-items: center; gap: 8px; }
+  #theme-toggle { font-size: 1rem; padding: 6px 10px; }
+  .brand-mark { flex: none; margin-right: 8px; vertical-align: -4px; }
+  .header-link {
+    display: inline-flex; align-items: center; border-radius: 10px;
+    font-size: 0.9rem; font-weight: 600; padding: 8px 12px; text-decoration: none;
+    color: var(--btn-neutral-text); background: var(--btn-neutral-bg);
+  }
+  .header-link:active { opacity: 0.8; }
+
+  /* Desk work, like admin.html: wider than the app's phone column. */
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 20px 60px; }
+  .card { background: var(--surface); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 14px; }
+  .hint { color: var(--text-body); font-size: 0.85rem; line-height: 1.45; margin-bottom: 12px; }
+  .muted { color: var(--text-dim); }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 700;
+    background: var(--btn-neutral-bg); color: var(--text-body); vertical-align: middle; }
+  .badge.soon { background: var(--warning); color: #111827; }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; overflow-x: auto; border-bottom: 1px solid var(--border); }
+  .tabs button { flex: none; background: transparent; color: var(--text-dim); font-size: 0.9rem; font-weight: 600;
+    padding: 10px 14px; border-radius: 0; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .tabs button:disabled { opacity: 0.55; cursor: default; }
+  .tabs .soon-tag { font-size: 0.68rem; font-weight: 700; margin-left: 6px; color: var(--warning); text-transform: uppercase; }
+
+  button {
+    border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
+    padding: 11px 14px; cursor: pointer; color: var(--btn-neutral-text); background: var(--btn-neutral-bg);
+  }
+  button:active { opacity: 0.8; }
+  button.primary { background: var(--accent); color: var(--on-accent); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  input[type="text"], input[type="email"], input[type="password"], input[type="search"], select {
+    border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg);
+    color: var(--text); padding: 10px 12px; font-size: 0.95rem; width: 100%;
+  }
+  input[type="file"] { font-size: 0.9rem; color: var(--text-body); }
+  label { display: block; font-size: 0.8rem; color: var(--text-dim); margin: 10px 0 4px; }
+  .check-row { display: flex; align-items: flex-start; gap: 8px; font-size: 0.9rem; color: var(--text-body); margin: 10px 0 0; cursor: pointer; }
+  .check-row input { margin-top: 3px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .row > .f { flex: 1 1 220px; }
+
+  /* Wide content scrolls in its own box, never the page (CLAUDE.md). */
+  .scroll { overflow-x: auto; }
+  table.grid { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  table.grid th, table.grid td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.grid th { color: var(--text-dim); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+  table.grid td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+  table.grid select { padding: 6px 8px; font-size: 0.85rem; min-width: 200px; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 6px; font-size: 0.75rem; margin: 1px 4px 1px 0;
+    background: var(--bg); border: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chip.carton { border-color: var(--accent); }
+  .inactive { opacity: 0.55; }
+
+  .stats { display: flex; gap: 18px; flex-wrap: wrap; margin: 6px 0 10px; font-size: 0.9rem; }
+  .stats b { font-size: 1.15rem; }
+  .problems { margin: 6px 0 12px; padding-left: 18px; font-size: 0.83rem; line-height: 1.5; }
+  .problems li.error { color: var(--danger); }
+  .problems li.warning { color: var(--warning); }
+  .progress { height: 8px; background: var(--bg); border-radius: 999px; overflow: hidden; margin: 10px 0 4px; }
+  .progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+
+  .auth-card { background: var(--surface); border-radius: 16px; padding: 24px 20px; max-width: 380px; margin: 60px auto; }
+  .auth-card .logo { text-align: center; margin-bottom: 4px; }
+  .auth-card h2 { text-align: center; font-size: 1.3rem; margin-bottom: 2px; }
+  .auth-card .sub { text-align: center; color: var(--text-dim); font-size: 0.85rem; margin-bottom: 18px; }
+
+  #toast {
+    position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+    background: var(--success); color: var(--on-accent); padding: 10px 18px; border-radius: 14px;
+    font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 60;
+    max-width: min(92vw, 30rem); line-height: 1.35; text-align: center; overflow-wrap: break-word;
+  }
+  #toast.show { opacity: 1; }
+  .ico{display:inline-block;width:1em;height:1em;vertical-align:-0.125em;background:currentColor;-webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>
+    <svg class="brand-mark" viewBox="0 0 40 40" width="20" height="20" aria-hidden="true">
+      <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+      <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+      <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+      <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+      <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+    </svg>
+    Gantry Receiving
+  </h1>
+  <div class="right">
+    <a href="app.html" class="header-link">‹ Back to app</a>
+    <button id="theme-toggle"><span class="ico" style="--i:url(icons/moon.svg)"></span></button>
+    <button id="logout-btn" style="display:none">Log out</button>
+  </div>
+</header>
+
+<div id="loading-view" class="wrap">
+  <div class="auth-card" style="text-align:center"><p class="hint" style="margin:0">Checking your access…</p></div>
+</div>
+
+<div id="login-view" class="wrap" style="display:none">
+  <div class="auth-card">
+    <div class="logo">
+      <svg viewBox="0 0 40 40" width="36" height="36" aria-hidden="true">
+        <rect x="0" y="2" width="40" height="6" rx="2" fill="currentColor"/>
+        <rect x="6" y="17" width="6" height="11" rx="2" fill="currentColor"/>
+        <rect x="17" y="12" width="6" height="16" rx="2" fill="#fbbf24"/>
+        <rect x="28" y="20" width="6" height="8" rx="2" fill="currentColor"/>
+        <rect x="0" y="32" width="40" height="6" rx="2" fill="currentColor"/>
+      </svg>
+    </div>
+    <h2>Gantry Receiving</h2>
+    <div class="sub">Sign in with your owner or manager account</div>
+    <label for="login-email">Email</label>
+    <input id="login-email" type="email" autocomplete="email" autocapitalize="none" inputmode="email">
+    <label for="login-pass">Password</label>
+    <input id="login-pass" type="password" autocomplete="current-password">
+    <button id="login-submit" class="primary" style="margin-top:16px;width:100%">Log in</button>
+  </div>
+</div>
+
+<!-- The wall. Shown to anyone signed in whose organisation doesn't have it yet,
+     and to staff (Phase 1 is product import, which is owner/manager work). -->
+<div id="denied-view" class="wrap" style="display:none">
+  <div class="card" style="max-width:480px;margin:60px auto;text-align:center">
+    <div style="margin-bottom:10px"><span class="badge soon">Coming soon</span></div>
+    <h2 id="denied-title" style="text-transform:none;font-size:1.15rem;color:var(--text);letter-spacing:0;margin-bottom:10px">Receiving invoices</h2>
+    <p class="hint" id="denied-text" style="margin-bottom:0">Scan deliveries as they arrive and check them against the supplier invoice before it’s received in your POS. We’re piloting it with a few venues first.</p>
+  </div>
+</div>
+
+<div id="main-view" class="wrap" style="display:none">
+  <div class="card">
+    <h2>Receiving invoices <span class="badge soon" style="margin-left:6px;text-transform:none;letter-spacing:0">Early access</span></h2>
+    <p class="hint" style="margin-bottom:0"><b id="org-name"></b> — step 1 is your <b>product list</b>: import it from your POS so
+      deliveries can be matched by barcode, carton and product code. Receiving deliveries and checking them against
+      AccountsFlow invoices come next.</p>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true">Products</button>
+    <button role="tab" aria-selected="false" disabled>Deliveries<span class="soon-tag">Soon</span></button>
+    <button role="tab" aria-selected="false" disabled>Invoices<span class="soon-tag">Soon</span></button>
+  </div>
+
+  <!-- ===== Import ===== -->
+  <div class="card">
+    <h2>Import a product list</h2>
+    <p class="hint">Export your product list from your POS as a CSV file, then choose it here. You’ll see how each
+      column will be read before anything is saved. Re-importing updates what’s there — nothing is deleted.</p>
+    <div class="row">
+      <div class="f">
+        <label for="imp-pos">From</label>
+        <select id="imp-pos">
+          <option value="hl">H&amp;L</option>
+          <option value="bepoz">Bepoz</option>
+          <option value="other">Other POS / spreadsheet</option>
+        </select>
+      </div>
+      <div class="f">
+        <label for="imp-file">CSV file</label>
+        <input id="imp-file" type="file" accept=".csv,.txt,text/csv">
+      </div>
+    </div>
+    <label class="check-row"><input type="checkbox" id="imp-header" checked> <span>The first row is column headings</span></label>
+
+    <div id="imp-mapping" style="display:none;margin-top:16px">
+      <h2 style="margin-bottom:6px">How each column will be read</h2>
+      <p class="hint" id="imp-mapping-note">We’ve guessed from the headings. Change any that are wrong — only these
+        five things are used; every other column is ignored.</p>
+      <div class="scroll"><table class="grid" id="imp-map-table"></table></div>
+
+      <div id="imp-check" style="margin-top:16px"></div>
+
+      <label class="check-row"><input type="checkbox" id="imp-deactivate">
+        <span>This file is my POS’s <b>full</b> product list — mark products that aren’t in it as inactive
+          <span class="muted">(they’re kept, never deleted)</span></span></label>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button id="imp-go" class="primary" disabled>Import</button>
+        <span class="muted" id="imp-go-note" style="font-size:0.85rem"></span>
+      </div>
+      <div id="imp-progress-wrap" style="display:none">
+        <div class="progress"><div id="imp-progress"></div></div>
+        <div class="muted" id="imp-progress-text" style="font-size:0.8rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Products ===== -->
+  <div class="card">
+    <h2>Products <span class="muted" id="prod-count" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <input id="prod-search" type="search" placeholder="Search by description, product code or barcode">
+    <div class="scroll" style="margin-top:10px"><table class="grid" id="prod-table"></table></div>
+    <p class="muted" id="prod-empty" style="font-size:0.85rem;margin-top:8px"></p>
+  </div>
+
+  <!-- ===== History ===== -->
+  <div class="card">
+    <h2>Recent imports</h2>
+    <div class="scroll"><table class="grid" id="hist-table"></table></div>
+    <p class="muted" id="hist-empty" style="font-size:0.85rem"></p>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var PI = window.GANTRY_PRODUCT_IMPORT;
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem('barscan-theme', theme); } catch (e) {}
+    var isLight = theme === 'light';
+    $('theme-toggle').innerHTML = isLight ? ICO('sun') : ICO('moon');
+    $('theme-toggle').setAttribute('aria-label', isLight ? 'Switch to dark mode' : 'Switch to light mode');
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', isLight ? '#ffffff' : '#111827');
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');
+  $('theme-toggle').onclick = function () {
+    applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+  };
+
+  var cfg = window.BARSCAN_CONFIG || {};
+  var configured = cfg.supabaseUrl && cfg.supabaseUrl.indexOf('YOUR-PROJECT') === -1 &&
+                   cfg.supabaseAnonKey && cfg.supabaseAnonKey.indexOf('YOUR-') === -1;
+  if (!configured) {
+    document.body.innerHTML = '<div class="wrap"><div class="card">This copy of Gantry isn\'t connected to a Supabase project yet — see config.js.</div></div>';
+    return;
+  }
+  // Default (localStorage) session, like admin.html: shares the app's session
+  // when the operator signed in there with "Remember me" on.
+  var sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  var currentOrg = null;   // { id, name, role }
+
+  function toast(msg, bg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.style.background = bg || '#059669';
+    t.classList.add('show');
+    clearTimeout(t._h);
+    t._h = setTimeout(function () { t.classList.remove('show'); }, String(msg).length > 60 ? 6000 : 2400);
+  }
+  function fail(error, what) {
+    console.error(what || 'Request failed', error);
+    toast((what ? what + ': ' : '') + (error && error.message ? error.message : 'request failed'), '#b91c1c');
+  }
+  function showView(name) {
+    ['loading-view', 'login-view', 'denied-view', 'main-view'].forEach(function (id) {
+      $(id).style.display = id === name + '-view' ? '' : 'none';
+    });
+    $('logout-btn').style.display = (name === 'login' || name === 'loading') ? 'none' : '';
+  }
+  function td(text, cls) {
+    var c = document.createElement('td');
+    if (cls) c.className = cls;
+    c.textContent = text == null ? '' : String(text);
+    return c;
+  }
+  function th(text) { var c = document.createElement('th'); c.textContent = text; return c; }
+  var ADL = 'Australia/Adelaide';
+  function adelaide(ts) {
+    if (!ts) return '';
+    try {
+      return new Intl.DateTimeFormat('en-AU', { timeZone: ADL, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ts));
+    } catch (e) { return new Date(ts).toLocaleString(); }
+  }
+  var POS_LABELS = { hl: 'H&L', bepoz: 'Bepoz', other: 'Other' };
+
+  // ---- Access: signed in, owner/manager, and the wall open ------------------
+  function wall(title, text) {
+    $('denied-title').textContent = title;
+    $('denied-text').textContent = text;
+    showView('denied');
+  }
+  function checkAccessAndEnter(user) {
+    sb.from('memberships').select('role, organisations(id, name)').eq('user_id', user.id).maybeSingle()
+      .then(function (res) {
+        var role = res.data && res.data.role;
+        var org = res.data && res.data.organisations;
+        if (res.error || !org) { wall('Receiving invoices', 'Sign in with an account that belongs to a venue or business.'); return; }
+        // The flag, read on its own: a database without the migration (no
+        // column) must read as "not yet", never as an error page.
+        sb.from('organisations').select('receiving_enabled').eq('id', org.id).maybeSingle().then(function (f) {
+          var open = !f.error && f.data && f.data.receiving_enabled === true;
+          if (!open) {
+            wall('Receiving invoices', 'Scan deliveries as they arrive and check them against the supplier invoice before it’s received in your POS. We’re piloting it with a few venues first — it’ll appear here when it’s ready for ' + org.name + '.');
+            return;
+          }
+          if (role !== 'owner' && role !== 'manager') {
+            wall('Receiving invoices', 'Setting this up is for owners and managers. You’ll be able to receive deliveries in the app once it’s ready.');
+            return;
+          }
+          currentOrg = { id: org.id, name: org.name, role: role };
+          $('org-name').textContent = org.name;
+          showView('main');
+          loadProducts('');
+          loadHistory();
+        }, function () { wall('Receiving invoices', 'Couldn’t check access — refresh to try again.'); });
+      }, function (err) { fail(err, 'Could not check your access'); });
+  }
+
+  $('login-submit').onclick = function () {
+    var email = $('login-email').value.trim(), pw = $('login-pass').value;
+    if (!email || !pw) { toast('Enter an email and password', '#b91c1c'); return; }
+    $('login-submit').disabled = true;
+    sb.auth.signInWithPassword({ email: email, password: pw }).then(function (res) {
+      $('login-submit').disabled = false;
+      if (res.error) { fail(res.error, 'Login failed'); return; }
+      $('login-pass').value = '';
+      showView('loading');
+      checkAccessAndEnter(res.data.session.user);
+    });
+  };
+  $('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('login-submit').onclick(); });
+  $('logout-btn').onclick = function () {
+    // Local only: signing out here must not end the same login in the app.
+    sb.auth.signOut({ scope: 'local' }).then(function () {
+      currentOrg = null;
+      $('login-email').value = ''; $('login-pass').value = '';
+      showView('login');
+    });
+  };
+
+  // ---- Import -----------------------------------------------------------------
+  var imp = { fileName: '', rows: null, headers: [], roles: [], built: null, running: false };
+
+  function headerNames() {
+    var first = imp.rows[0] || [];
+    var hasHeader = $('imp-header').checked;
+    return first.map(function (h, i) { return hasHeader ? (String(h).trim() || 'Column ' + (i + 1)) : 'Column ' + (i + 1); });
+  }
+
+  $('imp-file').onchange = function () {
+    var file = $('imp-file').files && $('imp-file').files[0];
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) { toast('That file is over 25 MB — export just the product list', '#b91c1c'); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed = PI.parseCsv(reader.result);
+      if (!parsed.rows.length) { toast('That file is empty', '#b91c1c'); return; }
+      imp.fileName = file.name;
+      imp.rows = parsed.rows;
+      prepareMapping();
+    };
+    reader.onerror = function () { toast('Could not read that file', '#b91c1c'); };
+    reader.readAsText(file);
+  };
+  $('imp-header').onchange = function () { if (imp.rows) prepareMapping(); };
+  $('imp-pos').onchange = function () { if (imp.rows) prepareMapping(); };
+
+  // A mapping remembered from this POS's last import, when the headers match.
+  function prepareMapping() {
+    imp.headers = headerNames();
+    imp.roles = $('imp-header').checked ? PI.guessMapping(imp.headers) : imp.headers.map(function () { return 'ignore'; });
+    $('imp-mapping-note').textContent = 'We’ve guessed from the headings. Change any that are wrong — only these five things are used; every other column is ignored.';
+    renderMapping(); checkImport();
+    if (!$('imp-header').checked) return;
+    var pos = $('imp-pos').value;
+    sb.from('product_imports').select('mapping').eq('org_id', currentOrg.id).eq('pos_system', pos).eq('status', 'done')
+      .order('started_at', { ascending: false }).limit(1).then(function (res) {
+        var saved = !res.error && res.data && res.data[0] && res.data[0].mapping;
+        var roles = PI.mappingFromSaved(imp.headers, saved);
+        if (!roles) return;
+        imp.roles = roles;
+        $('imp-mapping-note').textContent = 'Read the same way as your last ' + POS_LABELS[pos] + ' import. Change any that are wrong.';
+        renderMapping(); checkImport();
+      });
+  }
+
+  function renderMapping() {
+    $('imp-mapping').style.display = '';
+    var table = $('imp-map-table');
+    table.innerHTML = '';
+    var head = document.createElement('tr');
+    [th('Column'), th('Example'), th('Use as')].forEach(function (c) { head.appendChild(c); });
+    table.appendChild(head);
+    var example = imp.rows[$('imp-header').checked ? 1 : 0] || [];
+    imp.headers.forEach(function (h, i) {
+      var tr = document.createElement('tr');
+      tr.appendChild(td(h));
+      tr.appendChild(td(example[i] == null ? '' : String(example[i]).slice(0, 60), 'mono'));
+      var cell = document.createElement('td');
+      var sel = document.createElement('select');
+      PI.ROLES.forEach(function (r) {
+        var o = document.createElement('option');
+        o.value = r; o.textContent = PI.ROLE_LABELS[r];
+        sel.appendChild(o);
+      });
+      sel.value = imp.roles[i] || 'ignore';
+      sel.onchange = function () {
+        // One code, one description, one pack size: choosing one elsewhere
+        // releases the previous column rather than leaving two.
+        if (['pos_code', 'description', 'pack_size'].indexOf(sel.value) !== -1) {
+          imp.roles = imp.roles.map(function (r, j) { return (j !== i && r === sel.value) ? 'ignore' : r; });
+        }
+        imp.roles[i] = sel.value;
+        renderMapping(); checkImport();
+      };
+      cell.appendChild(sel);
+      tr.appendChild(cell);
+      table.appendChild(tr);
+    });
+  }
+
+  function checkImport() {
+    var out = PI.buildProducts(imp.rows, imp.roles, { hasHeader: $('imp-header').checked });
+    imp.built = out;
+    var box = $('imp-check');
+    box.innerHTML = '';
+    var stats = document.createElement('div');
+    stats.className = 'stats';
+    [['Products', out.stats.products], ['Barcodes', out.stats.barcodes], ['Rows skipped', out.stats.skipped],
+     ['Warnings', out.problems.filter(function (p) { return p.level === 'warning'; }).length]].forEach(function (s) {
+      var d = document.createElement('div');
+      var b = document.createElement('b'); b.textContent = s[1];
+      d.appendChild(b); d.appendChild(document.createTextNode(' ' + s[0].toLowerCase()));
+      stats.appendChild(d);
+    });
+    box.appendChild(stats);
+    if (out.problems.length) {
+      var ul = document.createElement('ul');
+      ul.className = 'problems';
+      out.problems.slice(0, 20).forEach(function (p) {
+        var li = document.createElement('li');
+        li.className = p.level;
+        li.textContent = (p.row ? 'Row ' + p.row + ': ' : '') + p.message;
+        ul.appendChild(li);
+      });
+      if (out.problems.length > 20) {
+        var more = document.createElement('li');
+        more.textContent = '…and ' + (out.problems.length - 20) + ' more';
+        ul.appendChild(more);
+      }
+      box.appendChild(ul);
+    }
+    if (out.products.length) {
+      var h = document.createElement('div');
+      h.className = 'muted'; h.style.fontSize = '0.8rem'; h.style.margin = '4px 0';
+      h.textContent = 'First ' + Math.min(5, out.products.length) + ' as they’ll be saved:';
+      box.appendChild(h);
+      box.appendChild(productTable(out.products.slice(0, 5)));
+    }
+    var ready = out.products.length > 0 && !imp.running;
+    $('imp-go').disabled = !ready;
+    $('imp-go-note').textContent = ready
+      ? out.products.length + ' product' + (out.products.length === 1 ? '' : 's') + ' to ' + POS_LABELS[$('imp-pos').value] + ' — ' + imp.fileName
+      : (imp.roles.indexOf('pos_code') === -1 ? 'Choose which column is the product code.' : 'Nothing importable yet.');
+  }
+
+  // Shared by the preview and the product list: code, description, pack, barcodes.
+  function productTable(list) {
+    var wrap = document.createElement('div');
+    wrap.className = 'scroll';
+    var table = document.createElement('table');
+    table.className = 'grid';
+    var head = document.createElement('tr');
+    [th('Code'), th('Description'), th('Pack'), th('Barcodes')].forEach(function (c) { head.appendChild(c); });
+    table.appendChild(head);
+    list.forEach(function (p) { table.appendChild(productRow(p)); });
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function productRow(p) {
+    var tr = document.createElement('tr');
+    if (p.active === false) tr.className = 'inactive';
+    tr.appendChild(td(p.pos_code, 'mono'));
+    tr.appendChild(td((p.description || '') + (p.active === false ? ' (inactive)' : '')));
+    tr.appendChild(td(p.pack_size ? p.pack_size : '—'));
+    var cell = document.createElement('td');
+    (p.barcodes || p.product_barcodes || []).forEach(function (b) {
+      var chip = document.createElement('span');
+      chip.className = 'chip' + (b.kind === 'carton' ? ' carton' : '');
+      chip.textContent = b.barcode + (b.kind === 'carton' ? ' · ctn ' + b.units : '');
+      chip.title = b.kind === 'carton' ? 'Carton: one scan is ' + b.units + ' units' : 'Single unit';
+      cell.appendChild(chip);
+    });
+    if (!cell.childNodes.length) cell.textContent = '—';
+    tr.appendChild(cell);
+    return tr;
+  }
+
+  $('imp-go').onclick = function () {
+    if (imp.running || !imp.built || !imp.built.products.length) return;
+    var pos = $('imp-pos').value;
+    var deactivate = $('imp-deactivate').checked;
+    if (deactivate && !confirm('Mark every ' + POS_LABELS[pos] + ' product that isn’t in ' + imp.fileName
+        + ' as inactive?\n\nOnly do this when the file is your full product list. Inactive products are kept, not deleted.')) return;
+    imp.running = true;
+    $('imp-go').disabled = true;
+    $('imp-go').textContent = 'Importing…';
+    $('imp-progress-wrap').style.display = '';
+    var batches = PI.chunk(imp.built.products, 500);
+    var done = 0, totals = { created: 0, updated: 0, barcodes: 0, moved: 0 };
+    var finish = function (ok) {
+      imp.running = false;
+      $('imp-go').textContent = 'Import';
+      checkImport();
+      if (!ok) return;
+      loadProducts($('prod-search').value.trim());
+      loadHistory();
+    };
+    var progress = function () {
+      $('imp-progress').style.width = Math.round(100 * done / batches.length) + '%';
+      $('imp-progress-text').textContent = done + ' of ' + batches.length + ' batches · '
+        + (totals.created + totals.updated) + ' products saved';
+    };
+    progress();
+    sb.rpc('start_product_import', { p_pos_system: pos, p_file_name: imp.fileName,
+                                     p_mapping: PI.savedFromMapping(imp.headers, imp.roles) })
+      .then(function (res) {
+        if (res.error) { fail(res.error, 'Could not start the import'); finish(false); return; }
+        var importId = res.data;
+        (function next() {
+          if (done === batches.length) {
+            sb.rpc('finish_product_import', { p_import_id: importId, p_deactivate_missing: deactivate }).then(function (f) {
+              if (f.error) { fail(f.error, 'Imported, but could not finish'); finish(true); return; }
+              var d = f.data || {};
+              toast('Imported ' + imp.fileName + ': ' + (d.products_created || 0) + ' new, ' + (d.products_updated || 0) + ' updated'
+                + (d.products_deactivated ? ', ' + d.products_deactivated + ' marked inactive' : '') + '.');
+              $('imp-progress-text').textContent = 'Done — ' + (d.products_created || 0) + ' new, ' + (d.products_updated || 0)
+                + ' updated, ' + (d.barcodes_saved || 0) + ' barcodes' + (d.barcodes_moved ? ' (' + d.barcodes_moved + ' moved to another product)' : '')
+                + (d.products_deactivated ? ', ' + d.products_deactivated + ' marked inactive' : '') + '.';
+              finish(true);
+            }, function (err) { fail(err, 'Imported, but could not finish'); finish(true); });
+            return;
+          }
+          sb.rpc('import_products_batch', { p_import_id: importId, p_rows: batches[done] }).then(function (b) {
+            if (b.error) {
+              fail(b.error, 'Import stopped at batch ' + (done + 1) + ' of ' + batches.length);
+              $('imp-progress-text').textContent = 'Stopped after ' + done + ' of ' + batches.length
+                + ' batches. What was saved stays saved — import the file again to finish.';
+              finish(true);
+              return;
+            }
+            var t = b.data || {};
+            totals.created += t.created || 0; totals.updated += t.updated || 0;
+            totals.barcodes += t.barcodes || 0; totals.moved += t.moved || 0;
+            done++;
+            progress();
+            next();
+          }, function (err) {
+            fail(err, 'Import stopped at batch ' + (done + 1));
+            finish(true);
+          });
+        })();
+      }, function (err) { fail(err, 'Could not start the import'); finish(false); });
+  };
+
+  // ---- Product list ------------------------------------------------------------
+  var searchTimer = null;
+  $('prod-search').addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    var q = $('prod-search').value.trim();
+    searchTimer = setTimeout(function () { loadProducts(q); }, 250);
+  });
+
+  var productsToken = 0;
+  function loadProducts(q) {
+    var token = ++productsToken;
+    sb.from('products').select('id', { count: 'exact', head: true }).eq('org_id', currentOrg.id).eq('active', true)
+      .then(function (res) {
+        if (!res.error) $('prod-count').textContent = '· ' + (res.count || 0) + ' active';
+      });
+    var cols = 'id, pos_system, pos_code, description, pack_size, active, product_barcodes(barcode, kind, units)';
+    var show = function (rows, err) {
+      if (token !== productsToken) return;
+      var table = $('prod-table');
+      table.innerHTML = '';
+      if (err) { $('prod-empty').textContent = 'Couldn’t load products — refresh to try again.'; return; }
+      $('prod-empty').textContent = rows.length ? (rows.length === 50 ? 'Showing the first 50 — search to narrow it down.' : '')
+        : (q ? 'No products match “' + q + '”.' : 'No products yet — import your POS product list above.');
+      if (!rows.length) return;
+      var head = document.createElement('tr');
+      [th('Code'), th('Description'), th('Pack'), th('Barcodes')].forEach(function (c) { head.appendChild(c); });
+      table.appendChild(head);
+      rows.forEach(function (p) { table.appendChild(productRow(p)); });
+    };
+    // A barcode, in any of its forms, is looked up by its key.
+    if (/^[0-9]{6,14}$/.test(q)) {
+      sb.from('product_barcodes').select('product_id').eq('org_id', currentOrg.id).eq('barcode_key', PI.barcodeKey(q)).then(function (b) {
+        if (b.error) { show([], b.error); return; }
+        var ids = (b.data || []).map(function (x) { return x.product_id; });
+        if (!ids.length) {
+          sb.from('products').select(cols).eq('org_id', currentOrg.id).ilike('pos_code', q + '%').limit(50)
+            .then(function (r) { show(r.data || [], r.error); });
+          return;
+        }
+        sb.from('products').select(cols).in('id', ids).then(function (r) { show(r.data || [], r.error); });
+      });
+      return;
+    }
+    var query = sb.from('products').select(cols).eq('org_id', currentOrg.id);
+    if (q) {
+      var safe = q.replace(/[%,()]/g, ' ').trim();
+      query = query.or('description.ilike.%' + safe + '%,pos_code.ilike.' + safe + '%');
+    }
+    query.order('active', { ascending: false }).order('description', { ascending: true }).limit(50)
+      .then(function (r) { show(r.data || [], r.error); }, function (e) { show([], e); });
+  }
+
+  function loadHistory() {
+    sb.from('product_imports').select('file_name, pos_system, status, rows_total, products_created, products_updated, products_deactivated, started_at, finished_at')
+      .eq('org_id', currentOrg.id).order('started_at', { ascending: false }).limit(5)
+      .then(function (res) {
+        var table = $('hist-table');
+        table.innerHTML = '';
+        var rows = (!res.error && res.data) || [];
+        $('hist-empty').textContent = res.error ? 'Couldn’t load the import history.' : (rows.length ? '' : 'No imports yet.');
+        if (!rows.length) return;
+        var head = document.createElement('tr');
+        [th('When (Adelaide)'), th('File'), th('From'), th('New'), th('Updated'), th('Inactive'), th('')].forEach(function (c) { head.appendChild(c); });
+        table.appendChild(head);
+        rows.forEach(function (r) {
+          var tr = document.createElement('tr');
+          tr.appendChild(td(adelaide(r.finished_at || r.started_at)));
+          tr.appendChild(td(r.file_name || ''));
+          tr.appendChild(td(POS_LABELS[r.pos_system] || r.pos_system));
+          tr.appendChild(td(r.products_created));
+          tr.appendChild(td(r.products_updated));
+          tr.appendChild(td(r.products_deactivated));
+          tr.appendChild(td(r.status === 'done' ? '' : 'Not finished'));
+          table.appendChild(tr);
+        });
+      });
+  }
+
+  sb.auth.getSession().then(function (res) {
+    var session = res.data ? res.data.session : null;
+    if (session) checkAccessAndEnter(session.user);
+    else showView('login');
+  });
+})();
+</script>
+</body>
+</html>
