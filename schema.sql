@@ -47,7 +47,11 @@
 --
 -- to_regclass() rather than a bare EXISTS: on a genuinely fresh project the
 -- table doesn't exist yet, and querying a missing table would raise the wrong
--- error and block the legitimate first run.
+-- error and block the legitimate first run. The two tests are NESTED ifs, not
+-- one `a and exists (...)`: PL/pgSQL plans a whole condition before running
+-- it, so the joined form failed on a fresh project with "relation
+-- public.organisations does not exist" (found building gantry-staging, 27 Oct
+-- 2026). The inner query is only planned once the table is known to exist.
 --
 -- TO INTENTIONALLY WIPE AND REBUILD: comment out this whole DO block. That is
 -- meant to be a conscious act with a backup taken first (Dashboard -> Database
@@ -55,8 +59,8 @@
 -- ==========================================================================
 do $$
 begin
-  if to_regclass('public.organisations') is not null
-     and exists (select 1 from public.organisations) then
+  if to_regclass('public.organisations') is not null then
+  if exists (select 1 from public.organisations) then
     raise exception using
       errcode = 'raise_exception',
       message = 'schema.sql refused to run: public.organisations already has data.',
@@ -68,7 +72,14 @@ begin
                 || 'backfill). To intentionally rebuild from scratch, take a '
                 || 'backup and comment out the DO block at the top of this file.';
   end if;
+  end if;
 end $$;
+
+-- Function bodies are checked when they're first called, not when they're
+-- created, for the rest of this run — as pg_dump does. This file defines some
+-- `language sql` helpers before the tables they read (stocktakes, for one), and
+-- with checking on, a fresh project stopped at the first of them.
+set check_function_bodies = off;
 
 -- ---- Profiles: one row per user, personal identity only ----
 -- No billing/plan fields here any more — those are now on `organisations`,
