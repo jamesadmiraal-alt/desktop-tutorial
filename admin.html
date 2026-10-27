@@ -26,6 +26,10 @@
      option labels, the explanation). Nothing here builds a file. -->
 <script src="barcode-export.js"></script>
 <script src="export-engine.js"></script>
+<!-- The product list import's rules. The spreadsheet reader it needs
+     (xlsx.full.min.js, ~950 KB) is NOT loaded here: the Products tab loads it
+     when someone picks a file. -->
+<script src="product-import.js"></script>
 <!-- Design-system tokens: colours, type, spacing, radii, motion -->
 <link rel="stylesheet" href="styles.css">
 <style>
@@ -165,6 +169,31 @@
   .session-row .name { font-weight: 600; }
   .session-row .since { font-size: 0.78rem; color: var(--text-dim); }
   #active-sessions-list:empty::after { content: 'No one is currently logged in.'; color: var(--text-dim); font-size: 0.85rem; }
+
+  /* ---- Products: venue product lists (20261027_01) ---- */
+  .prod-venue { display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .prod-venue:last-child { border-bottom: none; }
+  .prod-venue .name { font-weight: 600; flex: 1; min-width: 0; }
+  .prod-venue .meta { font-size: 0.8rem; color: var(--text-dim); text-align: right; }
+  .prod-step { margin-top: 14px; }
+  .prod-found { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 0.88rem; color: var(--text-body); line-height: 1.4; }
+  .prod-stats { list-style: none; padding: 0; margin: 12px 0 0; font-size: 0.9rem; color: var(--text); }
+  .prod-stats li { padding: 3px 0; }
+  .prod-stats .bad { color: var(--danger); }
+  .prod-stats .warn { color: var(--warning); }
+  .prod-problems { max-height: 220px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 4px 10px; margin-top: 10px; font-size: 0.8rem; color: var(--text-body); }
+  .prod-problems div { padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .prod-problems div:last-child { border-bottom: none; }
+  .prod-sample { font-size: 0.82rem; color: var(--text-body); line-height: 1.5; }
+  .prod-sample .code { color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .prod-map-row { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+  .prod-map-row .h { flex: 1; min-width: 0; font-size: 0.85rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prod-map-row select { width: 52%; flex: none; padding: 8px 10px; font-size: 0.85rem; }
+  .prod-mode label { display: flex; gap: 8px; align-items: flex-start; font-size: 0.9rem; color: var(--text); margin: 8px 0; cursor: pointer; }
+  .prod-mode input { margin-top: 3px; }
+  .prod-progress { height: 8px; background: var(--btn-neutral-bg); border-radius: 999px; overflow: hidden; margin-top: 12px; }
+  .prod-progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+  #prod-file { font-size: 0.9rem; color: var(--text-body); max-width: 100%; }
 
   button {
     border: none; border-radius: 10px; font-size: 0.95rem; font-weight: 600;
@@ -318,6 +347,17 @@
         With this on, staff can’t open — or scan into — a count someone else started,
         so two staff can no longer share one stocktake.</p>
     </div>
+    <!-- Product names when scanning (20261027_01). The owner's switch, through
+         set_products_enabled() (owner-only and audited in the database); managers
+         see it greyed out. Shown only once my_products_access() answers and the
+         plan includes it, so a database without the migration shows nothing. -->
+    <div id="products-row" style="margin-top:16px;display:none">
+      <label for="org-products-on" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+        <input type="checkbox" id="org-products-on" style="margin-top:3px">
+        <span>Show product names when scanning</span>
+      </label>
+      <p class="hint" id="products-row-hint" style="margin-top:2px"></p>
+    </div>
   </div>
 
   <!-- Organisation above, everything else in tabs. The org card is identity
@@ -325,6 +365,7 @@
        Each pane's data loads on first activation — see showTab(). -->
   <div class="tabs" role="tablist">
     <button role="tab" data-tab="venues" aria-selected="true">Venues</button>
+    <button role="tab" data-tab="products" aria-selected="false" id="tab-btn-products" style="display:none">Products</button>
     <button role="tab" data-tab="team" aria-selected="false">Team</button>
     <button role="tab" data-tab="seats" aria-selected="false" id="tab-btn-seats" style="display:none">Counting at once</button>
     <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
@@ -344,6 +385,52 @@
     </p>
   </div>
   </div><!-- /pane venues -->
+
+  <!-- Venue product lists (20261027_01). Owners and managers import; the
+       database refuses anyone else, and refuses everyone while the switch is
+       off or the plan doesn't include it. -->
+  <div class="tab-pane" data-pane="products" hidden>
+  <div class="card">
+    <h2>Product lists</h2>
+    <p class="hint">Each venue has its own list, imported from your POS. When someone scans a barcode
+      in the app, it shows that product's name. Counts and export files don't change.</p>
+    <div id="prod-venues"></div>
+  </div>
+  <div class="card">
+    <h2>Import a product list</h2>
+    <label for="prod-venue">Venue</label>
+    <select id="prod-venue"></select>
+    <label for="prod-pos">Exported from</label>
+    <select id="prod-pos"></select>
+    <label for="prod-file">File</label>
+    <input type="file" id="prod-file" accept=".xlsx,.xls,.csv,.txt">
+    <p class="hint" style="margin-top:6px;margin-bottom:0">A spreadsheet (.xlsx or .xls) or a CSV. Bepoz's
+      "Product List: Barcodes" report, exported to Excel, works as it is.</p>
+    <div id="prod-preview" style="display:none">
+      <div class="prod-step" id="prod-sheet-row" style="display:none">
+        <label for="prod-sheet">Sheet</label>
+        <select id="prod-sheet"></select>
+      </div>
+      <div class="prod-step prod-found" id="prod-found"></div>
+      <div class="prod-step" id="prod-map" style="display:none"></div>
+      <ul class="prod-stats" id="prod-stats"></ul>
+      <div id="prod-problems-wrap" style="display:none">
+        <div class="prod-problems" id="prod-problems"></div>
+        <button class="link-btn" id="prod-problems-dl" type="button">Download the list of problems (CSV)</button>
+      </div>
+      <div class="prod-step prod-sample" id="prod-sample"></div>
+      <div class="prod-step prod-mode">
+        <label><input type="radio" name="prod-mode" value="merge" checked>
+          <span><b>Add and update.</b> Products already in this venue's list that aren't in the file are kept.</span></label>
+        <label><input type="radio" name="prod-mode" value="replace">
+          <span><b>Replace the whole list.</b> Products that aren't in the file are deleted from this venue's list.</span></label>
+      </div>
+      <button class="primary" id="prod-import-btn" style="margin-top:12px;width:100%">Import</button>
+      <div class="prod-progress" id="prod-progress" style="display:none"><div></div></div>
+      <p class="hint" id="prod-status" style="margin-top:10px;margin-bottom:0"></p>
+    </div>
+  </div>
+  </div><!-- /pane products -->
 
   <div class="tab-pane" data-pane="team" hidden>
   <div class="card">
@@ -640,6 +727,7 @@
   // someone, and a bare admin.html URL would always land them on Venues.
   var TAB_LOADERS = {
     venues: function () { loadVenues(); },
+    products: function () { loadProductLists(); },
     team: function () { loadRoster(); loadDailyCode(); },
     seats: function () { loadActiveSessions(); },
     activity: function () { loadAuditLog(); }
@@ -650,6 +738,12 @@
     if (!TAB_LOADERS[name]) name = 'venues';
     // Never leave someone on a tab that doesn't apply to their plan.
     if (name === 'seats' && !(currentOrg && currentOrg.planTier === 'multi')) name = 'venues';
+    if (name === 'products' && !productsOn()) {
+      // Asked for before my_products_access() answered (a #products link):
+      // open it once the answer arrives, if it's on.
+      if (!productsAccessLoaded) productsTabWanted = true;
+      name = 'venues';
+    }
 
     document.querySelectorAll('.tab-pane').forEach(function (p) {
       p.hidden = p.getAttribute('data-pane') !== name;
@@ -1638,6 +1732,408 @@
     if (e.key === 'Enter') $('audit-apply').onclick();
   });
 
+  // ---- Products: product names when scanning (20261027_01) -----------------
+  //
+  // Read on its own, never inside checkAccessAndEnter()'s organisation query:
+  // on a database without the migration that column is missing, and a missing
+  // column there would take the whole console down. Any failure reads as "not
+  // available", and the row and tab simply don't appear.
+  var PI = window.GANTRY_PRODUCT_IMPORT;
+  var productsAccess = null;          // { enabled, allowed, role, version } or null
+  var productsAccessLoaded = false;
+  var productsTabWanted = false;
+
+  function productsOn() {
+    return !!(productsAccess && productsAccess.enabled && productsAccess.allowed);
+  }
+  // Only a real answer counts: { enabled, allowed, ... }. An error, an empty
+  // or odd reply, or no organisation reads as off.
+  function validProductsAccess(res) {
+    var d = res && !res.error && res.data;
+    return !!(d && typeof d === 'object' && !Array.isArray(d) && typeof d.enabled === 'boolean' && typeof d.allowed === 'boolean');
+  }
+
+  function loadProductsAccess() {
+    productsAccessLoaded = false;
+    sb.rpc('my_products_access').then(function (res) {
+      productsAccess = validProductsAccess(res) ? res.data : null;
+      productsAccessLoaded = true;
+      renderProductsAccess();
+      if (productsTabWanted && productsOn()) { productsTabWanted = false; showTab('products'); }
+    }, function () {
+      productsAccess = null; productsAccessLoaded = true;
+      renderProductsAccess();
+    });
+  }
+
+  function renderProductsAccess() {
+    var row = $('products-row');
+    if (!productsAccess || !productsAccess.allowed) {
+      row.style.display = 'none';
+      $('tab-btn-products').style.display = 'none';
+      return;
+    }
+    row.style.display = '';
+    var cb = $('org-products-on');
+    cb.checked = !!productsAccess.enabled;
+    cb.disabled = !isOwner();
+    var hint = productsAccess.enabled
+      ? 'On. Staff see a product’s name when they scan its barcode, once that venue’s product list has been imported in the Products tab.'
+      : 'Import each venue’s product list from your POS, and the app shows a product’s name when someone scans its barcode. Counts and export files don’t change.';
+    if (!isOwner()) hint += ' Only the owner can turn this on or off.';
+    $('products-row-hint').textContent = hint;
+    $('tab-btn-products').style.display = productsOn() ? '' : 'none';
+  }
+
+  $('org-products-on').onchange = function () {
+    var cb = this, want = cb.checked;
+    cb.disabled = true;
+    var undo = function (err) {
+      cb.checked = !want;
+      cb.disabled = !isOwner();
+      fail(err, want ? 'Could not turn product names on' : 'Could not turn product names off');
+    };
+    sb.rpc('set_products_enabled', { p_on: want }).then(function (res) {
+      if (res.error) { undo(res.error); return; }
+      productsAccess.enabled = res.data === true;
+      renderProductsAccess();
+      if (productsAccess.enabled) {
+        toast('Product names are on. Import a product list next.');
+        showTab('products');
+      } else {
+        toast('Product names are off');
+        // Never leave the owner looking at a tab that has just gone away.
+        var current = document.querySelector('.tab-pane:not([hidden])');
+        if (current && current.getAttribute('data-pane') === 'products') showTab('venues');
+      }
+    }, undo);
+  };
+
+  // A server call that always ends: the reply, or a timeout error.
+  function rpcBounded(fn, args, ms) {
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var t = setTimeout(function () {
+        if (done) return;
+        done = true;
+        reject({ message: 'The server didn’t answer in time' });
+      }, ms);
+      sb.rpc(fn, args).then(function (res) {
+        if (done) return;
+        done = true; clearTimeout(t);
+        if (res.error) reject(res.error); else resolve(res.data);
+      }, function (err) {
+        if (done) return;
+        done = true; clearTimeout(t);
+        reject(err || { message: 'request failed' });
+      });
+    });
+  }
+
+  // ---- The venues and what each one has --------------------------------------
+  var prodVenues = [];
+
+  function fmtWhen(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ', '
+      + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function loadProductLists() {
+    showListLoading('prod-venues');
+    Promise.all([
+      sb.from('venues').select('id,name,archived_at').is('archived_at', null).order('name'),
+      sb.from('catalogue_imports')
+        .select('venue_id,file_name,mode,finished_at,products_created,products_updated,products_removed,barcodes_saved')
+        .eq('status', 'done').order('finished_at', { ascending: false }).limit(200),
+    ]).then(function (r) {
+      if (r[0].error) { showListError('prod-venues', 'Couldn’t load your venues: ' + r[0].error.message); return; }
+      prodVenues = r[0].data || [];
+      var last = {};
+      (r[1].data || []).forEach(function (imp) { if (!last[imp.venue_id]) last[imp.venue_id] = imp; });
+      fillProdVenueSelect();
+      // How many products and barcodes each venue has: counted by the server,
+      // two small requests per venue, no rows downloaded.
+      Promise.all(prodVenues.map(function (v) {
+        var count = function (table) {
+          return sb.from(table).select('id', { count: 'exact', head: true }).eq('venue_id', v.id)
+            .then(function (c) { return c.error ? null : c.count; }, function () { return null; });
+        };
+        return Promise.all([count('venue_products'), count('venue_product_barcodes')]);
+      })).then(function (counts) {
+        var el = $('prod-venues');
+        el.innerHTML = '';
+        if (!prodVenues.length) { showListError('prod-venues', 'Add a venue in the Venues tab first.'); return; }
+        prodVenues.forEach(function (v, i) {
+          var row = document.createElement('div');
+          row.className = 'prod-venue';
+          var name = document.createElement('div'); name.className = 'name'; name.textContent = v.name;
+          var meta = document.createElement('div'); meta.className = 'meta';
+          var nP = counts[i][0], nB = counts[i][1], imp = last[v.id];
+          if (nP === null || nB === null) meta.textContent = 'Couldn’t count its list';
+          else if (!nP) meta.textContent = imp ? 'Empty list (imported ' + fmtWhen(imp.finished_at) + ')' : 'No list yet';
+          else meta.textContent = nP + ' product' + (nP === 1 ? '' : 's') + ', ' + nB + ' barcode' + (nB === 1 ? '' : 's')
+            + (imp ? ' · imported ' + fmtWhen(imp.finished_at) : '');
+          row.appendChild(name); row.appendChild(meta);
+          el.appendChild(row);
+        });
+      });
+    }, function (err) { showListError('prod-venues', 'Couldn’t load your venues: ' + ((err && err.message) || 'request failed')); });
+  }
+
+  function fillProdVenueSelect() {
+    var sel = $('prod-venue'), keep = sel.value;
+    sel.innerHTML = '';
+    prodVenues.forEach(function (v) {
+      var o = document.createElement('option'); o.value = v.id; o.textContent = v.name; sel.appendChild(o);
+    });
+    if (keep && prodVenues.some(function (v) { return v.id === keep; })) sel.value = keep;
+    var pos = $('prod-pos');
+    if (!pos.options.length) {
+      var first = document.createElement('option'); first.value = ''; first.textContent = 'Choose your POS'; pos.appendChild(first);
+      (ENGINE.KNOWN_POS || []).forEach(function (p) {
+        var o = document.createElement('option'); o.value = p.code; o.textContent = p.label; pos.appendChild(o);
+      });
+    }
+  }
+
+  // ---- Reading the file ----------------------------------------------------------
+  var xlsxLoading = null;
+  function loadSheetJs() {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    if (!xlsxLoading) {
+      xlsxLoading = new Promise(function (resolve, reject) {
+        var s = document.createElement('script');
+        s.src = 'xlsx.full.min.js';
+        s.onload = function () { if (window.XLSX) resolve(window.XLSX); else { xlsxLoading = null; reject(new Error('The spreadsheet reader didn’t load.')); } };
+        s.onerror = function () { xlsxLoading = null; reject(new Error('The spreadsheet reader didn’t load. Check your connection and try again.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return xlsxLoading;
+  }
+
+  // The picked file: { name, sheets: [{ name, rows }], sheet, rows, layout, built }
+  var prodFile = null;
+
+  function setProdStatus(text, bad) {
+    var el = $('prod-status');
+    el.textContent = text || '';
+    el.style.color = bad ? 'var(--danger)' : '';
+  }
+
+  function resetProdPreview() {
+    prodFile = null;
+    $('prod-preview').style.display = 'none';
+    $('prod-progress').style.display = 'none';
+    $('prod-import-btn').disabled = false;
+    setProdStatus('');
+  }
+
+  // Some exports put a title above the table: the header is the first row
+  // with at least two filled cells.
+  function tableFrom(rows) {
+    for (var i = 0; i < rows.length; i++) {
+      var filled = rows[i].filter(function (c) { return String(c).trim() !== ''; }).length;
+      if (filled >= 2) return rows.slice(i);
+    }
+    return rows;
+  }
+
+  $('prod-file').onchange = function () {
+    var f = this.files && this.files[0];
+    resetProdPreview();
+    if (!f) return;
+    if (f.size > 25 * 1024 * 1024) { $('prod-preview').style.display = ''; setProdStatus('That file is over 25 MB. Export just the product list and try again.', true); return; }
+    var isText = /\.(csv|txt)$/i.test(f.name);
+    $('prod-preview').style.display = '';
+    $('prod-found').textContent = 'Reading ' + f.name + '…';
+    ['prod-stats', 'prod-sample'].forEach(function (id) { $(id).innerHTML = ''; });
+    $('prod-map').style.display = 'none';
+    $('prod-problems-wrap').style.display = 'none';
+    var read = isText
+      ? f.text().then(function (text) { return [{ name: f.name, rows: PI.parseCsv(text).rows }]; })
+      : Promise.all([loadSheetJs(), f.arrayBuffer()]).then(function (x) {
+          var XLSX = x[0];
+          var wb = XLSX.read(x[1], { type: 'array', cellDates: false });
+          return wb.SheetNames.map(function (n) { return { name: n, rows: PI.sheetRows(XLSX, wb.Sheets[n]) }; });
+        });
+    read.then(function (sheets) {
+      sheets = sheets.filter(function (s) { return s.rows.length; });
+      if (!sheets.length) { $('prod-found').textContent = 'That file looks empty.'; return; }
+      prodFile = { name: f.name, sheets: sheets };
+      var sel = $('prod-sheet');
+      sel.innerHTML = '';
+      sheets.forEach(function (s, i) { var o = document.createElement('option'); o.value = i; o.textContent = s.name; sel.appendChild(o); });
+      $('prod-sheet-row').style.display = sheets.length > 1 ? '' : 'none';
+      useSheet(0);
+    }, function (err) {
+      $('prod-found').textContent = 'Couldn’t read that file: ' + ((err && err.message) || 'unknown problem')
+        + '. Save it as .xlsx or .csv and try again.';
+    });
+  };
+  $('prod-sheet').onchange = function () { useSheet(parseInt(this.value, 10) || 0); };
+
+  function useSheet(i) {
+    var s = prodFile.sheets[i];
+    prodFile.rows = tableFrom(s.rows);
+    prodFile.layout = PI.detectLayout(prodFile.rows[0] || []);
+    if (prodFile.layout.layout === 'bepoz' && !$('prod-pos').value) $('prod-pos').value = 'bepoz';
+    renderMapping();
+    renderProdPreview();
+  }
+
+  function renderMapping() {
+    var lay = prodFile.layout, el = $('prod-map');
+    if (lay.layout === 'bepoz') {
+      $('prod-found').textContent = 'This is a Bepoz product list: product names, ' + lay.sizes.length
+        + ' size' + (lay.sizes.length === 1 ? '' : 's') + ' with their barcodes'
+        + (lay.groupCol !== -1 ? ', and Parent Name as the group' : '') + '.';
+      el.style.display = 'none';
+      return;
+    }
+    $('prod-found').textContent = 'Check which column is which. Columns set to Ignore aren’t imported.';
+    el.innerHTML = '';
+    el.style.display = '';
+    (prodFile.rows[0] || []).forEach(function (h, c) {
+      var row = document.createElement('div'); row.className = 'prod-map-row';
+      var name = document.createElement('div'); name.className = 'h'; name.textContent = PI.cleanHeader(h) || '(column ' + (c + 1) + ')';
+      var sel = document.createElement('select');
+      PI.CATALOGUE_ROLES.forEach(function (r) {
+        var o = document.createElement('option'); o.value = r; o.textContent = PI.CATALOGUE_ROLE_LABELS[r]; sel.appendChild(o);
+      });
+      sel.value = lay.roles[c] || 'ignore';
+      sel.onchange = function () { lay.roles[c] = sel.value; renderProdPreview(); };
+      row.appendChild(name); row.appendChild(sel);
+      el.appendChild(row);
+    });
+  }
+
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+
+  function renderProdPreview() {
+    var built = PI.buildCatalogue(prodFile.rows, prodFile.layout);
+    prodFile.built = built;
+    var st = built.stats, ul = $('prod-stats');
+    ul.innerHTML = '';
+    var li = function (html, cls) { var x = document.createElement('li'); x.innerHTML = html; if (cls) x.className = cls; ul.appendChild(x); };
+    var esc = function (s) { return String(s).replace(/[&<>"]/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]; }); };
+    if (!st.products) li('No products with a barcode were found' + (prodFile.layout.layout === 'columns' ? '. Check the columns above.' : '.'), 'bad');
+    else li('<b>' + plural(st.products, 'product') + '</b> with ' + plural(st.barcodes, 'barcode') + ' will be imported.');
+    if (st.warnings) li(plural(st.warnings, 'barcode looks', 'barcodes look') + ' unusual (a short in-store code, a failed check digit or letters). '
+      + (st.warnings === 1 ? 'It’s' : 'They’re') + ' imported, with a note.', 'warn');
+    if (st.rejected) li(plural(st.rejected, 'code') + ' can’t be ' + (st.rejected === 1 ? 'a barcode' : 'barcodes') + ' and ' + (st.rejected === 1 ? 'is' : 'are') + ' left out.', 'bad');
+    if (st.duplicates) li(plural(st.duplicates, 'barcode is', 'barcodes are') + ' listed for two products. The first product keeps ' + (st.duplicates === 1 ? 'it' : 'each one') + '.', 'warn');
+    if (st.noBarcode) li(plural(st.noBarcode, 'product has', 'products have') + ' no barcode, so ' + (st.noBarcode === 1 ? 'it' : 'they') + ' can’t be scanned and ' + (st.noBarcode === 1 ? 'is' : 'are') + ' left out.');
+    if (st.skipped) li(plural(st.skipped, 'row was', 'rows were') + ' left out (no name, or a product code that repeats).', 'bad');
+
+    var probs = built.problems.filter(function (p) { return p.row; });
+    var box = $('prod-problems');
+    box.innerHTML = '';
+    probs.slice(0, 100).forEach(function (p) {
+      var d = document.createElement('div');
+      d.textContent = 'Row ' + p.row + (p.product ? ', ' + p.product : '') + ': ' + p.message;
+      box.appendChild(d);
+    });
+    if (probs.length > 100) { var more = document.createElement('div'); more.textContent = '…and ' + (probs.length - 100) + ' more in the download.'; box.appendChild(more); }
+    $('prod-problems-wrap').style.display = probs.length ? '' : 'none';
+
+    var sample = $('prod-sample');
+    sample.innerHTML = '';
+    if (built.products.length) {
+      var head = document.createElement('div'); head.textContent = 'What a scan will show, for example:'; sample.appendChild(head);
+      built.products.slice(0, 6).forEach(function (p) {
+        var b = p.barcodes[0];
+        var d = document.createElement('div');
+        d.innerHTML = esc(p.name + (b.size_name ? ' · ' + b.size_name : '')) + ' <span class="code">' + esc(b.barcode) + '</span>';
+        sample.appendChild(d);
+      });
+    }
+    $('prod-import-btn').disabled = !st.products;
+    setProdStatus('');
+  }
+
+  $('prod-problems-dl').onclick = function () {
+    if (!prodFile || !prodFile.built) return;
+    var blob = new Blob(['﻿' + PI.problemsCsv(prodFile.built.problems)], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = prodFile.name.replace(/\.[^.]+$/, '') + ' - problems.csv';
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  };
+
+  // ---- Importing -------------------------------------------------------------
+  //
+  // start, then 500 products per call, then finish. "Replace" deletes products
+  // missing from the file only inside finish, so an import that stops partway
+  // never leaves a venue with half a list.
+  var PROD_BATCH = 500;
+
+  $('prod-import-btn').onclick = function () {
+    if (!prodFile || !prodFile.built || !prodFile.built.products.length) return;
+    var venueId = $('prod-venue').value;
+    var venue = prodVenues.filter(function (v) { return v.id === venueId; })[0];
+    var pos = $('prod-pos').value;
+    var modeEl = document.querySelector('input[name="prod-mode"]:checked');
+    var mode = modeEl ? modeEl.value : 'merge';
+    if (!venue) { setProdStatus('Choose a venue.', true); return; }
+    if (!pos) { setProdStatus('Choose which POS the file came from.', true); return; }
+    if (mode === 'replace' && !confirm('Replace the whole product list for "' + venue.name + '"?\n\n'
+        + 'Products that aren’t in this file will be deleted from its list. Counts and export files aren’t affected.')) return;
+
+    var built = prodFile.built;
+    var products = built.products.map(function (p) {
+      return { name: p.name, item_code: p.item_code, group_name: p.group_name, barcodes: p.barcodes };
+    });
+    var batches = PI.chunk(products, PROD_BATCH);
+    var btn = $('prod-import-btn'), bar = $('prod-progress');
+    btn.disabled = true;
+    $('prod-file').disabled = true;
+    bar.style.display = '';
+    bar.firstChild.style.width = '0%';
+    var sent = 0;
+    setProdStatus('Starting…');
+    var problems = built.stats.warnings + built.stats.duplicates;
+    var skipped = built.stats.rejected + built.stats.noBarcode + built.stats.skipped;
+    rpcBounded('start_catalogue_import', { p_venue_id: venueId, p_pos_system: pos, p_file_name: prodFile.name,
+                                           p_mode: mode, p_warnings: problems, p_skipped: skipped }, 20000)
+      .then(function (importId) {
+        var i = 0;
+        var next = function () {
+          if (i >= batches.length) return rpcBounded('finish_catalogue_import', { p_import_id: importId }, 60000);
+          var b = batches[i++];
+          return rpcBounded('import_catalogue_batch', { p_import_id: importId, p_products: b }, 60000).then(function () {
+            sent += b.length;
+            bar.firstChild.style.width = Math.round(100 * sent / products.length) + '%';
+            setProdStatus('Importing… ' + sent + ' of ' + products.length + ' products');
+            return next();
+          });
+        };
+        return next();
+      })
+      .then(function (imp) {
+        bar.firstChild.style.width = '100%';
+        $('prod-file').disabled = false;
+        $('prod-file').value = '';
+        setProdStatus('Imported into ' + venue.name + ': ' + plural(imp.products_created || 0, 'new product') + ', '
+          + (imp.products_updated || 0) + ' updated' + (imp.products_removed ? ', ' + imp.products_removed + ' removed' : '')
+          + ', ' + plural(imp.barcodes_saved || 0, 'barcode') + '.');
+        toast('Product list imported');
+        prodFile = null;
+        loadProductLists();
+      }, function (err) {
+        $('prod-file').disabled = false;
+        btn.disabled = false;
+        console.error('Product import stopped', err);
+        setProdStatus('The import stopped: ' + ((err && err.message) || 'request failed') + '. '
+          + (mode === 'replace' ? 'Nothing was deleted. ' : '')
+          + (sent ? 'The ' + sent + ' products sent before it stopped were saved. ' : '')
+          + 'Import the file again to finish; nothing will be doubled.', true);
+      });
+  };
+
   // ---- Auth ----
   function checkAccessAndEnter(user) {
     currentUserId = user.id;
@@ -1691,6 +2187,7 @@
         applyRoleVisibility();
         renderOrg();
         buildActionFilter();
+        loadProductsAccess();
 
         // Concurrent seats are a Team-only concept. Solo has no
         // seat pool because it has no team to pool: that plan is ONE user, the

@@ -435,7 +435,10 @@
   .item .meta { font-size: 0.8125rem; color: var(--text-dim); margin-top: 2px; }
   /* Same idea inside the quantity dialog and the saved-names list. */
   .dialog .prod-name { font-size: 0.9rem; color: var(--text-body); margin: -4px 0 10px; }
-  .barcode-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  /* Product list (20261027_01): a barcode the venue's list doesn't have, and
+     where a name came from. Counted exactly the same either way. */
+  .item .prod-name.unknown, .dialog .prod-name.unknown { color: var(--text-faint); font-style: italic; }
+  .dialog .prod-source { font-size: 0.75rem; color: var(--text-dim); margin: -8px 0 10px; }  .barcode-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
   .barcode-row:last-child { border-bottom: none; }
   .barcode-row .who { flex: 1; min-width: 0; }
   .barcode-row .who .bc { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; color: var(--text-dim); }
@@ -1011,6 +1014,13 @@
     <h3>Receiving invoices <span class="plan-badge free" id="acct-receiving-badge" style="margin-left:6px">Coming soon</span></h3>
     <div class="plan-desc">Scan deliveries as they arrive and check them against the supplier invoice before it’s received in your POS.</div>
     <button id="acct-receiving-open" class="acct-nav-btn" style="display:none;margin-top:10px">Open receiving</button>
+  </div>
+  <!-- ===== Product names (20261027_01) =====
+       Shown once my_products_access() answers; hidden on a database without
+       it. Solo sees it locked, with what Team adds. -->
+  <div class="acct-card" id="acct-products-card" style="display:none">
+    <h3>Product names <span class="plan-badge free" id="acct-products-badge" style="margin-left:6px"></span></h3>
+    <div class="plan-desc" id="acct-products-text"></div>
   </div>
   <div class="acct-card">
     <h3>Venue / business</h3>
@@ -1698,6 +1708,7 @@
          moment it earns its keep: the operator can tell they're counting the
          right product before a number is typed. -->
     <div class="prod-name" id="qty-name" style="display:none"></div>
+    <div class="prod-source" id="qty-name-source" style="display:none">From the product list</div>
     <!-- Owner/manager only, and only for a barcode with no name yet. A link,
          not a field: naming is optional and must never stand between the
          operator and saving the count. -->
@@ -3180,6 +3191,9 @@
       // once on entry alongside locations. Failure is silent by design (see
       // loadBarcodeNames) — counting must not depend on them.
       loadBarcodeNames();
+      // Product names from a venue's product list: one small read, on its
+      // own; off unless it says otherwise (see loadProductsAccess).
+      loadProductsAccess();
       // navigate: true — entering the app belongs on Home.
       loadTakes(true);
     });
@@ -4436,6 +4450,7 @@
     renderScanPrefs();
     loadAccountExportTemplates();
     loadReceivingCard();
+    renderProductsCard();
     renderOrgAccountInfo();
     renderPlan();
     renderUpgradePrices();
@@ -5010,6 +5025,7 @@
       homeFromCache = false;
       stopSeatHeartbeat();
       stopItemsPolling();
+      forgetProducts();
       // The stored session is someone else's when another tab replaced it —
       // removing it would sign THEM out too. Ours is already gone.
       if (!(opts && opts.notOurs)) {
@@ -6530,9 +6546,10 @@
   function updateItemRow(row, it, readOnly) {
     row._item = it;
     var el = row._els;
-    var savedName = barcodeNameFor(it.barcode);
-    if (el.name.textContent !== savedName) el.name.textContent = savedName;
-    el.name.style.display = savedName ? '' : 'none';
+    var shown = displayNameFor(it.barcode);
+    if (el.name.textContent !== shown.name) el.name.textContent = shown.name;
+    el.name.style.display = shown.name ? '' : 'none';
+    el.name.classList.toggle('unknown', shown.source === 'unknown');
     var meta = 'Last: ' + new Date(it.last_scanned).toLocaleTimeString();
     if (el.meta.textContent !== meta) el.meta.textContent = meta;
     var shown = qtyText(displayQty(it));
@@ -8095,7 +8112,7 @@
       // Name it if the org has one — at this point the operator can confirm
       // they're pointing at the right product before anything is counted,
       // which is the whole reason both of these features exist.
-      var nm = barcodeNameFor(armed.code);
+      var nm = displayNameFor(armed.code).name;
       $('tap-hint').innerHTML = 'Ready: <span class="locked-code"></span>'
         + (nm ? '<br>' : '') + '<span class="locked-name"></span><br>Tap Capture to add it';
       $('tap-hint').querySelector('.locked-code').textContent = armed.code;
@@ -9508,6 +9525,7 @@
       .then(function (res) {
         if (res.error) { fail(res.error, 'Could not save the name'); if (cb) cb(false); return; }
         barcodeNames[barcode] = nm;
+        namesByKeyFor = null;   // the by-key copy (displayNameFor) is rebuilt on next use
         // Repaint anywhere the name is already on screen.
         if (currentView === 'scan') renderItems();
         if (pendingCode) renderQtyBarcodeName(pendingCode);
@@ -9522,16 +9540,248 @@
     sb.from('org_barcodes').delete().eq('id', id).then(function (res) {
       if (res.error) { fail(res.error, 'Could not delete the name'); return; }
       delete barcodeNames[barcode];
+      namesByKeyFor = null;
       if (currentView === 'scan') renderItems();
       loadBarcodeNames(function () { renderBarcodesList(); });
     });
   }
 
+  // ---- Product names from a venue's product list (20261027_01) --------------
+  //
+  // DISPLAY ONLY. Exports keep using barcodeNames / barcodeNameFor(), so every
+  // file is byte-for-byte what it was; this decides what a scan SHOWS.
+  //
+  // Which name, in order: the take's venue's product list; another venue in
+  // the group (one barcode is one product across the group); a name someone
+  // typed (org_barcodes); then "Unknown product", once the venue has a list.
+  //
+  // Off (the owner's switch, the plan, or a database without the migration):
+  // one small read at sign-in and nothing else. It is read on its own, never
+  // inside refreshOrgStatus(), where a missing function or column would take
+  // the org refresh down; any failure reads as off.
+  var productsAccess = null;     // my_products_access(): { enabled, allowed, role, version } or null
+  var catalogue = null;          // { byKey: { key: [{ v, n, s }] }, perVenue: { venue_id: n }, count }
+  var catalogueVersion = null;   // the version the loaded catalogue (and names) belong to
+  var catalogueLoading = 0;      // token of the load in flight, or 0
+  var productsCheckTimer = null;
+  var productsCheckInFlight = false;
+  var PRODUCTS_CHECK_MS = 60000;
+  var CATALOGUE_LOAD_TIMEOUT_MS = 30000;
+
+  function productsOn() {
+    return !!(productsAccess && productsAccess.enabled && productsAccess.allowed);
+  }
+  // Only a real answer counts: { enabled, allowed, ... }. An error, an empty
+  // or odd reply, or no organisation reads as off.
+  function validProductsAccess(res) {
+    var d = res && !res.error && res.data;
+    return !!(d && typeof d === 'object' && !Array.isArray(d) && typeof d.enabled === 'boolean' && typeof d.allowed === 'boolean');
+  }
+
+  // The matching key: all digits right-aligned to 14 (GTIN-14), otherwise
+  // trimmed and upper-cased. Must equal public.barcode_key() and
+  // product-import.js barcodeKey(): a 12-digit scan finds its 13-digit entry.
+  function scanKey(code) {
+    var t = String(code == null ? '' : code).trim();
+    return /^[0-9]{1,14}$/.test(t) ? ('00000000000000' + t).slice(-14) : t.toUpperCase();
+  }
+
+  function loadProductsAccess() {
+    var epoch = sessionEpoch;
+    try {
+      sb.rpc('my_products_access').then(function (res) {
+        if (epoch !== sessionEpoch) return;
+        applyProductsAccess(validProductsAccess(res) ? res.data : null);
+      }, function () { if (epoch === sessionEpoch) applyProductsAccess(null); });
+    } catch (e) { applyProductsAccess(null); }
+  }
+
+  function applyProductsAccess(access) {
+    var wasOn = productsOn();
+    productsAccess = access;
+    if (!productsOn()) {
+      stopProductsCheck();
+      if (catalogue || wasOn) { catalogue = null; catalogueVersion = null; refreshShownNames(); }
+      if (currentView === 'account') renderProductsCard();
+      return;
+    }
+    startProductsCheck();
+    // A new import, or a name added, edited or deleted on another phone.
+    if (!catalogue || access.version !== catalogueVersion) {
+      var reloadNames = wasOn && catalogueVersion !== null;
+      loadCatalogue(access.version);
+      if (reloadNames) loadBarcodeNames(refreshShownNames);
+    }
+    if (currentView === 'account') renderProductsCard();
+  }
+
+  function loadCatalogue(version) {
+    if (catalogueLoading) return;
+    var token = catalogueLoading = Date.now();
+    var epoch = sessionEpoch;
+    // Bounded: a load that never answers must not stop the next change check
+    // from trying again.
+    var timer = setTimeout(function () { if (catalogueLoading === token) catalogueLoading = 0; }, CATALOGUE_LOAD_TIMEOUT_MS);
+    fetchAllRows('venue_product_barcodes', 'id,venue_id,barcode_key,size_name,venue_products(name)',
+      function (q) { return q; },
+      function (res) {
+        if (catalogueLoading !== token) return;
+        catalogueLoading = 0;
+        clearTimeout(timer);
+        if (epoch !== sessionEpoch || !productsOn()) return;
+        if (res.error) return;   // names just don't show yet; the next check tries again
+        var byKey = {}, perVenue = {};
+        res.data.forEach(function (r) {
+          var nm = r.venue_products && r.venue_products.name;
+          if (!nm) return;
+          (byKey[r.barcode_key] = byKey[r.barcode_key] || []).push({ v: r.venue_id, n: nm, s: r.size_name || '' });
+          perVenue[r.venue_id] = (perVenue[r.venue_id] || 0) + 1;
+        });
+        catalogue = { byKey: byKey, perVenue: perVenue, count: res.data.length };
+        catalogueVersion = version;
+        refreshShownNames();
+      },
+      function () { return catalogueLoading === token; });
+  }
+
+  // Once a minute while the list is on: has anything changed? One small
+  // call; a reload only when the answer moved. Never stacked, skipped while
+  // the app is in the background, and a failed check changes nothing.
+  function startProductsCheck() {
+    if (productsCheckTimer) return;
+    productsCheckTimer = setInterval(function () {
+      if (document.hidden || productsCheckInFlight || !currentOrg) return;
+      productsCheckInFlight = true;
+      var epoch = sessionEpoch;
+      var released = false;
+      var release = function () { if (!released) { released = true; productsCheckInFlight = false; } };
+      var t = setTimeout(release, 15000);
+      sb.rpc('my_products_access').then(function (res) {
+        clearTimeout(t); release();
+        if (epoch !== sessionEpoch || !validProductsAccess(res)) return;
+        applyProductsAccess(res.data);
+      }, function () { clearTimeout(t); release(); });
+    }, PRODUCTS_CHECK_MS);
+  }
+  function stopProductsCheck() {
+    if (productsCheckTimer) { clearInterval(productsCheckTimer); productsCheckTimer = null; }
+  }
+  function forgetProducts() {
+    stopProductsCheck();
+    productsAccess = null; catalogue = null; catalogueVersion = null; catalogueLoading = 0;
+    namesByKeyFor = null;
+  }
+
+  // The take's venue, from names the app already has: Home's list carries the
+  // location and venue NAMES, and `locations` maps them to ids. No request.
+  // Ambiguous (two venues with identically named locations) reads as unknown,
+  // and the lookup then uses any venue in the group.
+  function takeVenueId(take) {
+    var loc = take && take.locations;
+    if (!loc) return null;
+    var vn = loc.venues && loc.venues.name;
+    var found = null;
+    for (var i = 0; i < locations.length; i++) {
+      var l = locations[i];
+      if (l.name === loc.name && l.venues && l.venues.name === vn) {
+        if (found && found !== l.venue_id) return null;
+        found = l.venue_id;
+      }
+    }
+    return found;
+  }
+
+  // Typed names by matching key, for a scan whose digits differ from the
+  // typed form (12 vs 13). Rebuilt when the names change (see namesByKeyFor).
+  var namesByKey = {};
+  var namesByKeyFor = null;
+  function manualNameByKey(code) {
+    if (namesByKeyFor !== barcodeNames) {
+      namesByKey = {};
+      Object.keys(barcodeNames).forEach(function (b) { namesByKey[scanKey(b)] = barcodeNames[b]; });
+      namesByKeyFor = barcodeNames;
+    }
+    return namesByKey[scanKey(code)] || '';
+  }
+
+  // { name, source }: 'list' (this venue), 'group' (another venue), 'manual'
+  // (typed), 'unknown', or '' (nothing to show).
+  function displayNameFor(code) {
+    var typed = barcodeNameFor(code);
+    if (!productsOn()) return { name: typed, source: typed ? 'manual' : '' };
+    var venue = takeVenueId(currentTake);
+    var hits = catalogue && catalogue.byKey[scanKey(code)];
+    if (hits && hits.length) {
+      var h = null;
+      for (var i = 0; i < hits.length; i++) if (hits[i].v === venue) { h = hits[i]; break; }
+      var source = h ? 'list' : 'group';
+      h = h || hits[0];
+      return { name: h.n + (h.s ? ' · ' + h.s : ''), source: source };
+    }
+    if (!typed && catalogue) typed = manualNameByKey(code);
+    if (typed) return { name: typed, source: 'manual' };
+    var hasList = !!catalogue && (venue ? (catalogue.perVenue[venue] || 0) > 0 : catalogue.count > 0);
+    return hasList ? { name: 'Unknown product', source: 'unknown' } : { name: '', source: '' };
+  }
+
+  // Repaint whatever is showing names. updateItemRow() only touches text that
+  // changed, so this is cheap on a long take.
+  function refreshShownNames() {
+    if (currentView === 'scan') {
+      renderItems();
+      if (dialogOpen && pendingCode) renderQtyBarcodeName(pendingCode);
+      renderTapHint();
+    }
+    if (currentView === 'account') renderProductsCard();
+  }
+
+  // Account → Product names. Hidden until my_products_access() answers (and on
+  // a database without it). Solo sees it locked, with what Team adds.
+  function renderProductsCard() {
+    var card = $('acct-products-card');
+    if (!productsAccess || !currentOrg) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    var badge = $('acct-products-badge'), text = $('acct-products-text');
+    var role = currentOrg.role;
+    if (!productsAccess.allowed) {
+      badge.textContent = 'Team plan';
+      badge.className = 'plan-badge free';
+      text.textContent = 'On the Team plan, import your POS product list and the app shows each product’s name when you scan it. Counts and export files don’t change.';
+      return;
+    }
+    if (!productsAccess.enabled) {
+      badge.textContent = 'Off';
+      badge.className = 'plan-badge free';
+      text.textContent = role === 'owner'
+        ? 'Turn this on in Admin, then import each venue’s product list from your POS. Everyone scanning will see product names.'
+        : 'The owner can turn this on in Admin.';
+      return;
+    }
+    badge.textContent = 'On';
+    badge.className = 'plan-badge pro';
+    var n = catalogue ? catalogue.count : null;
+    text.textContent = (n === null ? 'Loading the product list… '
+      : n ? 'Scans show names from your product lists (' + n + ' barcode' + (n === 1 ? '' : 's') + '). '
+      : 'No product list has been imported yet. ')
+      + (role === 'owner' || role === 'manager' ? 'Lists are imported in Admin, under Products.' : '');
+  }
+
   // ---- Quantity-dialog name line ----
   function renderQtyBarcodeName(code) {
-    var nm = barcodeNameFor(code);
-    $('qty-name').textContent = nm;
-    $('qty-name').style.display = nm ? '' : 'none';
+    var shown = displayNameFor(code);
+    $('qty-name').textContent = shown.name;
+    $('qty-name').style.display = shown.name ? '' : 'none';
+    $('qty-name').classList.toggle('unknown', shown.source === 'unknown');
+    // A name from the product list is fixed in the POS and imported again,
+    // never typed over here: two places to change one name is how they
+    // drift apart.
+    var fromList = shown.source === 'list' || shown.source === 'group';
+    $('qty-name-source').style.display = fromList ? '' : 'none';
+    if (fromList) {
+      $('qty-name-btn').style.display = 'none';
+      return;
+    }
+    var nm = shown.source === 'manual' ? shown.name : '';
     // Offered for BOTH an unnamed and a wrongly-named barcode, to any role
     // allowed to write one.
     //

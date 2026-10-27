@@ -271,16 +271,42 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - **Read the flag on its own, and treat a failed read as off** (receiving.html, and
   `loadReceivingCard()` on app.html's Account). Never add `receiving_enabled` to
   `refreshOrgStatus()`'s org query: a missing column there takes the whole org refresh down.
-- **Phase 1 is the product master**: `product-import.js` (pure: CSV parse, column guessing,
-  validation — `node scripts/test-product-import.js`) feeds `start_product_import` ->
-  `import_products_batch` (≤1000 per call; the page sends 500) -> `finish_product_import`.
-  Barcodes are stored as imported and matched on `barcode_key()` (digits -> 14, GTIN-14),
-  which exists twice (SQL + `barcodeKey()`) and the test checks they agree. A product's
-  barcode set is replaced by each import's; products are never deleted, only made inactive.
+- **Its Phase 1 product master (20261024_01) was superseded on 27 Oct 2026 and never applied**:
+  Gantry has ONE product list, the venue product list (see "Product names when scanning"), and
+  receiving will build on it. The receiving tables are no longer in `schema.sql`, so
+  receiving.html's import has nothing to write to; the page only ever shows "Coming soon" anyway.
+  `barcode_key()` (digits -> 14, GTIN-14) lives on in the catalogue migration, identical.
 - **Invoices will come from AccountsFlow** (both H&L and Bepoz venues use it), not screen
   capture. Phases 2+ (invoice inbox, receiving in the app, reconciliation) are not built yet.
   `ctx.products` in export-engine.js is still NOT fed from the product master — every export
   is unchanged, and wiring it is a separate decision.
+
+## Product names when scanning (venue product lists, 20261027_01)
+
+- **Display only.** A venue's POS product list (`venue_products` / `venue_product_barcodes`) decides
+  what a scan SHOWS: `displayNameFor()` in app.html. Exports keep using `barcodeNames` /
+  `barcodeNameFor()` (org_barcodes), so every file is byte-for-byte what it was. A 4pk scan is
+  counted as one 4pk barcode; the POS converts it on import.
+- **Name order:** the take's venue's list, then another venue in the group, then a typed name
+  (org_barcodes), then "Unknown product" (only once that venue has a list). A list name can't be
+  typed over on the pad; it's fixed in the POS and imported again.
+- **Switch and plan are server-side.** `organisations.products_enabled` (owner, via
+  `set_products_enabled()`, audited) and `plan_has_products()` (Team + trial; Solo refused; add
+  Corporate there with pricing-v2). Reads are hidden by RLS while off or not allowed, and the rows
+  are kept, so a downgrade hides the list and an upgrade brings it back.
+- **The app reads `my_products_access()` on its own** (never in `refreshOrgStatus()`), and anything
+  but a real `{enabled, allowed}` answer reads as off. Off = that one read at sign-in, nothing else.
+  On = the org's list loaded through `fetchAllRows`, plus a once-a-minute version check (never
+  stacked, skipped in the background) that reloads the list and typed names when they change.
+- **Import:** admin.html → Products (owner/manager). `product-import.js` (second half) reads the file;
+  `xlsx.full.min.js` (SheetJS 0.20.3, vendored) is loaded only when a file is picked. Bepoz's
+  "Product List: Barcodes" layout is recognised; other files get a column picker. Agreed rules
+  (27 Oct 2026): decimals, 9.3E+12 and >14 digits are refused; short, custom and bad-check-digit
+  codes import with a warning; a code listed twice stays with the first product; Carton = 24 units,
+  a bare Case is unknown. Replace deletes missing products only in `finish_catalogue_import`.
+  `node scripts/test-catalogue-import.js` covers it with a made-up fixture: **never commit a
+  venue's real product file.**
+- New UI text for this feature has no em dashes.
 
 ## Network truthfulness (14 Oct 2026 stress test — don't regress these)
 
