@@ -368,6 +368,13 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - **Manual/wedge barcodes are checked** by `barcodeDoubt()`: 9–11 digits or a failed GS1
   check digit on 12–14 asks before counting. Test bots typing invented codes will see it —
   real bottles pass.
+- **Reads that grow with a venue are paged** (`fetchAllRows()` in app.html: keyset on `id`,
+  exact count on page 1). The Data API's Max rows (Dashboard → Integrations → Data API; 1000
+  until 27 Oct 2026, then 10000) silently truncates a reply, and a 1,400-line take once
+  exported 1,000 lines. A take's lines and the org's barcode names go through it; a count
+  is `count: 'exact', head: true`, never the length of a downloaded list. Don't add a bare
+  `select` of `stocktake_items` or `org_barcodes` without a `.limit()`. supabase-js itself
+  retries a GET on 503/520, so test a failed page with a 500.
 - **Module-level constants built from other constants must come after them.** `BUILDER_COLUMNS`
   was built from a not-yet-assigned `TEMPLATE_COLUMNS` and shipped `select=undefined,…`.
   Headless fakes that ignore column lists can't catch that; a real-client URL check can.

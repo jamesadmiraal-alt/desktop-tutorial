@@ -6006,6 +6006,56 @@
     renderItems();   // repaints the ± and ✕ controls in their disabled state
   }
 
+  // ---- Reads that grow with the venue ---------------------------------------
+  //
+  // The Data API hands back at most "Max rows" rows per request (Supabase
+  // Dashboard → Integrations → Data API: 1000 until 27 Oct 2026, then 10000)
+  // and says nothing when it stops there. The reply simply ends. A 1,400-line
+  // take opened with 1,000 lines and exported 1,000 lines. Raising the setting
+  // moves that cliff; it doesn't remove it. So every read that grows with a
+  // venue (a take's lines, the org's barcode names) comes through here, in
+  // pages, whatever the setting is.
+  //
+  // Keyset pages on id (order by id, id > the last one), not offsets: a line
+  // added or deleted while the pages come in can't shift a row from one page
+  // into the next, so no row is ever read twice. A line read twice is a line
+  // counted twice once the export merges by barcode. The first page asks for
+  // the exact count, and reading stops at an empty page or once that many rows
+  // are in, which stays right if the server returns fewer rows than asked.
+  // With no count (it always comes from the real server), a short page is the
+  // end.
+  //
+  // `columns` must include id. cb(res) gets { data, error }, like one
+  // supabase-js call, and is called exactly once. Any page failing fails the
+  // whole read: part of a take must never be mistaken for all of it. `alive`
+  // (optional) is asked before each further page, so a read that has been
+  // superseded or has timed out stops costing requests. supabase-js itself
+  // retries a page on 503/520 before it gets here.
+  var ROWS_PAGE = 1000;
+  function fetchAllRows(table, columns, filter, cb, alive) {
+    var rows = [], total = null, lastId = null;
+    (function nextPage() {
+      var q = filter(sb.from(table).select(columns, lastId === null ? { count: 'exact' } : undefined))
+        .order('id', { ascending: true }).limit(ROWS_PAGE);
+      if (lastId !== null) q = q.gt('id', lastId);
+      q.then(function (res) {
+        if (res.error) { cb({ data: null, error: res.error }); return; }
+        var got = res.data || [];
+        if (lastId === null && typeof res.count === 'number') total = res.count;
+        for (var i = 0; i < got.length; i++) rows.push(got[i]);
+        var done = !got.length || (total !== null ? rows.length >= total : got.length < ROWS_PAGE);
+        if (done) { cb({ data: rows, error: null }); return; }
+        if (alive && !alive()) { cb({ data: null, error: { message: 'Stopped' } }); return; }
+        lastId = got[got.length - 1].id;
+        nextPage();
+      }, function (err) {
+        // Without this a dropped connection rejects into nothing: no toast, no
+        // download, and an operator left assuming the export worked.
+        cb({ data: null, error: err || { message: 'request failed' } });
+      });
+    })();
+  }
+
   // Refetch the current take's lines in place. Deliberately NOT via openTake():
   // that resets filters and can blank the list, so calling it to refresh after a
   // save is what produced an empty screen straight after a successful write.
@@ -6018,6 +6068,18 @@
     return (list || []).map(function (i) {
       return i.barcode + ':' + qtyText(i.qty);
     }).sort().join('|');
+  }
+
+  // Newest line first: first_scanned descending, as the server's
+  // order('first_scanned', desc) used to hand it back (a missing time first,
+  // as Postgres puts NULLs first when descending), then by barcode so a tie
+  // always lands the same way. Compared as strings, like sortForExport().
+  function newestLineFirst(rows) {
+    return rows.slice().sort(function (a, b) {
+      var fa = a.first_scanned || '', fb = b.first_scanned || '';
+      if (fa !== fb) return !fa ? -1 : !fb ? 1 : fa > fb ? -1 : 1;
+      return a.barcode < b.barcode ? -1 : a.barcode > b.barcode ? 1 : 0;
+    });
   }
 
   // `quiet` is a background refresh: no "Loading…", no failure toast, and no
@@ -6056,15 +6118,10 @@
     // loading, the take stopped refreshing entirely. That is the frozen take from
     // the 14 Oct stress test.
     var current = function () { return !settled && token === itemsRequestToken; };
-    sb.from('stocktake_items')
-      .select('*')
-      .eq('stocktake_id', takeId)
-      // Newest LINE first (first_scanned), not most recently touched — the same
-      // order a live session keeps (new lines on top, existing rows stay put),
-      // so a reload doesn't reshuffle the list (retest, 16 Oct). Polls ignore
-      // this order anyway; see "Row order and row identity".
-      .order('first_scanned', { ascending: false })
-      .then(function (res) {
+    // Every line, in pages (fetchAllRows). The timer above bounds all of them
+    // together, and a superseded load stops asking for more.
+    fetchAllRows('stocktake_items', '*', function (q) { return q.eq('stocktake_id', takeId); },
+      function (res) {
         releasePoll();
         if (!current()) return;   // superseded: the newer request will settle the state
         if (res.error) { onFailure(res.error); return; }
@@ -6072,14 +6129,19 @@
         clearTimeout(timer);
         endTiming('ok');
         lastItemsSyncAt = Date.now();
+        // Newest LINE first (first_scanned), not most recently touched — the
+        // same order a live session keeps (new lines on top, existing rows stay
+        // put), so a reload doesn't reshuffle the list (retest, 16 Oct). Sorted
+        // here because pages come back in id order. Polls ignore this order
+        // anyway; see "Row order and row identity".
+        var fresh = newestLineFirst(res.data || []);
         // The first full load of a take sets its order (newest first). After
         // that the order is kept — see "Row order and row identity".
-        if (itemsLoadedTakeId !== takeId) displayOrder = (res.data || []).map(function (r) { return r.barcode; });
+        if (itemsLoadedTakeId !== takeId) displayOrder = fresh.map(function (r) { return r.barcode; });
         itemsLoadedTakeId = takeId;
         var stateChanged = itemsLoading || itemsLoadFailed;
         itemsLoading = false;
         itemsLoadFailed = false;
-        var fresh = res.data || [];
         var changed = itemsSignature(fresh) !== itemsSignature(items.filter(function (it) { return !it._local; }));
         items = fresh;
         ensureOutboxPlaceholders();
@@ -6091,7 +6153,7 @@
         // the next full loadTakes() — "inside 6/275 vs Home 13/366".
         syncTakeSnapshot(takeById(takeId), fresh);
         if (cb) cb();
-      }, function (err) { releasePoll(); if (current()) onFailure(err); });
+      }, current);
 
     function onFailure(err) {
       if (!current()) return;
@@ -8489,8 +8551,9 @@
   // Postgres hands rows back in whatever order is cheapest, and an update
   // moves a row — so two exports of an unchanged take could list lines
   // differently, and a diff between them showed changes nobody made. Sorted
-  // here too, so the file never depends on the server honouring .order().
-  // The export's merge keeps first appearance, which this makes stable.
+  // here, so the file never depends on the order the server sends rows in
+  // (pages arrive in id order). The export's merge keeps first appearance,
+  // which this makes stable.
   function sortForExport(rows) {
     return (rows || []).slice().sort(function (a, b) {
       var fa = a.first_scanned || '', fb = b.first_scanned || '';
@@ -8498,16 +8561,13 @@
       return a.barcode < b.barcode ? -1 : a.barcode > b.barcode ? 1 : 0;
     });
   }
+  // Every line of the take, in pages (fetchAllRows). One request answered
+  // with the first 1,000 lines was how a bigger take exported short, silently.
+  // A page that fails fails the export: no file is better than part of one.
   function fetchTakeItems(takeId, cb) {
-    sb.from('stocktake_items').select('*').eq('stocktake_id', takeId)
-      .order('first_scanned', { ascending: true }).order('barcode', { ascending: true })
-      .then(function (res) {
+    fetchAllRows('stocktake_items', '*', function (q) { return q.eq('stocktake_id', takeId); }, function (res) {
       if (res.error) { fail(res.error, 'Could not load items'); return; }
       cb(sortForExport(res.data));
-    }, function (err) {
-      // Without this a dropped connection rejects into nothing: no toast, no
-      // download, and an operator left assuming the export worked.
-      fail(err, 'Could not load items');
     });
   }
 
@@ -9175,13 +9235,15 @@
   }
 
   // How many lines the server holds for a take: a number, or null if it
-  // couldn't be found out (bounded).
+  // couldn't be found out (bounded). Counted by the server rather than by
+  // downloading the ids: a downloaded list stops at Max rows, so a 1,400-line
+  // take asked "Delete all 1000 scanned items?".
   function countTakeLines(takeId, cb) {
     var done = false;
     var finish = function (n) { if (!done) { done = true; clearTimeout(timer); cb(n); } };
     var timer = setTimeout(function () { finish(null); }, CLEAR_COUNT_TIMEOUT_MS);
-    sb.from('stocktake_items').select('id').eq('stocktake_id', takeId).then(function (res) {
-      finish(res.error ? null : (res.data || []).length);
+    sb.from('stocktake_items').select('id', { count: 'exact', head: true }).eq('stocktake_id', takeId).then(function (res) {
+      finish(res.error || typeof res.count !== 'number' ? null : res.count);
     }, function () { finish(null); });
   }
 
@@ -9407,12 +9469,16 @@
     return !!(currentOrg && (currentOrg.role === 'owner' || currentOrg.role === 'manager'));
   }
 
+  // Every name, in pages (fetchAllRows): past Max rows, the rest of the names
+  // simply never arrived. Sorted by name here, since pages come in id order.
   function loadBarcodeNames(cb) {
     if (!currentOrg) { if (cb) cb(); return; }
-    sb.from('org_barcodes').select('id,barcode,name,updated_at').order('name')
-      .then(function (res) {
+    fetchAllRows('org_barcodes', 'id,barcode,name,updated_at', function (q) { return q; },
+      function (res) {
         if (!res.error) {
-          barcodeRows = res.data || [];
+          barcodeRows = res.data.slice().sort(function (a, b) {
+            return a.name.localeCompare(b.name) || (a.barcode < b.barcode ? -1 : a.barcode > b.barcode ? 1 : 0);
+          });
           barcodeNames = {};
           barcodeRows.forEach(function (r) { barcodeNames[r.barcode] = r.name; });
         }
