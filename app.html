@@ -9565,6 +9565,7 @@
   var catalogueLoading = 0;      // token of the load in flight, or 0
   var productsCheckTimer = null;
   var productsCheckInFlight = false;
+  var productsSeenOn = false;    // on at some point since sign-in: keep checking while off
   var PRODUCTS_CHECK_MS = 60000;
   var CATALOGUE_LOAD_TIMEOUT_MS = 30000;
 
@@ -9599,8 +9600,12 @@
   function applyProductsAccess(access) {
     var wasOn = productsOn();
     productsAccess = access;
+    if (productsOn()) productsSeenOn = true;
     if (!productsOn()) {
-      stopProductsCheck();
+      // Turned off mid-session: keep checking, so turning it back on reaches
+      // phones that are mid-count (staging stress test, 28 Oct: names stayed
+      // away after off-then-on until a reload). Off since sign-in: no checks.
+      if (!productsSeenOn) stopProductsCheck();
       if (catalogue || wasOn) { catalogue = null; catalogueVersion = null; refreshShownNames(); }
       if (currentView === 'account') renderProductsCard();
       return;
@@ -9669,7 +9674,7 @@
   function forgetProducts() {
     stopProductsCheck();
     productsAccess = null; catalogue = null; catalogueVersion = null; catalogueLoading = 0;
-    namesByKeyFor = null;
+    namesByKeyFor = null; productsSeenOn = false;
   }
 
   // The take's venue, from names the app already has: Home's list carries the
