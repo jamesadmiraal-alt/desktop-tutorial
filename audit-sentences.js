@@ -58,14 +58,18 @@ window.GANTRY_AUDIT = (function () {
     'location.renamed': function (r) { return r.actor_label + ' renamed location "' + r.before.name + '" to "' + r.after.name + '"'; },
     'location.moved': function (r) { return r.actor_label + ' moved location "' + r.target_label + '" to a different venue'; },
     'location.removed': function (r) { return r.actor_label + ' removed location "' + r.target_label + '"'; },
-    // Receiving invoices (20261024_01): a POS product list imported in receiving.html.
-    'products.imported': function (r) {
+    // Venue product catalogue (20261027_01). target_label is the venue.
+    'catalogue.imported': function (r) {
       var a = r.after || {};
-      var pos = { hl: 'H&L', bepoz: 'Bepoz', other: 'a POS' }[a.pos_system] || 'a POS';
-      return r.actor_label + ' imported a product list from ' + pos + (r.target_label ? ' ("' + r.target_label + '")' : '')
-        + ': ' + (a.created || 0) + ' new, ' + (a.updated || 0) + ' updated'
-        + (a.deactivated ? ', ' + a.deactivated + ' marked inactive' : '');
+      var pos = { hl: 'H&L', bepoz: 'Bepoz' }[a.pos_system] || 'a POS';
+      var s = r.actor_label + ' imported a product list from ' + pos + ' for ' + (r.target_label ? '"' + r.target_label + '"' : 'a venue')
+        + ': ' + plural(Number(a.created) || 0, 'new product') + ', ' + (Number(a.updated) || 0) + ' updated';
+      if (Number(a.removed)) s += ', ' + (Number(a.removed) || 0) + ' removed';
+      if (a.mode === 'replace') s += ' (replaced the whole list)';
+      return s;
     },
+    'catalogue.enabled': function (r) { return r.actor_label + ' turned on product names when scanning'; },
+    'catalogue.disabled': function (r) { return r.actor_label + ' turned off product names when scanning'; },
     'location.archived': function (r) {
       var s = r.actor_label + ' archived location "' + r.target_label + '"';
       if (r.after && hasNum(r.after.stocktakes_affected)) {
