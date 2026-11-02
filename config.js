@@ -21,9 +21,8 @@ window.BARSCAN_CONFIG = {
   // links below.
   // symbol/price(s) drive the displayed price (renderUpgradePrices() in
   // app.html) — keep them in sync with the actual Stripe price amounts.
-  // TEAM79: the Team links are blank until the new flat Stripe prices and Payment Links
-  // exist; blank sends "Choose Team" to the pricing page rather than to a checkout
-  // at the old price.
+  // Team links: the flat prices created 2 Nov 2026 (the old $59 + per-seat links are
+  // deactivated in Stripe).
   // Solo links reuse the pre-org-tier product's prices (the original pre-rebrand Pro plan,
   // now named "Gantry Solo" in Stripe — renamed 22 Oct 2026, same price ids).
   upgradeUrls: {
@@ -35,8 +34,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: 'A$',
-        monthly: { link: '', price: '79' },   // TEAM79: new Payment Link
-        annual:  { link: '', price: '790' }   // TEAM79: new Payment Link
+        monthly: { link: 'https://buy.stripe.com/test_9B628r1iwh0haKN0FWdEs0m', price: '79' },
+        annual:  { link: 'https://buy.stripe.com/test_bJe3cve5i25n8CFdsIdEs0l', price: '790' }
       }
     },
     USD: {
@@ -47,8 +46,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '$',
-        monthly: { link: '', price: '75' },   // TEAM79: new Payment Link
-        annual:  { link: '', price: '750' }   // TEAM79: new Payment Link
+        monthly: { link: 'https://buy.stripe.com/test_28E4gz8KY4dvcSV9csdEs0n', price: '75' },
+        annual:  { link: 'https://buy.stripe.com/test_8x25kDe5ibFX4mp0FWdEs0o', price: '750' }
       }
     },
     GBP: {
@@ -59,8 +58,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '£',
-        monthly: { link: '', price: '65' },   // TEAM79: new Payment Link
-        annual:  { link: '', price: '650' }   // TEAM79: new Payment Link
+        monthly: { link: 'https://buy.stripe.com/test_4gM7sL8KYeS97yB3S8dEs0p', price: '65' },
+        annual:  { link: 'https://buy.stripe.com/test_8x2aEX1iweS9cSVcoEdEs0q', price: '650' }
       }
     },
     EUR: {
@@ -71,8 +70,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '€',
-        monthly: { link: '', price: '75' },   // TEAM79: new Payment Link
-        annual:  { link: '', price: '750' }   // TEAM79: new Payment Link
+        monthly: { link: 'https://buy.stripe.com/test_4gM5kD2mAeS97yB0FWdEs0r', price: '75' },
+        annual:  { link: 'https://buy.stripe.com/test_7sY4gzd1e8tL1ad2O4dEs0s', price: '750' }
       }
     }
   }

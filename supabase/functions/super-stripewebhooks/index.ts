@@ -57,17 +57,14 @@ const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
   "price_1U0UYUEiJERMRN7vdmuqpNi6": "multi", // AUD annual  (A$590/yr base, OLD)
 
   // Team, flat, up to 10 people logged in at the same time (2 Nov 2026).
-  // TEAM79: fill in the 8 new price ids from the Stripe Dashboard, then deploy.
-  // Until they are here, a checkout on a new Team link is logged as an
-  // "unrecognized price" and the org stays on its current plan.
-  // "price_...": "multi", // AUD monthly (A$79/mo)
-  // "price_...": "multi", // AUD annual  (A$790/yr)
-  // "price_...": "multi", // USD monthly ($75/mo)
-  // "price_...": "multi", // USD annual  ($750/yr)
-  // "price_...": "multi", // GBP monthly (£65/mo)
-  // "price_...": "multi", // GBP annual  (£650/yr)
-  // "price_...": "multi", // EUR monthly (€75/mo)
-  // "price_...": "multi", // EUR annual  (€750/yr)
+  "price_1UXJkIEiJERMRN7vlIZSteN1": "multi", // AUD monthly (A$79/mo)
+  "price_1UXJkMEiJERMRN7vVFi7AeKO": "multi", // AUD annual  (A$790/yr)
+  "price_1UXJkOEiJERMRN7v0GrOxLhm": "multi", // USD monthly ($75/mo)
+  "price_1UXJkPEiJERMRN7vaQNtDttl": "multi", // USD annual  ($750/yr)
+  "price_1UXJkREiJERMRN7vU5mcEJHG": "multi", // GBP monthly (£65/mo)
+  "price_1UXJkTEiJERMRN7voaRVbwYr": "multi", // GBP annual  (£650/yr)
+  "price_1UXJkVEiJERMRN7vs4QsAdN0": "multi", // EUR monthly (€75/mo)
+  "price_1UXJkXEiJERMRN7vLL916Txh": "multi", // EUR annual  (€750/yr)
 };
 
 const encoder = new TextEncoder();
