@@ -268,9 +268,11 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 - **Its own page, `receiving.html`,** like admin.html, so it cannot affect the app, stocktakes or
   exports. Open only to owners/managers of an org with `organisations.receiving_enabled = true`,
   which is NOT client-writable — set it by hand in SQL, per org. Everyone else sees "Coming soon".
-- **Read the flag on its own, and treat a failed read as off** (receiving.html, and
-  `loadReceivingCard()` on app.html's Account). Never add `receiving_enabled` to
-  `refreshOrgStatus()`'s org query: a missing column there takes the whole org refresh down.
+- **Nothing reads `receiving_enabled` any more** (2 Nov 2026). The column was never applied to
+  production (see below), so every read was a 400 in the console; `loadReceivingCard()` and
+  receiving.html now say "Coming soon" without asking. Don't add the column to "fix" the 400:
+  receiving builds on the product list instead. Any future optional flag is read on its own
+  and a failed read is off, never inside `refreshOrgStatus()`'s org query.
 - **Its Phase 1 product master (20261024_01) was superseded on 27 Oct 2026 and never applied**:
   Gantry has ONE product list, the venue product list (see "Product names when scanning"), and
   receiving will build on it. The receiving tables are no longer in `schema.sql`, so
@@ -339,6 +341,14 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   cache; the ⋯ actions wait for the fresh list; logout clears it. Hot RLS policies wrap helper
   calls as `(select public.my_org_id())` so they run once per statement, not per row
   (20261014_03) — keep that wrapping in any new policy on `stocktakes`/`stocktake_items`.
+- **Log in / Create account always ends** (`submitAuth()`, testers 2 Nov 2026). Before the request
+  a session another tab saved is set aside (this tab is on the sign-in screen, so it isn't
+  ours); the wait is bounded (`AUTH_SLOW_MS` "Still…", `AUTH_STILL_MS` why, `AUTH_GIVE_UP_MS`
+  button back with honest advice) and a late answer is still acted on. The outcome stays on
+  screen in `#auth-status`, not a two-second toast. Sign-up is slow because Supabase sends the
+  confirmation email before answering. With confirmation on, an address that already has an
+  account comes back as a user with NO identities and nothing is sent: `signupWasExistingAccount()`
+  sends them to Log in.
 - **Logout never waits on the network** and never binds `onclick = doLogout` (the event
   became the "reason"). It never calls `sb.auth.signOut()` (which holds the auth lock while
   it waits on the server): it bumps `sessionEpoch`, removes the stored session (the client

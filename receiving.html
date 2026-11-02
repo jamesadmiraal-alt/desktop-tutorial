@@ -334,10 +334,13 @@
         var role = res.data && res.data.role;
         var org = res.data && res.data.organisations;
         if (res.error || !org) { wall('Receiving invoices', 'Sign in with an account that belongs to a venue or business.'); return; }
-        // The flag, read on its own: a database without the migration (no
-        // column) must read as "not yet", never as an error page.
-        sb.from('organisations').select('receiving_enabled').eq('id', org.id).maybeSingle().then(function (f) {
-          var open = !f.error && f.data && f.data.receiving_enabled === true;
+        // Closed for everyone. Its product master (20261024_01) was superseded
+        // by the venue product list on 27 Oct 2026 and never applied, so
+        // organisations.receiving_enabled does not exist on production; asking
+        // for it was a 400 on every visit (testers, 2 Nov 2026). Receiving will
+        // build on the product list when it is picked up again.
+        Promise.resolve(null).then(function () {
+          var open = false;
           if (!open) {
             wall('Receiving invoices', 'Scan deliveries as they arrive and check them against the supplier invoice before it’s received in your POS. We’re piloting it with a few venues first — it’ll appear here when it’s ready for ' + org.name + '.');
             return;

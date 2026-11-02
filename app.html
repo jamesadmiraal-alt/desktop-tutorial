@@ -284,6 +284,8 @@
   }
   #auth-submit { width: 100%; margin-top: 18px; }
   .auth-note { font-size: 0.72rem; color: var(--text-faint); margin-top: 14px; text-align: center; line-height: 1.4; }
+  .auth-status { font-size: 0.85rem; color: var(--text-body); margin-top: 10px; text-align: center; line-height: 1.4; }
+  .auth-status.bad { color: var(--danger); }
   .setup-card code { background: var(--bg); padding: 2px 6px; border-radius: 6px; font-size: 0.85em; }
   .setup-card p { color: var(--text-body); font-size: 0.9rem; line-height: 1.5; margin-top: 10px; }
 
@@ -854,6 +856,10 @@
       <button id="takeover-continue" class="primary" style="width:100%">Continue on this device</button>
     </div>
     <button id="auth-submit" class="primary">Log in</button>
+    <!-- What happened to the last Log in / Create account, kept on screen
+         (a toast was gone in two seconds, often behind the phone keyboard:
+         testers saw "no message" for a wrong password, 2 Nov 2026). -->
+    <p id="auth-status" class="auth-status" role="status" style="display:none"></p>
     <div class="auth-note">Your stocktakes are stored in the cloud and sync across devices —
       log in with the same account anywhere to continue.<br>
       Plans start from $29/month · <a href="index.html#pricing" style="color:var(--link)">See pricing</a></div>
@@ -2472,6 +2478,13 @@
     $('login-extras').style.display = mode === 'login' ? '' : 'none';
     $('auth-submit').textContent = mode === 'login' ? 'Log in' : 'Create account';
     $('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+    setAuthStatus('');
+  }
+  function setAuthStatus(text, bad) {
+    var el = $('auth-status');
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+    el.classList.toggle('bad', !!bad);
   }
   $('tab-login').onclick = function () { setAuthMode('login'); };
   $('tab-signup').onclick = function () { setAuthMode('signup'); };
@@ -2731,6 +2744,42 @@
     });
   }
 
+  // A Log in / Create account always ends (testers, 2 Nov 2026: with another
+  // org's session saved in the browser, "Creating account…" never did, and a
+  // slow confirmation email looked like nothing happening for ~15s). Signing
+  // up waits for Supabase to SEND the confirmation email, so it is slow on
+  // purpose and can't be shortcut: the screen says it's still working, and
+  // after a long wait the button works again with honest advice. A late
+  // answer is still acted on (a sign-up that did go through shows "check
+  // your email").
+  var AUTH_SLOW_MS = 4000;
+  var AUTH_STILL_MS = 15000;
+  var AUTH_GIVE_UP_MS = 45000;
+  var authAttempt = 0;
+
+  // With email confirmation on, Supabase answers an address that already has
+  // an account exactly like a new one, and sends nothing; the only sign is a
+  // user with no identities. Without confirmation it says so outright.
+  function signupWasExistingAccount(res) {
+    var e = res && res.error;
+    if (e && (e.code === 'user_already_exists' || /already (been )?registered/i.test(e.message || ''))) return true;
+    var u = res && res.data && res.data.user;
+    return !!(u && Array.isArray(u.identities) && u.identities.length === 0);
+  }
+  function showExistingAccount(email) {
+    setAuthMode('login');
+    $('auth-email').value = email;
+    $('auth-pass').value = ''; $('auth-pass2').value = '';
+    setAuthStatus('That email already has a Gantry account. Log in, or use Forgot password if you don’t know the password.', true);
+  }
+  function loginErrorText(e) {
+    var code = (e && e.code) || '', msg = (e && e.message) || '';
+    if (code === 'invalid_credentials' || /invalid login credentials/i.test(msg)) {
+      return 'That email and password don’t match a Gantry account. Check them and try again, or use Forgot password.';
+    }
+    return 'Log in failed: ' + (msg || 'please try again.');
+  }
+
   function submitAuth() {
     // Enter on the password fields calls this too, so the disabled button alone
     // didn't stop a second submit (22 Oct, P18).
@@ -2739,22 +2788,65 @@
     var email = $('auth-email').value.trim();
     var pw = $('auth-pass').value;
     if (!email || !pw) { toast('Enter an email and password', '#b91c1c'); return; }
+    var signup = authMode === 'signup';
+    var name = '';
+    if (signup) {
+      name = $('auth-name').value.trim();
+      if (!name) { toast('Enter your name', '#b91c1c'); return; }
+      if (pw.length < PASSWORD_MIN) { toast('Password must be ' + passwordRule, '#b91c1c'); return; }
+      if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); return; }
+    }
+    setAuthStatus('');
     $('auth-submit').disabled = true;
+    // This tab is on the sign-in screen, so a session saved in this browser
+    // belongs to another tab. Unhiding it mid-request (setTabSignedOut(false))
+    // let the client refresh that account and run its org's queries while
+    // this one signed up, and the request never came back (2 Nov 2026).
+    // Signing in or up here replaces it anyway; set it aside first. The other
+    // tab's storage listener signs it out with a reason.
+    if (storedAccessToken(sb)) forgetStoredSession(sb);
     // The operator is signing in on purpose: this tab may hold a session again.
     setTabSignedOut(false);
-    var submitLabel = $('auth-submit').textContent;
-    $('auth-submit').textContent = authMode === 'signup' ? 'Creating account…' : 'Logging in…';
+    var attempt = ++authAttempt;
+    var submitLabel = signup ? 'Create account' : 'Log in';
+    $('auth-submit').textContent = signup ? 'Creating account…' : 'Logging in…';
     $('auth-submit').classList.add('busy');
+    var settled = false;
+    var timers = [];
     var done = function () {
+      timers.forEach(clearTimeout);
       $('auth-submit').disabled = false;
       $('auth-submit').textContent = submitLabel;
       $('auth-submit').classList.remove('busy');
     };
-    if (authMode === 'signup') {
-      var name = $('auth-name').value.trim();
-      if (!name) { toast('Enter your name', '#b91c1c'); done(); return; }
-      if (pw.length < PASSWORD_MIN) { toast('Password must be ' + passwordRule, '#b91c1c'); done(); return; }
-      if (pw !== $('auth-pass2').value) { toast('Passwords do not match', '#b91c1c'); done(); return; }
+    timers.push(setTimeout(function () {
+      if (!settled) $('auth-submit').textContent = signup ? 'Still creating your account…' : 'Still logging in…';
+    }, AUTH_SLOW_MS));
+    timers.push(setTimeout(function () {
+      if (!settled) setAuthStatus(signup
+        ? 'Still working. Creating an account also sends your confirmation email, which can take a little while.'
+        : 'Still working. Check your connection.');
+    }, AUTH_STILL_MS));
+    timers.push(setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      done();
+      setAuthStatus(signup
+        ? 'We couldn’t confirm your sign-up. Check your email before trying again: if a confirmation link arrives, your account was created.'
+        : 'Logging in is taking too long. Check your connection and try again.', true);
+    }, AUTH_GIVE_UP_MS));
+    // Each reply runs once, resets the button if nothing else has, and is
+    // dropped if a newer attempt has started since.
+    var reply = function (fn) {
+      return function (arg) {
+        var late = settled;
+        settled = true;
+        if (!late) done();
+        if (attempt !== authAttempt) return;
+        fn(arg, late);
+      };
+    };
+    if (signup) {
       // Org creation/joining is a separate step after this succeeds — see
       // showOrgSetupPrompt() — so nothing org-related is validated here.
       // marketing_opt_in travels as signup metadata so handle_new_user() records
@@ -2775,9 +2867,14 @@
           data: { full_name: name, marketing_opt_in: !!$('auth-marketing').checked },
           emailRedirectTo: location.origin + location.pathname
         }
-      }).then(function (res) {
-        done();
-        if (res.error) { fail(res.error, 'Sign up failed'); return; }
+      }).then(reply(function (res) {
+        if (signupWasExistingAccount(res)) { showExistingAccount(email); return; }
+        if (res.error) {
+          console.error('Sign up failed', res.error);
+          setAuthStatus('Sign up failed: ' + (res.error.message || 'please try again.'), true);
+          return;
+        }
+        setAuthStatus('');
         if (res.data.session) {
           currentUser = { id: res.data.session.user.id, email: res.data.session.user.email, name: name };
           $('auth-pass').value = ''; $('auth-pass2').value = '';
@@ -2788,15 +2885,31 @@
           // back from their inbox.
           showSignupSent(email);
         }
-      });
+      }), reply(function (err) {
+        console.error('Sign up failed', err);
+        setAuthStatus('Couldn’t reach Gantry to create the account. Check your connection, and your email before trying again.', true);
+      }));
     } else {
       rememberMe = $('remember-me').checked;
       try { localStorage.setItem('barscan-remember', rememberMe ? '1' : '0'); } catch (e) {}
-      sb.auth.signInWithPassword({ email: email, password: pw }).then(function (res) {
-        done();
-        if (res.error) { fail(res.error, 'Login failed'); return; }
+      sb.auth.signInWithPassword({ email: email, password: pw }).then(reply(function (res) {
+        if (res.error) {
+          console.error('Login failed', res.error);
+          // Not confirmed yet: offer the confirmation email again, right here.
+          if (res.error.code === 'email_not_confirmed' || /email not confirmed/i.test(res.error.message || '')) {
+            showSignupSent(email);
+            setAuthStatus('Confirm your email first: open the link we sent you, or tap Resend.', true);
+            return;
+          }
+          setAuthStatus(loginErrorText(res.error), true);
+          return;
+        }
+        setAuthStatus('');
         enterApp(res.data.session.user);
-      });
+      }), reply(function (err) {
+        console.error('Login failed', err);
+        setAuthStatus('Couldn’t reach Gantry to log in. Check your connection and try again.', true);
+      }));
     }
   }
   $('auth-submit').onclick = submitAuth;
@@ -4427,18 +4540,11 @@
     $('acct-receiving-open').style.display = 'none';
     $('acct-receiving-badge').textContent = 'Coming soon';
     if (!currentOrg || !currentOrg.id) return;
-    var canManage = currentOrg.role === 'owner' || currentOrg.role === 'manager';
-    var epoch = sessionEpoch;
-    try {
-      sb.from('organisations').select('receiving_enabled').eq('id', currentOrg.id).maybeSingle().then(function (res) {
-        if (epoch !== sessionEpoch) return;
-        var open = !res.error && res.data && res.data.receiving_enabled === true;
-        if (!open) return;
-        $('acct-receiving-badge').textContent = 'Early access';
-        // Phase 1 is setting up the product list — owner/manager work.
-        $('acct-receiving-open').style.display = canManage ? '' : 'none';
-      }, function () { /* stays "coming soon" */ });
-    } catch (e) { /* stays "coming soon" */ }
+    // No request: receiving's flag (organisations.receiving_enabled, from the
+    // superseded 20261024_01) was never applied to production, so reading it
+    // was a 400 every time Account opened (testers, 2 Nov 2026). Receiving
+    // will build on the venue product list; until then it is "Coming soon"
+    // for everyone, and this card says so without asking the server.
   }
   // Opened like admin.html: a page of its own, outside the native bundle.
   $('acct-receiving-open').onclick = function () { openExternal(SITE_URL + 'receiving.html'); };
