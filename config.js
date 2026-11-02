@@ -13,13 +13,17 @@ window.BARSCAN_CONFIG = {
   importFeedback: true,
   // Where the in-app upgrade buttons send people, keyed by currency (chosen
   // from the organisation's country — see COUNTRY_CURRENCY in app.html),
-  // then by tier ('single' flat, 'multi' base+per-concurrent-seat), then by billing
+  // then by tier ('single' and 'multi' both flat: Team is up to 10 people logged in at
+  // the same time since 2 Nov 2026; the old base + per-seat prices are retired), then by billing
   // period ('monthly'/'annual' — see the "Bill annually" toggle in
   // app.html). goUpgrade() falls back to AUD (the home/default currency —
   // see DEFAULT_CURRENCY in app.html) for any currency left with empty
   // links below.
   // symbol/price(s) drive the displayed price (renderUpgradePrices() in
   // app.html) — keep them in sync with the actual Stripe price amounts.
+  // TEAM79: the Team links are blank until the new flat Stripe prices and Payment Links
+  // exist; blank sends "Choose Team" to the pricing page rather than to a checkout
+  // at the old price.
   // Solo links reuse the pre-org-tier product's prices (the original pre-rebrand Pro plan,
   // now named "Gantry Solo" in Stripe — renamed 22 Oct 2026, same price ids).
   upgradeUrls: {
@@ -31,8 +35,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: 'A$',
-        monthly: { link: 'https://buy.stripe.com/test_5kQ5kDaT625n9GJ88odEs0b', basePrice: '59', perSeatPrice: '29' },
-        annual:  { link: 'https://buy.stripe.com/test_6oUeVd6CQ11j2ehdsIdEs0c', basePrice: '590', perSeatPrice: '290' }
+        monthly: { link: '', price: '79' },   // TEAM79: new Payment Link
+        annual:  { link: '', price: '790' }   // TEAM79: new Payment Link
       }
     },
     USD: {
@@ -43,8 +47,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '$',
-        monthly: { link: 'https://buy.stripe.com/test_bJecN55yM9xP069coEdEs0d', basePrice: '55', perSeatPrice: '27' },
-        annual:  { link: 'https://buy.stripe.com/test_7sYfZhf9m7pH4mpagwdEs0e', basePrice: '550', perSeatPrice: '270' }
+        monthly: { link: '', price: '75' },   // TEAM79: new Payment Link
+        annual:  { link: '', price: '750' }   // TEAM79: new Payment Link
       }
     },
     GBP: {
@@ -55,8 +59,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '£',
-        monthly: { link: 'https://buy.stripe.com/test_9B6fZh1iw4dv8CFewMdEs0f', basePrice: '49', perSeatPrice: '25' },
-        annual:  { link: 'https://buy.stripe.com/test_6oU6oH3qE25n3il74kdEs0g', basePrice: '490', perSeatPrice: '250' }
+        monthly: { link: '', price: '65' },   // TEAM79: new Payment Link
+        annual:  { link: '', price: '650' }   // TEAM79: new Payment Link
       }
     },
     EUR: {
@@ -67,8 +71,8 @@ window.BARSCAN_CONFIG = {
       },
       multi: {
         symbol: '€',
-        monthly: { link: 'https://buy.stripe.com/test_6oU4gze5i4dv6ux4WcdEs0h', basePrice: '55', perSeatPrice: '27' },
-        annual:  { link: 'https://buy.stripe.com/test_bJebJ15yMh0hf1388odEs0i', basePrice: '550', perSeatPrice: '270' }
+        monthly: { link: '', price: '75' },   // TEAM79: new Payment Link
+        annual:  { link: '', price: '750' }   // TEAM79: new Payment Link
       }
     }
   }

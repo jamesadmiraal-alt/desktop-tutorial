@@ -7,7 +7,7 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 
 - **No build step.** Plain HTML/CSS/JS, libraries vendored into the repo (no CDNs).
 - `index.html` — marketing landing page (features, POS interest form, pricing: Trial /
-  Solo $29/mo or $290/yr / Team $59/mo or $590/yr).
+  Solo $29/mo or $290/yr / Team $79/mo or $790/yr / Corporate by arrangement).
 - **Plan names on screen are Solo and Team** (renamed 21 Oct 2026 from Single-venue /
   Multi-venue). Only the labels changed: `plan_tier` stays `'single'`/`'multi'`, as do Stripe
   metadata, ids and every key. In app.html, `planLabel(tier)` / `PLAN_LABELS` turn a key into
@@ -134,21 +134,27 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
 
 - Pricing appears in SIX places — landing page, account view (three plan cards), the
   trial wall, the payment-pending screen, `terms.html`, and README — keep them in sync
-  (grep for `$29` / `$290` / `$59`). The in-app prices ARE re-rendered per currency by
+  (grep for `$29` / `$290` / `$79` / `$790`). The in-app prices ARE re-rendered per currency by
   `renderUpgradePrices()` from `config.js`; the static markup is the AUD fallback, and
-  the README/terms figures are reference text only.
+  the README/terms figures are reference text only. **Corporate** (more than 10 at the
+  same time, or a group on one agreement) is not a plan_tier: it's an email to
+  hello@gantrystocktake.com, offered on the landing page, under every Team option in the
+  app, in Admin → Logged in now, in help, terms, and the "all 10 in use" email.
 - Verify changes by driving the app headless with Playwright; the repo verify skill at
   `.claude/skills/verify/SKILL.md` documents the recipe, including how to fake a camera
   stream (y4m with a QR) to test real barcode decoding end to end.
 - `client_reference_id` + `prefilled_email` are appended to payment links by the app —
   the webhook depends on this to match the paying user.
-- **Users vs seats is the pricing model, and the words matter.** Two separate things,
-  and users conflated them until the copy was fixed on 2026-09-01: **how many people
-  you set up** is unlimited and free on Team, while **how many can be counting
-  at the same time** is what's billed ($29/mo each beyond the owner). Say "people" and
-  "at the same time" in anything user-facing; "concurrent user" and "seat" are the
-  billing terms and belong in Stripe and in code, not on screen. The column stays
-  `concurrent_seats` — this is a copy convention, not a rename.
+- **Team is flat: $79/mo, up to 10 people logged in at the same time, the owner included**
+  (2 Nov 2026, migration 20261102_01; it was $59 base + $29/mo per extra person counting
+  at the same time, which customers found confusing). **How many people you set up** is
+  still unlimited and free. The limit comes from the plan, `plan_people_at_once()`, and
+  `claim_seat()` counts everyone logged in; **the owner is never refused** (with 10 in,
+  they still get in and can sign someone out). `concurrent_seats`, `seats_increased_at`
+  and the minimum-term trigger still exist but nothing reads them, and `set-seat-count`
+  is retired (it refuses every call): **never change a Team subscription's Stripe
+  quantity**, because on a flat price it multiplies the bill. Say "people" and "logged in
+  at the same time" on screen; "seat" stays a code word.
   One sentence lives in THREE places and schema.sql says so: `add_team_member()`'s
   exception, `create-team-member`'s 403 body, and the Team view in app.html. Reword all
   three together, and a schema reword needs a migration since the string is in the DB.

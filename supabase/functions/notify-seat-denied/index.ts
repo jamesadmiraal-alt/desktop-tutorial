@@ -99,54 +99,36 @@ Deno.serve(async (req) => {
 
     const orgName = (verdict.org_name as string) ?? "your organisation";
     const blocked = (verdict.blocked_person as string) ?? "A team member";
-    const purchased = Number(verdict.seats_purchased ?? 0);
+    // Team is up to 10 people logged in at the same time, the owner included
+    // (2 Nov 2026). The limit comes from the plan, people_at_once; an older
+    // record_seat_denial() reported it as seats_purchased. There is nothing to
+    // buy any more, so the advice is: someone logs out, the owner signs someone
+    // out in "Logged in now", or, if 10 is regularly too few, Corporate.
+    const limit = Number(verdict.people_at_once ?? verdict.seats_purchased ?? 10) || 10;
     const occupied = Number(verdict.seats_occupied ?? 0);
+    const corporate = "Need more than " + limit + " regularly? Email hello@gantrystocktake.com about a Corporate plan.";
 
-    // The zero-seat case is worth calling out separately rather than reporting
-    // "0 of 0 seats in use", which reads like a bug. A Team org that
-    // never bought seats blocks EVERY non-owner, and an owner who has just
-    // upgraded has no reason to expect that.
-    // Card name kept in step with admin.html, which now calls it "How many can
-    // count at once" rather than "Concurrent seats" — sending someone to look
-    // for a heading that no longer exists is worse than not naming it.
-    const body = purchased === 0
-      ? [
-          `${blocked} couldn't start a count on ${orgName}: there are no extra concurrent seats.`,
-          "",
-          "Your own login is always included. Each additional person who needs to be",
-          "counting at the same time needs a seat.",
-          "",
-          'Set it in the admin console under "How many can count at once".',
-        ].join("\n")
-      : [
-          `${blocked} couldn't start a count on ${orgName}: all concurrent seats are in use.`,
-          "",
-          `Seats: ${purchased}`,
-          `In use right now: ${occupied}`,
-          "",
-          "Either ask someone to log out, or allow one more in the admin console",
-          'under "How many can count at once". You can see who is logged in there too.',
-        ].join("\n");
+    const body = [
+      `${blocked} couldn't log in to ${orgName}: all ${limit} places on your Team plan are in use.`,
+      "",
+      `Logged in right now: ${occupied} of ${limit}`,
+      "",
+      "Ask someone to log out, or sign someone out yourself in the admin console",
+      'under "Logged in now", where you can see who is on.',
+      "",
+      corporate,
+    ].join("\n");
 
-    const ownerTitle = purchased === 0
-      ? `${blocked} can't start a count`
-      : `All concurrent seats are in use`;
-    const ownerParagraphs = purchased === 0
-      ? [
-        `${blocked} couldn't log in to ${orgName}: there are no extra concurrent seats.`,
-        "Your own login is always included. Each additional person who needs to be counting at the same time needs a seat.",
-      ]
-      : [
-        `${blocked} couldn't log in to ${orgName}: all concurrent seats are in use.`,
-        `Seats: ${purchased}. In use right now: ${occupied}.`,
-        "Either ask someone to log out, or allow one more. You can see who is logged in right now in the admin console.",
-      ];
+    const ownerTitle = `All ${limit} places are in use`;
+    const ownerParagraphs = [
+      `${blocked} couldn't log in to ${orgName}: all ${limit} places on your Team plan are in use (${occupied} logged in right now).`,
+      'Ask someone to log out, or sign someone out yourself in the admin console under "Logged in now".',
+      corporate,
+    ];
 
     const result = await sendEmail({
       to: ownerEmail,
-      subject: purchased === 0
-        ? `${orgName}: a team member can't start a count`
-        : `${orgName}: all concurrent seats are in use`,
+      subject: `${orgName}: all ${limit} places are in use`,
       text: body + "\n\n" + `Manage ${ADMIN_URL}` + mailFooter(),
       html: brandedHtml({
         title: ownerTitle,
@@ -176,14 +158,14 @@ Deno.serve(async (req) => {
     // counted, nor turn a courtesy call into a 500.
     if (user.email) {
       try {
-        const staffTitle = "All concurrent seats are in use";
+        const staffTitle = `All ${limit} places are in use`;
         const staffParagraphs = [
-          `You can't start a count on ${orgName} right now — all the concurrent seats are in use.`,
-          "Ask the owner to free one up, or to allow one more person to count at the same time.",
+          `You can't log in to ${orgName} right now: all ${limit} places on its Team plan are in use.`,
+          "Try again when someone logs out, or ask the owner to sign someone out.",
         ];
         const staffResult = await sendEmail({
           to: user.email,
-          subject: "All concurrent seats are in use",
+          subject: `All ${limit} places are in use`,
           text: [staffTitle, "", ...staffParagraphs, "", `Open ${APP_URL}`].join("\n") + mailFooter(),
           html: brandedHtml({
             title: staffTitle,

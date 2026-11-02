@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
       return jsonResponse(
         {
           error:
-            "Solo ($29/mo) is just you — the owner. Team ($59/mo) lets you set up as many people as you like, and costs $29/mo for each extra person counting at the same time.",
+            "Solo ($29/mo) is just you, the owner. Team ($79/mo) lets you set up as many people as you like, with up to 10 logged in at the same time.",
         },
         403,
       );

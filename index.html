@@ -100,7 +100,7 @@
   .step p { color: var(--text-dim); font-size: 0.9rem; }
 
   .pricing { padding: 48px 0 24px; }
-  .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; max-width: 720px; margin: 0 auto; }
+  .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; max-width: 1080px; margin: 0 auto; }
   .plan { background: var(--surface); border-radius: 16px; padding: 26px 22px; display: flex; flex-direction: column; }
   .plan.pro { border: 2px solid var(--success); position: relative; }
   .plan.pro .tag {
@@ -111,6 +111,7 @@
   .plan h3 { font-size: 1.1rem; }
   .plan .plan-sub { color: var(--text-dim); font-size: 0.88rem; margin-top: 2px; }
   .plan .price { font-size: 2.2rem; font-weight: 800; margin: 8px 0 2px; }
+  .plan .price.talk { font-size: 1.7rem; }
   .plan .per { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 16px; }
   .plan .annual-offer {
     background: var(--bg); border: 1px solid var(--success); border-radius: 10px;
@@ -346,24 +347,36 @@
       <div class="tag">For teams</div>
       <h3>Team</h3>
       <div class="plan-sub">Your staff counting together, at one venue or many.</div>
-      <div class="price">$59</div>
-      <!-- "Concurrent user" was doing too much work here: it is the billing
-           term, not something a publican says. The two ideas have to be
-           separated — how many people you set up (any number) versus how many
-           can count at the same time (what you pay for).
-           The base plan is the OWNER counting: concurrent_seats defaults to 0
-           and the owner is exempt from the pool (schema.sql, claim_seat), so
-           every additional simultaneous counter is a purchased seat. -->
-      <div class="per">per month, for you counting</div>
-      <div class="annual-offer">or <b>$590/year</b> — 12 months for the price of 10 <span class="offer-tag">2 months free</span></div>
+      <div class="price">$79</div>
+      <!-- Flat since 2 Nov 2026: up to 10 people logged in at the same time,
+           the owner included (plan_people_at_once() / claim_seat() in
+           schema.sql). How many people you SET UP is still unlimited; the old
+           "$29/mo per extra person counting at the same time" is gone. -->
+      <div class="per">per month</div>
+      <div class="annual-offer">or <b>$790/year</b> — 12 months for the price of 10 <span class="offer-tag">2 months free</span></div>
       <ul>
-        <li>Add as many staff as you need — no charge per person</li>
-        <li><span>$29/mo for each extra person counting <b>at the same time</b></span></li>
+        <li><span>Up to <b>10 people logged in at the same time</b></span></li>
+        <li>Set up as many staff as you need, no charge per person</li>
         <li>Unlimited venues and locations</li>
         <li>All venues' stocktakes centralised at head office</li>
         <li>Export ready to import into your stock management system</li>
       </ul>
       <a class="btn success" href="app.html#signup">Get started</a>
+    </div>
+    <!-- Corporate (2 Nov 2026): agreed with each customer, by email or a
+         meeting, so it is an email to hello@, not a checkout. -->
+    <div class="plan">
+      <h3>Corporate</h3>
+      <div class="plan-sub">For groups and larger teams.</div>
+      <div class="price talk">Let's talk</div>
+      <div class="per">priced by arrangement</div>
+      <ul>
+        <li>More than 10 people logged in at the same time</li>
+        <li>Groups of venues on one agreement</li>
+        <li>Everything in Team</li>
+        <li>Agreed with you directly, by email or in a meeting</li>
+      </ul>
+      <a class="btn" href="mailto:hello@gantrystocktake.com?subject=Gantry%20Corporate%20plan">Talk to us</a>
     </div>
   </div>
 </section>

@@ -132,6 +132,10 @@
   }
   .upgrade-opt .opt-note:empty { display: none; }
   .upgrade-opt.best { border-color: var(--success); }
+  /* Corporate (2 Nov 2026): more than 10 at once is arranged with us, not
+     bought here, so it is an email link, never a checkout button. */
+  .corporate-opt { display: block; font-size: 0.82rem; line-height: 1.4; color: var(--text-dim); margin: 4px 2px 10px; text-decoration: none; }
+  .corporate-opt b { color: var(--link); font-weight: 600; }
   .save-tag {
     background: var(--success); color: var(--on-accent); font-size: 0.68rem; font-weight: 700;
     padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: middle;
@@ -831,9 +835,10 @@
       <button class="upgrade-opt best" data-tier="multi">
         <span><span class="opt-name">Team</span>
           <div class="opt-sub">Your staff counting together, at one venue or many.</div></span>
-        <span class="opt-price">$59<small>/mo</small></span>
-        <span class="opt-note">+$29/mo per extra person counting at the same time</span>
+        <span class="opt-price">$79<small>/mo</small></span>
+        <span class="opt-note">Up to 10 people logged in at the same time</span>
       </button>
+      <a class="corporate-opt" href="mailto:hello@gantrystocktake.com?subject=Gantry%20Corporate%20plan">More than 10 people at the same time? <b>Corporate</b> plans are by arrangement. Email us.</a>
     </div>
     <!-- Team only: all of this org's purchased concurrent seats are
          already in use (see claim_seat() in schema.sql). Same "distinct
@@ -1068,9 +1073,10 @@
       <button class="upgrade-opt best" data-tier="multi">
         <span><span class="opt-name">Team</span>
           <div class="opt-sub">Your staff counting together, at one venue or many.</div></span>
-        <span class="opt-price">$59<small>/mo</small></span>
-        <span class="opt-note">+$29/mo per extra person counting at the same time</span>
+        <span class="opt-price">$79<small>/mo</small></span>
+        <span class="opt-note">Up to 10 people logged in at the same time</span>
       </button>
+      <a class="corporate-opt" href="mailto:hello@gantrystocktake.com?subject=Gantry%20Corporate%20plan">More than 10 people at the same time? <b>Corporate</b> plans are by arrangement. Email us.</a>
     </div>
     <div id="acct-plan-single" style="display:none">
       <span class="plan-badge pro">Solo plan</span>
@@ -1080,14 +1086,16 @@
       <button class="upgrade-opt" data-tier="multi">
         <span><span class="opt-name">Upgrade to Team</span>
           <div class="opt-sub">Add as many staff as you need, at one venue or many.</div></span>
-        <span class="opt-price">$59<small>/mo</small></span>
-        <span class="opt-note">+$29/mo per extra person counting at the same time</span>
+        <span class="opt-price">$79<small>/mo</small></span>
+        <span class="opt-note">Up to 10 people logged in at the same time</span>
       </button>
+      <a class="corporate-opt" href="mailto:hello@gantrystocktake.com?subject=Gantry%20Corporate%20plan">More than 10 people at the same time? <b>Corporate</b> plans are by arrangement. Email us.</a>
       <div id="acct-note">Thanks for supporting Gantry!</div>
     </div>
     <div id="acct-plan-multi" style="display:none">
       <span class="plan-badge pro">Team plan</span>
-      <div class="plan-desc">Unlimited venues, locations and products, and as many people set up as you like. Change how many can count at the same time from the admin console any time — billing adjusts automatically.</div>
+      <div class="plan-desc">Unlimited venues, locations and products. Set up as many people as you like, with up to 10 logged in at the same time. See who is logged in, and sign anyone out, in the admin console.</div>
+      <a class="corporate-opt" href="mailto:hello@gantrystocktake.com?subject=Gantry%20Corporate%20plan">More than 10 people at the same time? <b>Corporate</b> plans are by arrangement. Email us.</a>
       <button id="manage-sub-btn-multi" class="manage-sub-btn">Manage subscription</button>
       <div id="acct-note">Update your payment method, view invoices, or cancel — handled securely by Stripe.
         Trouble with the button above? Reply to your welcome email.</div>
@@ -1673,7 +1681,7 @@
 
      It explains the DIFFERENCE, not just the prices — someone who has just been
      stopped mid-count is deciding between two plans for the first time, and
-     "$29 vs $59" alone doesn't tell them which one they are. -->
+     "$29 vs $79" alone doesn't tell them which one they are. -->
 <div id="trial-limit-overlay" class="overlay">
   <div class="dialog">
     <div class="title">That's the trial</div>
@@ -1696,9 +1704,10 @@
     <button class="upgrade-opt best" data-tier="multi">
       <span><span class="opt-name">Team</span>
         <div class="opt-sub">Your staff counting together, at one venue or many — every venue's counts in one place.</div></span>
-      <span class="opt-price">$59<small>/mo</small></span>
-      <span class="opt-note">+$29/mo per extra person counting at the same time</span>
+      <span class="opt-price">$79<small>/mo</small></span>
+      <span class="opt-note">Up to 10 people logged in at the same time</span>
     </button>
+    <a class="corporate-opt" href="mailto:hello@gantrystocktake.com?subject=Gantry%20Corporate%20plan">More than 10 people at the same time? <b>Corporate</b> plans are by arrangement. Email us.</a>
     <div class="dialog-actions" style="margin-top:14px">
       <button id="trial-limit-close" class="flex">Close</button>
     </div>
@@ -2634,21 +2643,15 @@
       // upgrade — so that is the entire message.
       $('auth-heading').textContent = 'Solo is owner only';
       $('seats-full-message').textContent = orgName + ' is on the Solo plan ($29/mo), '
-        + 'which covers one user — the owner. The owner can upgrade to Team ($59/mo) '
-        + 'from their Account screen to add staff.';
-    } else if (reason === 'no_seats_purchased') {
-      // Says what to ask for in the words the owner will see on their own
-      // screen. "Hasn't purchased any concurrent staff seats" described the
-      // billing row rather than the situation, which is simply that only the
-      // owner can count right now.
-      $('auth-heading').textContent = 'Only the owner can count so far';
-      $('seats-full-message').textContent = 'On ' + orgName + ', only the owner can count at the '
-        + 'moment. Ask them to allow more people to count at the same time, from the admin console.';
+        + 'which covers one user, the owner. The owner can upgrade to Team ($79/mo, up to 10 '
+        + 'people logged in at the same time) from their Account screen to add staff.';
     } else {
-      $('auth-heading').textContent = 'Everyone else is counting';
-      $('seats-full-message').textContent = orgName + ' has as many people counting right now as '
-        + 'the plan allows. Wait for someone to finish and log out, or ask the owner to allow one '
-        + 'more from the admin console.';
+      // Team: everyone counted, the owner included (claim_seat(), 20261102_01).
+      // 'no_seats_purchased' can no longer happen; an old reply lands here too.
+      $('auth-heading').textContent = 'All 10 places are in use';
+      $('seats-full-message').textContent = orgName + ' is on the Team plan, which has room for 10 '
+        + 'people logged in at the same time, and all 10 are in use. Try again when someone logs out, '
+        + 'or ask the owner to sign someone out from the admin console.';
     }
     $('seats-full-row').style.display = '';
     showView('auth');
@@ -3360,21 +3363,19 @@
     document.querySelectorAll('.upgrade-opt').forEach(function (b) {
       var priceEl = b.querySelector('.opt-price');
       if (!priceEl) return;
-      // The per-seat line lives outside .opt-price so it can wrap — see the
-      // .opt-note rule. Single-tier buttons have no .opt-note at all, hence the
-      // null guard; and it is cleared rather than left stale, since one button
-      // can be re-rendered for either tier.
+      // Team's "up to 10 at the same time" line lives outside .opt-price so it can
+      // wrap; see the .opt-note rule. Single-tier buttons have no .opt-note at
+      // all, hence the null guard; and it is cleared rather than left stale,
+      // since one button can be re-rendered for either tier.
       var noteEl = b.querySelector('.opt-note');
       var tier = b.dataset.tier;
       var tierInfo = info[tier] || {};
       var symbol = tierInfo.symbol || '$';
       var entry = tierInfo[period] || {};
       if (tier === 'multi') {
-        priceEl.innerHTML = symbol + (entry.basePrice || (billAnnually ? '590' : '59')) + '<small>' + unit + '</small>';
-        if (noteEl) {
-          noteEl.textContent = '+' + symbol + (entry.perSeatPrice || (billAnnually ? '290' : '29'))
-            + unit + ' per extra person counting at the same time';
-        }
+        // Flat since 2 Nov 2026: up to 10 people logged in at the same time.
+        priceEl.innerHTML = symbol + (entry.price || (billAnnually ? '790' : '79')) + '<small>' + unit + '</small>';
+        if (noteEl) noteEl.textContent = 'Up to 10 people logged in at the same time';
       } else {
         priceEl.innerHTML = symbol + (entry.price || (billAnnually ? '290' : '29')) + '<small>' + unit + '</small>';
         if (noteEl) noteEl.textContent = '';
@@ -4626,7 +4627,7 @@
   $('team-back').onclick = function () { openAccount(); };
   // Points at the checkout that already exists rather than inventing a second
   // one: Account is where #acct-plan-single's upgrade options live, already
-  // priced at $59/mo plus $29/mo per extra concurrent user, already wired to the
+  // priced ($79/mo Team, up to 10 at the same time), already wired to the
   // Payment Links in config.js.
   $('team-upgrade-btn').onclick = function () { openAccount(); };
   // Logo-as-home, same destination as the explicit back buttons — only does
@@ -4704,12 +4705,12 @@
     $('team-add-member-intro').textContent = isMulti
       ? 'Creates their login directly — no join code needed. They can change this password later from this app.'
       : (isTrial
-        ? 'The trial is just you. Solo ($29/mo) is one venue, just you. Team ($59/mo) lets you add as many '
-          + 'people as you like, at one venue or several. $29/mo for each extra person counting at the same time.'
+        ? 'The trial is just you. Solo ($29/mo) is one venue, just you. Team ($79/mo) lets you add as many '
+          + 'people as you like, at one venue or several, with up to 10 logged in at the same time.'
         // Same sentence as add_team_member()'s exception and create-team-member's
         // 403 — reword all three together.
-        : 'Solo ($29/mo) is just you — the owner. Team ($59/mo) lets you set up as many people '
-          + 'as you like, and costs $29/mo for each extra person counting at the same time.');
+        : 'Solo ($29/mo) is just you, the owner. Team ($79/mo) lets you set up as many people '
+          + 'as you like, with up to 10 logged in at the same time.');
 
     loadTeamAuditLog();
     Promise.all([
@@ -4913,7 +4914,7 @@
       $('team-add-member-btn').disabled = false;
       // No "Could not add team member:" prefix. Every error this function
       // returns is already a complete, owner-facing sentence — the plan gate's
-      // is an upgrade offer naming $59 and $29 — and prefixing it turns advice
+      // is an upgrade offer naming $29 and $79 — and prefixing it turns advice
       // into what reads as an internal failure report.
       if (res.error || (res.data && res.data.error)) { failFn(res, ''); return; }
       $('team-add-member-form').style.display = 'none';

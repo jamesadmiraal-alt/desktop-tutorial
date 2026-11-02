@@ -864,7 +864,7 @@ begin
   -- same sentence is returned by create-team-member (403) and shown on the Team
   -- view; keep the three in step if it is ever reworded.
   if (select plan_tier from public.organisations where id = org_id) is distinct from 'multi' then
-    raise exception 'Solo ($29/mo) is just you — the owner. Team ($59/mo) lets you set up as many people as you like, and costs $29/mo for each extra person counting at the same time.';
+    raise exception 'Solo ($29/mo) is just you, the owner. Team ($79/mo) lets you set up as many people as you like, with up to 10 logged in at the same time.';
   end if;
 
   if p_role not in ('manager', 'staff') then
@@ -2863,6 +2863,16 @@ create policy "owner manager read active sessions" on public.active_sessions
 -- from the two quite different refusals: a full pool is the org's problem (buy a
 -- seat), another device is the operator's (take over or go away). The old boolean
 -- form is kept below as a wrapper so clients mid-deploy don't break.
+-- How many people a plan allows logged in at the same time. Team ('multi')
+-- is 10, the owner included (2 Nov 2026). Anything else is owner-only, which
+-- claim_seat() enforces separately, so NULL here. A Corporate tier, if one is
+-- ever a plan_tier rather than an arrangement, slots in here.
+create or replace function public.plan_people_at_once(p_tier text)
+returns integer language sql immutable as $$
+  select case coalesce(p_tier, '') when 'multi' then 10 end
+$$;
+grant execute on function public.plan_people_at_once(text) to authenticated;
+
 create or replace function public.claim_seat(p_device_id text, p_takeover boolean default false)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
@@ -2951,22 +2961,19 @@ begin
     return jsonb_build_object('granted', false, 'reason', 'single_venue_owner_only');
   end if;
 
-  -- ---- Rule 2: the seat pool (multi-venue, non-owner) ----
+  -- ---- Rule 2: the Team limit (non-owner) ----
+  -- Team includes plan_people_at_once('multi') = 10 people logged in at the
+  -- same time, the owner counted among them (2 Nov 2026; it used to be a
+  -- purchased number of extra seats, concurrent_seats, now unused). The owner
+  -- is never refused, so with 10 others already in, the owner still gets in
+  -- and can sign someone out from Admin.
   if v_plan = 'multi' and v_role is distinct from 'owner' then
     select count(*) into v_occupied from public.active_sessions
      where org_id = v_org_id and last_seen_at > v_stale_before;
 
-    if v_occupied >= v_seats then
-      -- Distinguish "nobody's purchased any staff seats yet" (v_seats = 0,
-      -- true even with v_occupied = 0 — this is the very first non-owner
-      -- login on a fresh org) from a pool that's genuinely full right now.
-      -- The client shows different, non-misleading copy for each: telling
-      -- someone to "ask a teammate to log out" when there IS no teammate
-      -- logged in is actively wrong, not just unhelpful.
-      if v_seats = 0 then
-        return jsonb_build_object('granted', false, 'reason', 'no_seats_purchased');
-      end if;
-      return jsonb_build_object('granted', false, 'reason', 'seats_full');
+    if v_occupied >= public.plan_people_at_once(v_plan) then
+      return jsonb_build_object('granted', false, 'reason', 'seats_full',
+                                'limit', public.plan_people_at_once(v_plan));
     end if;
   end if;
 
@@ -3048,7 +3055,7 @@ begin
    where org_id = v_org_id
      and last_seen_at > now() - make_interval(secs => v_interval_secs * 2.5);
 
-  if v_occupied < v_seats then
+  if v_occupied < public.plan_people_at_once(v_plan) then
     return jsonb_build_object('denied', false, 'notify', false, 'reason', 'a seat is available');
   end if;
 
@@ -3059,7 +3066,7 @@ begin
   -- reviewing the activity log later can see how often people were locked out.
   insert into public.audit_log (org_id, org_label, actor_id, actor_label, action, entity_type, entity_id, target_label, after)
   values (v_org_id, v_org_name, auth.uid(), v_actor_label, 'seat.denied', 'membership', auth.uid(), v_actor_label,
-          jsonb_build_object('seats_purchased', v_seats, 'seats_occupied', v_occupied));
+          jsonb_build_object('people_at_once', public.plan_people_at_once(v_plan), 'seats_occupied', v_occupied));
 
   if v_notified_at is null or v_notified_at < now() - v_throttle then
     v_should_notify := true;
@@ -3075,7 +3082,10 @@ begin
     'org_name', v_org_name,
     'owner_user_id', v_owner_id,
     'blocked_person', v_actor_label,
-    'seats_purchased', v_seats,
+    -- seats_purchased kept for an older deployed notify-seat-denied; it reads
+    -- the limit now, never a purchased number.
+    'seats_purchased', public.plan_people_at_once(v_plan),
+    'people_at_once', public.plan_people_at_once(v_plan),
     'seats_occupied', v_occupied
   );
 end $$;

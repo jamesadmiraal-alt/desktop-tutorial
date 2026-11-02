@@ -50,15 +50,24 @@ const PRICE_TIER_MAP: Record<string, "single" | "multi"> = {
   "price_1Tv5fIEiJERMRN7vAfgFfbca": "single", // AUD annual  (A$290/yr)
   "price_1Tv5ejEiJERMRN7vvAweNVYU": "single", // AUD monthly (A$29/mo)
 
-  "price_1TzmL3EiJERMRN7vOlaRkmPS": "multi", // AUD monthly (A$59/mo base)
-  "price_1U0UYUEiJERMRN7vdmuqpNi6": "multi", // AUD annual  (A$590/yr base)
-  // AUD-only for now (per dev decision — see the org-model planning doc /
-  // this session's history) — USD/GBP/EUR Team prices not created.
-  // Every non-AUD country already falls back to AUD's real links/prices
-  // (upgradeLink()/renderUpgradePrices() in app.html, DEFAULT_CURRENCY),
-  // so this isn't a gap, just a deliberately deferred currency.
-  // "price_XXXXXXXXXXXXXX_AUD_MULTI_ANNUAL":  "multi",
-  // ...8 more once Team's prices exist (one per currency per period)
+  // The old Team prices ($59 base + $29 per extra person, graduated). Kept so
+  // any subscription still on them keeps mapping to Team; their Payment Links
+  // are deactivated (2 Nov 2026) so nobody new can buy them.
+  "price_1TzmL3EiJERMRN7vOlaRkmPS": "multi", // AUD monthly (A$59/mo base, OLD)
+  "price_1U0UYUEiJERMRN7vdmuqpNi6": "multi", // AUD annual  (A$590/yr base, OLD)
+
+  // Team, flat, up to 10 people logged in at the same time (2 Nov 2026).
+  // TEAM79: fill in the 8 new price ids from the Stripe Dashboard, then deploy.
+  // Until they are here, a checkout on a new Team link is logged as an
+  // "unrecognized price" and the org stays on its current plan.
+  // "price_...": "multi", // AUD monthly (A$79/mo)
+  // "price_...": "multi", // AUD annual  (A$790/yr)
+  // "price_...": "multi", // USD monthly ($75/mo)
+  // "price_...": "multi", // USD annual  ($750/yr)
+  // "price_...": "multi", // GBP monthly (£65/mo)
+  // "price_...": "multi", // GBP annual  (£650/yr)
+  // "price_...": "multi", // EUR monthly (€75/mo)
+  // "price_...": "multi", // EUR annual  (€750/yr)
 };
 
 const encoder = new TextEncoder();
@@ -89,7 +98,7 @@ async function sendUpgradeWelcome(tier: "single" | "multi", to: string | undefin
     "Scan a barcode, type the qty, export CSV into the stocktake import you already use.",
   ];
   // Multi's one extra line, and the only difference between the two mails.
-  if (tier === "multi") paragraphs.push("Your team can count at once.");
+  if (tier === "multi") paragraphs.push("Set up as many people as you like. Up to 10 of you can be logged in at the same time.");
 
   // The plain-text half carries the URL as text, since there is no anchor to
   // put a label on. Always sent alongside the HTML: some clients prefer it,
@@ -270,8 +279,8 @@ Deno.serve(async (req) => {
           break;
         }
         // One Stripe call gets both the purchased price (-> tier) and the
-        // subscription item id (needed later by set-seat-count to keep
-        // quantity in sync with purchased concurrent-seat count).
+        // subscription item id. The item id was for set-seat-count, retired on
+        // 2 Nov 2026 (Team is a flat price now); it is still stored, harmlessly.
         const sub = await stripeGetJson(`subscriptions/${subscriptionId}`);
         const priceId = sub.items?.data?.[0]?.price?.id;
         const subscriptionItemId = sub.items?.data?.[0]?.id;

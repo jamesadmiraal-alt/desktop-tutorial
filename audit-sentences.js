@@ -98,6 +98,11 @@ window.GANTRY_AUDIT = (function () {
     },
     'seat.denied': function (r) {
       var a = r.after || {};
+      // Since 2 Nov 2026 (20261102_01): Team's limit of 10 people logged in at
+      // the same time. Older rows below still say "seats", as they were written.
+      if (typeof a.people_at_once === 'number') {
+        return r.target_label + ' couldn’t log in: all ' + a.people_at_once + ' places were in use';
+      }
       if (typeof a.seats_purchased !== 'number') {
         return r.target_label + ' was blocked from logging in — no seats free';
       }

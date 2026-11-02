@@ -6,9 +6,9 @@ is needed.
 
 Billing is **organisation-scoped**, not per-user (see the org-model planning doc):
 an organisation is on the **Free**, **Solo** ($29/mo flat), or **Team**
-($59/mo base + $29/mo per extra concurrent user beyond the owner, via Stripe's
-native graduated pricing — venues/locations themselves are unlimited and free)
-plan, each also offered **monthly or annually** (a "Bill annually" toggle
+($79/mo flat, up to 10 people logged in at the same time, the owner included —
+since 2 Nov 2026; it used to be $59 base + $29 per extra concurrent user via
+graduated pricing. Venues/locations are unlimited and free) plan, each also offered **monthly or annually** (a "Bill annually" toggle
 in the app swaps between them — annual is priced at 10x the monthly amount, i.e.
 2 months free, matching the app's copy). Everything below happens in the Stripe
 **sandbox/test** dashboard first. When you go live, repeat the same steps in live
@@ -41,17 +41,22 @@ two billing periods = **16 prices** total — tedious, but each one is quick.
    | GBP | £25 | £250 |
    | EUR | €27 | €270 |
 2. **+ Add product** again → create **Gantry Team**. For each currency
-   **and** each period (8 more prices), add a recurring price using Stripe's
-   tiered/graduated pricing (pricing model → "Tiered", tiers mode →
-   "Graduated"), with exactly two tiers:
-   - **Tier 1**: up to **1** unit, **flat fee** — $59/mo or $590/yr (AUD; scale
-     the other currencies the same way you did for Solo above)
-   - **Tier 2**: up to **∞**, **per-unit** — $29/mo or $290/yr
+   **and** each period (8 more prices), add a plain **flat recurring price**
+   (pricing model "Standard", quantity 1). Since 2 Nov 2026:
+   | Currency | Monthly | Annual |
+   |---|---|---|
+   | AUD | $79 | $790 |
+   | USD | $75 | $750 |
+   | GBP | £65 | £650 |
+   | EUR | €75 | €750 |
 
-   This produces a total of `base + perSeat × (quantity − 1)` — quantity
-   tracks 1 (the always-free owner) plus however many extra concurrent
-   seats the owner has purchased, kept in sync by the `set-seat-count`
-   Edge Function (§9) whenever the owner changes it in admin.html.
+   Team includes up to 10 people logged in at the same time; nothing is sold
+   per person any more. The limit lives in the database
+   (`plan_people_at_once()`), not in Stripe. **Never change a Team
+   subscription's quantity**: on a flat price it multiplies the bill.
+   The old graduated Team prices ($59 base + $29/extra) are retired: deactivate
+   their Payment Links; keep the prices themselves in `PRICE_TIER_MAP` so any
+   subscription still on one maps to Team.
 3. (The old single "Barscan Pro" product from before the org-tier rework, if it
    still exists, isn't used by any current code — safe to leave alone or archive.)
 
@@ -119,8 +124,8 @@ upgradeUrls: {
     },
     multi: {
       symbol: 'A$',
-      monthly: { link: 'PASTE HERE', basePrice: '59', perSeatPrice: '29' },
-      annual:  { link: 'PASTE HERE', basePrice: '590', perSeatPrice: '290' }
+      monthly: { link: 'PASTE HERE', price: '79' },
+      annual:  { link: 'PASTE HERE', price: '790' }
     }
   },
   USD: { /* same shape */ }, GBP: { /* same shape */ }, EUR: { /* same shape */ }
@@ -227,17 +232,17 @@ stay **disabled** for this one.
 3. You're redirected back to the app with a "Payment received" message
 4. Within a few seconds the webhook flips the organisation's plan — open
    👤 Account and the matching plan badge should appear
-5. For Team specifically: in `admin.html`'s "How many can count at once"
-   card, set the extra people to 1 and click Update — check the Stripe
-   Dashboard's subscription afterward and confirm its quantity is 2
-   (the owner's included slot + 1 purchased)
+5. For Team specifically: confirm the Stripe subscription's quantity is 1 and
+   stays 1. In `admin.html`, "Logged in now" shows "N of 10 logged in"; an
+   11th person (not the owner) is refused at login
 6. To test cancellation: Stripe Dashboard → Customers → cancel the subscription →
    the organisation drops back to `pending` (locked out — there is no free tier)
 
 ## 8. Add the Stripe secret key to Supabase
 
-`super-stripewebhooks`, `create-portal-session`, `delete-account`, and
-`set-seat-count` all call Stripe's API (not just verify inbound events), so
+`super-stripewebhooks`, `create-portal-session` and `delete-account`
+all call Stripe's API (`set-seat-count` did too until it was retired on
+2 Nov 2026) (not just verify inbound events), so
 they need your actual secret key.
 
 Supabase Dashboard → **Edge Functions** → **Secrets** → add
@@ -250,10 +255,12 @@ It's shared across every Edge Function in the project, so this is a one-time ste
 Five functions besides the webhook: `create-portal-session` (Manage
 subscription), `delete-account`, `create-team-member`/`update-team-member`
 (owner-provisioned logins — no billing involved), **`kick-user`** (the admin
-console's "Log out" on an active session — frees a concurrent seat), and
-**`set-seat-count`** (only used on the Team tier, when the owner changes
-how many extra concurrent seats they're paying for — see the org-model planning
-doc for why this needs to be server-side at all).
+console's "Log out" on an active session — frees one of Team's 10 places), and
+**`set-seat-count`**, **retired on 2 Nov 2026**: it now refuses every call
+(410) and never talks to Stripe. It used to set a Team subscription's
+quantity, which on the new flat price would multiply the bill. **Deploy the
+retired version FIRST**, before the new pages, migration 20261102_01 and the
+webhook, so no cached admin page can change a quantity.
 
 **Every one of these must actually be deployed.** A function that exists in the
 repo but was never deployed fails in the app as
@@ -286,7 +293,8 @@ opens Stripe's hosted Customer Portal.
 
 1. Stripe Dashboard → **Settings** → **Billing** → **Customer portal**
 2. Under **Subscriptions**, make sure **Customers can cancel subscriptions** is
-   turned on (it's on by default in test mode, but double-check)
+   turned on (it's on by default in test mode, but double-check), and that
+   customers **cannot change the quantity** (Team is flat since 2 Nov 2026)
 3. Save. No link to copy — the app requests a portal session per-organisation via
    `create-portal-session`.
 
@@ -297,11 +305,10 @@ opens Stripe's hosted Customer Portal.
 the right customer, and that a staff/manager account gets a clear "only the
 owner can manage billing" error instead (403).
 
-**Team location add/remove**: as owner/manager of a Team org, add
-a location in `admin.html` → confirm the Stripe subscription's quantity
-increments; remove one → confirm it decrements. Try removing a location that
-still has stocktakes — should be blocked with a clear message, not a raw
-database error.
+**Team location add/remove**: as owner/manager of a Team org, add and remove
+a location in `admin.html` → the Stripe subscription's quantity must NOT
+change (it stays 1). Try removing a location that still has stocktakes —
+should be blocked with a clear message, not a raw database error.
 
 **Delete account** — three cases, all worth testing with throwaway accounts:
 - **Solo org** (you're the only member): delete → confirm the Stripe
