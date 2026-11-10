@@ -188,7 +188,7 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   degrade gracefully because most clients block remote images by default.
 - **Export shape comes from an export template**, not code: a row of `export_templates`
   (identifier type + fallback, `barcode_rules`, ordered `columns`, header, delimiter,
-  extension, filename pattern, `bom`, `import_behaviour`, `mode`), chosen per org as
+  extension, filename pattern, `bom`, `trailing_newline`, `import_behaviour`, `mode`), chosen per org as
   `organisations.export_template_id` via `set_export_template()` — owner/manager — from
   EITHER admin.html's Organisation card OR app.html's Account → Exports card. The second
   exists because admin.html is Multi-venue only: without it, single-venue and trial venues
@@ -214,6 +214,16 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   server-only column) are labelled in the picker and under the Export button, as is
   `import_behaviour = 'replace'`. Fill mode (`mode = 'fill'`) is refused by both the RPC
   and the engine until Phase 4.
+  **H&L trials (20261111_01):** four unverified system templates, `hl_test_a`..`d`, one per
+  candidate layout for H&L Stock's BHT import, seeded from their OWN `$hl_seed$` block (same
+  must-match-schema.sql rule, same test). Three get deleted once H&L confirms one. They brought
+  `.dat`, fixed width (`delimiter = ''`, each column's `width`/`align`/`pad`; never truncated, an
+  overlong value goes out whole and is reported in `overflow`, which the download toast names)
+  and `trailing_newline` (false = the old bytes). `.dat` and `''` are allowed on **system
+  templates only** by the check constraints, because the builder offers csv/txt and comma/tab
+  and would re-save anything else as those; `builderCanEdit()` refuses them as a second lock.
+  `trailing_newline` is in `TEMPLATE_COLUMNS`, so that column must exist before any app.html
+  that asks for it goes live, and must never be dropped while one is.
 - **The custom template builder is information gathering.** Account → Exports, owner/manager,
   every plan: a venue builds its own template (barcode identifier only until the Phase 2
   product list), and **must say which POS it is for** — `export_templates.pos_system`, from

@@ -497,6 +497,129 @@ eq(new Set(names5).size, 5, 'full, standard, bepoz and two blank custom patterns
 eq(names5[0], 'gantry-main-bar-cellar-' + FIXED_DATE + '.csv', 'full keeps its old name');
 eq(names5[3], 'gantry-main-bar-cellar-' + FIXED_DATE + '-our-pos.csv', 'blank custom pattern ends with the template name');
 
+// ---------------------------------------------------------------------------
+// 10. The four H&L trial templates (20261111_01): which layout H&L Stock's BHT
+// import accepts. Their own $hl_seed$ block, so the $seed$ proof above is
+// untouched. The expected bytes are the test files the venue was sent.
+// ---------------------------------------------------------------------------
+console.log('H&L trial templates');
+function hlSeedBlock(file) {
+  const sql = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
+  const m = sql.match(/\$hl_seed\$(\[[\s\S]*?\])\$hl_seed\$/);
+  if (!m) throw new Error('no $hl_seed$ block in ' + file);
+  return m[1];
+}
+const HL_MIGRATION = 'supabase/migrations/20261111_01_hl_trial_templates.sql';
+const hlMigrationSeed = hlSeedBlock(HL_MIGRATION);
+eq(hlSeedBlock('schema.sql'), hlMigrationSeed, 'schema.sql carries the identical $hl_seed$ block');
+const HL = {};
+JSON.parse(hlMigrationSeed).forEach((t) => { HL[t.code] = Object.assign({ is_system: true }, t); });
+eq(Object.keys(HL).sort(), ['hl_test_a', 'hl_test_b', 'hl_test_c', 'hl_test_d'], 'four H&L trials seeded');
+eq(Object.keys(SEEDS).every((c) => !('trailing_newline' in SEEDS[c])), true,
+   'standard/bepoz/full seeds carry no trailing_newline (the column default, false)');
+
+// Both files widen the checks for system templates only, and add the column.
+[HL_MIGRATION, 'schema.sql'].forEach((f) => {
+  const sql = fs.readFileSync(path.join(root, f), 'utf8');
+  eq(/check \(delimiter in \(',', E'\\t'\) or \(is_system and delimiter = ''\)\)/.test(sql)
+     && /check \(file_extension in \('csv', 'txt'\) or \(is_system and file_extension = 'dat'\)\)/.test(sql)
+     && /add column if not exists trailing_newline boolean not null default false/.test(sql),
+     true, f + ': dat and fixed width for system templates only; trailing_newline column');
+  eq(/grant (insert|update) \([^)]*trailing_newline/.test(sql), false, f + ': trailing_newline is off the client GRANT');
+});
+
+const hlLines = (q) => [
+  { barcode: '2000000000015', qty: String(q[0]) },
+  { barcode: '2000000000022', qty: String(q[1]) },
+  { barcode: '2000000000039', qty: String(q[2]) },
+];
+const hlBuild = (code, items) => E.buildExport(HL[code], items, bctx);
+const HL_EXPECTED = {
+  hl_test_a: [[11, 12, 13], '2000000000015,11\r\n2000000000022,12\r\n2000000000039,13\r\n'],
+  hl_test_b: [[21, 22, 23], '2000000000015\t21\r\n2000000000022\t22\r\n2000000000039\t23\r\n'],
+  hl_test_c: [[31, 32, 33], '2000000000015    31\r\n2000000000022    32\r\n2000000000039    33\r\n'],
+  hl_test_d: [[41, 42, 43], '2000000000015000041\r\n2000000000022000042\r\n2000000000039000043\r\n'],
+};
+Object.keys(HL_EXPECTED).forEach((code) => {
+  const [q, bytes] = HL_EXPECTED[code];
+  const out = hlBuild(code, hlLines(q));
+  eq(out.text, bytes, code + ': byte for byte the file the venue was sent');
+  eq([out.bom, out.mime, out.overflow.length, out.blank.length], [false, 'text/plain;charset=utf-8', 0, 0],
+     code + ': no BOM, text/plain, nothing overflowed or blank');
+  eq(out.fileName, 'gantry-bar-cellar-' + FIXED_DATE + '-hl-' + code.slice(-1) + '.dat', code + ': file name');
+  eq(E.validateTemplate(HL[code]), [], code + ': validates');
+});
+
+// Fixed width never truncates: a 14-digit GTIN goes out whole, so that line is
+// 20 characters where the others are 19, and it is reported.
+const gtin14 = hlBuild('hl_test_c', [
+  { barcode: '2000000000015', qty: '31' },
+  { barcode: '12000000000152', qty: '5' },
+]);
+eq(gtin14.text, '2000000000015    31\r\n12000000000152     5\r\n', 'C: a 14-digit barcode goes out whole');
+eq(gtin14.text.split('\r\n').map((l) => l.length), [19, 20, 0], 'C: that line is one character longer');
+eq(gtin14.overflow.map((r) => r.barcode), ['12000000000152'], 'C: and it is in overflow, alone');
+// The count field overflows the same way.
+eq(hlBuild('hl_test_d', [{ barcode: '2000000000015', qty: '1234.25' }]).overflow.length, 1,
+   'D: a 7-character count overflows too, and is reported');
+eq(hlBuild('hl_test_d', [{ barcode: '2000000000015', qty: '1234.25' }]).text, '20000000000151234.25\r\n',
+   'D: and goes out whole');
+// Part bottles: 0.5 is "0000.5", still 6 characters.
+eq(hlBuild('hl_test_d', [{ barcode: '2000000000015', qty: '0.50' }]).text, '20000000000150000.5\r\n',
+   'D: a decimal count zero-pads to 0000.5');
+// Shorter than its width: padded, never moved. An 8-digit EAN in C.
+eq(hlBuild('hl_test_c', [{ barcode: '95049809', qty: '2' }]).text, '95049809          2\r\n',
+   'C: an 8-digit barcode is padded on the right to 13');
+// Merging still happens first: two lines that resolve to one barcode are one line.
+eq(hlBuild('hl_test_a', [{ barcode: '2000000000015', qty: '1' }, { barcode: ' 2000000000015', qty: '2' }]).text,
+   '2000000000015,3\r\n', 'A: merged on the resolved barcode, as every template is');
+
+// Fixed width in general.
+const fixedT = (over) => T(Object.assign({ delimiter: '', include_header: false, columns: [
+  { header: 'Code', source: 'identifier', width: 15, align: 'left', pad: ' ' },
+  { header: 'Qty', source: 'quantity', width: 4, align: 'right', pad: ' ' }] }, over));
+eq(E.buildExport(fixedT({ include_header: true }), one, ctx).text,
+   'Code            Qty\r\n9369998094189     2', 'fixed: header padded like the lines; no final newline unless asked');
+eq(E.buildExport(fixedT({ columns: [
+  { header: '', source: 'fixed', value: 'a\tb\r\nc', width: 7 },
+  { header: '', source: 'identifier', width: 13 }, { header: '', source: 'quantity', width: 2, pad: '0', align: 'right' }] }),
+  one, ctx).text, 'a b c  936999809418902', 'fixed: tabs and line breaks become a space; align defaults left, pad space');
+throws(() => E.buildExport(fixedT({ columns: [{ header: '', source: 'identifier', width: 13 },
+  { header: '', source: 'quantity' }] }), one, ctx), /Column 2 needs a width/, 'fixed: every column needs a width');
+throws(() => E.buildExport(fixedT({ columns: [{ header: '', source: 'identifier', width: 13.5 },
+  { header: '', source: 'quantity', width: 0 }] }), one, ctx), /Column 1 needs a width[\s\S]*Column 2 needs a width/,
+  'fixed: widths are whole numbers above zero');
+throws(() => E.buildExport(fixedT({ columns: [{ header: '', source: 'identifier', width: 13, align: 'centre' },
+  { header: '', source: 'quantity', width: 6, pad: '-' }] }), one, ctx),
+  /aligned left or right[\s\S]*spaces or zeros/, 'fixed: align and pad are checked');
+// A comma or tab file never depends on widths: adding them to standard changes nothing.
+const withWidths = Object.assign({}, SEEDS.standard, { columns: SEEDS.standard.columns.map((c) =>
+  Object.assign({ width: 3, align: 'right', pad: '0' }, c)) });
+eq(E.buildExport(withWidths, ITEMS, bctx).text, E.buildExport(SEEDS.standard, ITEMS, bctx).text,
+   'comma: widths on the columns are ignored');
+eq(E.buildExport(withWidths, ITEMS, bctx).overflow, [], 'comma: overflow is always empty');
+eq(/\r\n$/.test(E.buildExport(SEEDS.standard, ITEMS, bctx).text) || /\r\n$/.test(E.buildExport(SEEDS.full, ITEMS, bctx).text),
+   false, 'standard and full still end without a newline');
+eq(E.buildExport(T({ trailing_newline: true }), one, ctx).text, 'Barcode,Count\r\n9369998094189,2\r\n',
+   'trailing_newline works on any template');
+eq(E.fileNameFor(T({ file_extension: 'xls' }), ctx), 'gantry-main-bar-cellar-' + FIXED_DATE + '-test.csv',
+   'an unrecognised extension is still csv');
+
+// Picker text: labelled unverified, says what to do, names nobody, no em dashes
+// in the new text (templateDetail()'s own sentence predates this).
+Object.keys(HL).forEach((code) => {
+  const t = HL[code];
+  eq(E.templateOptionLabel(t), t.name + ' — unverified', code + ': unverified in the option label');
+  eq(/Parafield|Airport|Colac|Port Adelaide|20\d\d-\d\d-\d\d/.test(t.name + ' ' + t.description), false,
+     code + ': no customer names or dates in system template text');
+  eq(/[—–]/.test(t.name + ' ' + t.description), false, code + ': no em or en dashes');
+  eq(/trial/.test(t.description) && /test stocktake/.test(t.description) && /discard/.test(t.description)
+     && /never import the same file twice/.test(t.description), true, code + ': says trial, test stocktake, discard, never twice');
+  eq([t.verified, t.import_behaviour, t.bom, t.trailing_newline, t.barcode_rules.leading_zero, t.include_header],
+     [false, 'add', false, true, 'keep', false], code + ': unverified, adds, no BOM, final newline, as scanned, no header');
+});
+eq(new Set(Object.keys(HL).map((c) => E.fileNameFor(HL[c], ctx))).size, 4, 'four downloads, four file names');
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) {
   console.error(`${failures} FAILED`);

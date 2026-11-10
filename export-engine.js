@@ -18,11 +18,18 @@
 //   identifier_fallback  same set, or null
 //   barcode_rules        { leading_zero, pad_length, trim } — barcode-export.js
 //   include_header       boolean
-//   columns              [{ header, source, value? }, ...] — order is output order
-//   delimiter            ',' or '\t'
-//   file_extension       'csv' | 'txt'
+//   columns              [{ header, source, value?, width?, align?, pad? }, ...]
+//                        — order is output order. width/align/pad are read
+//                        only in a fixed-width file (see fixedField())
+//   delimiter            ',' or '\t', or '' for fixed width (no separator;
+//                        every column padded to its width). The database
+//                        allows '' on system templates only (20261111_01)
+//   file_extension       'csv' | 'txt' | 'dat' ('dat' system templates only)
 //   file_name_pattern    e.g. 'gantry-{location}-{stocktake}-{date}-bepoz', or null
 //   bom                  boolean — see below, it is load-bearing both ways
+//   trailing_newline     boolean — end the file with \r\n after the last line.
+//                        Absent or false on standard/bepoz/full, whose bytes
+//                        never had one
 //   mode                 'generate' (this file) | 'fill' (Phase 4, not here)
 //
 // And ctx:
@@ -150,6 +157,28 @@ window.GANTRY_EXPORT_ENGINE = (function () {
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
 
+  // Fixed width (delimiter ''): no quoting, since there is no separator to
+  // protect. Tabs and line breaks become a space, as in the tab path, so one
+  // value can't split a line or shift the columns after it. Then padded to the
+  // column's width: align 'right' pads on the left, anything else on the
+  // right; pad is ' ' unless the template says '0'.
+  //
+  // NEVER truncated. A value longer than its width goes out whole and the line
+  // comes out longer: a 14-digit GTIN cut to 13 characters is a different
+  // barcode, and an importer would match it to the wrong product, or none,
+  // without saying. Returns { text, over } so the caller can report it.
+  function fixedField(v, col) {
+    var s = ((v === null || v === undefined) ? '' : String(v)).replace(/[\t\r\n]+/g, ' ');
+    var width = col.width;
+    if (s.length > width) return { text: s, over: true };
+    var fill = new Array(width - s.length + 1).join(col.pad === '0' ? '0' : ' ');
+    return { text: col.align === 'right' ? fill + s : s + fill, over: false };
+  }
+
+  function isFixedWidth(t) {
+    return t.delimiter === '';
+  }
+
   // Refuse a template that can't produce a correct file, BEFORE producing one.
   // A malformed template that "works" is how a POS ends up importing the wrong
   // column as the count — the original Colac Bepoz failure, reached by a new road.
@@ -167,9 +196,10 @@ window.GANTRY_EXPORT_ENGINE = (function () {
     if (t.identifier_fallback && !IDENTIFIER_TYPES[t.identifier_fallback]) {
       problems.push('Unknown fallback identifier type "' + t.identifier_fallback + '".');
     }
-    if (t.delimiter !== ',' && t.delimiter !== '\t') {
-      problems.push('Delimiter must be a comma or a tab.');
+    if (t.delimiter !== ',' && t.delimiter !== '\t' && t.delimiter !== '') {
+      problems.push('Delimiter must be a comma or a tab, or none for a fixed-width file.');
     }
+    var fixed = isFixedWidth(t);
     var cols = t.columns;
     if (!Array.isArray(cols) || !cols.length) {
       problems.push('The template has no columns.');
@@ -182,6 +212,20 @@ window.GANTRY_EXPORT_ENGINE = (function () {
         }
         if (c.source === 'identifier') hasId = true;
         if (c.source === 'quantity') hasQty = true;
+        // Widths are read only here. A comma or tab file ignores them, so its
+        // bytes can never depend on one.
+        if (fixed) {
+          var w = c.width;
+          if (typeof w !== 'number' || Math.floor(w) !== w || w < 1) {
+            problems.push('Column ' + (i + 1) + ' needs a width (a whole number of characters) in a fixed-width file.');
+          }
+          if (c.align !== undefined && c.align !== 'left' && c.align !== 'right') {
+            problems.push('Column ' + (i + 1) + ' must be aligned left or right.');
+          }
+          if (c.pad !== undefined && c.pad !== ' ' && c.pad !== '0') {
+            problems.push('Column ' + (i + 1) + ' must be padded with spaces or zeros.');
+          }
+        }
       });
       // Every stocktake import the brief's research found wants these two. A
       // template without them is not a stocktake import, whatever it's called.
@@ -267,10 +311,16 @@ window.GANTRY_EXPORT_ENGINE = (function () {
       .replace(FILENAME_JUNK, '')
       .replace(/-{2,}/g, '-')
       .replace(/^[-_.\s]+|[-_.\s]+$/g, '');
-    return (name || 'gantry-export') + '.' + (t.file_extension === 'txt' ? 'txt' : 'csv');
+    return (name || 'gantry-export') + '.' + extensionOf(t);
   }
 
-  // template + stored lines + ctx -> { text, bom, fileName, mime, lineCount, blank }
+  // Anything not recognised is csv, as it always was.
+  function extensionOf(t) {
+    return (t.file_extension === 'txt' || t.file_extension === 'dat') ? t.file_extension : 'csv';
+  }
+
+  // template + stored lines + ctx
+  //   -> { text, bom, fileName, mime, lineCount, blank, overflow }
   //
   // Throws (with the validation problems as the message) on a template that
   // can't produce a correct file. The caller shows that and exports nothing.
@@ -280,6 +330,11 @@ window.GANTRY_EXPORT_ENGINE = (function () {
   // file (dropping a counted line silently is the one thing worse than an
   // unmatched one), and the caller decides what to say. Always empty for a
   // barcode template.
+  //
+  // `overflow` lists the lines where a value was longer than its fixed-width
+  // column and went out whole (fixedField()), so that line is longer than the
+  // rest. Same deal as `blank`: in the file, reported, the caller decides.
+  // Always empty for a comma or tab file.
   function buildExport(t, items, ctx) {
     var problems = validateTemplate(t);
     if (problems.length) throw new Error(problems.join(' '));
@@ -302,33 +357,50 @@ window.GANTRY_EXPORT_ENGINE = (function () {
       },
     });
 
+    // One line from one value per column. In a fixed-width file `delimiter` is
+    // '', so the join adds nothing and the padding does the separating.
+    var fixed = isFixedWidth(t);
+    var lineOver = false;
+    function line(valueOf) {
+      lineOver = false;
+      return t.columns.map(function (c) {
+        if (!fixed) return escapeField(valueOf(c), delimiter);
+        var f = fixedField(valueOf(c), c);
+        if (f.over) lineOver = true;
+        return f.text;
+      }).join(delimiter);
+    }
+
     var lines = [];
     if (t.include_header) {
-      lines.push(t.columns.map(function (c) {
-        return escapeField(c.header == null ? '' : c.header, delimiter);
-      }).join(delimiter));
+      lines.push(line(function (c) { return c.header == null ? '' : c.header; }));
     }
     var blank = [];
+    var overflow = [];
     rows.forEach(function (row) {
       if (row.identifier === '') blank.push(row);
-      lines.push(t.columns.map(function (c) {
-        return escapeField(valueFor(c, row, t, ctx), delimiter);
-      }).join(delimiter));
+      lines.push(line(function (c) { return valueFor(c, row, t, ctx); }));
+      if (lineOver) overflow.push(row);
     });
 
+    // \r\n between lines, and by default none after the last: what both old
+    // builders produced, so what every importer that has accepted a Gantry
+    // file has seen. A template that says trailing_newline gets one more.
+    var text = lines.join('\r\n');
+    if (t.trailing_newline === true && lines.length) text += '\r\n';
+
     return {
-      // \r\n and no trailing newline: what both old builders produced, so what
-      // every importer that has accepted a Gantry file has seen.
-      text: lines.join('\r\n'),
+      text: text,
       // Per template, and load-bearing in OPPOSITE directions: Excel needs the
       // byte-order mark to read the Gantry CSV's accented venue names, and the
       // same three bytes make a headerless POS file's FIRST barcode arrive as
       // "﻿9351142000085", which a strict importer silently fails to match.
       bom: t.bom === true,
       fileName: fileNameFor(t, ctx),
-      mime: (t.file_extension === 'txt' ? 'text/plain' : 'text/csv') + ';charset=utf-8',
+      mime: (extensionOf(t) === 'csv' ? 'text/csv' : 'text/plain') + ';charset=utf-8',
       lineCount: rows.length,
       blank: blank,
+      overflow: overflow,
     };
   }
 

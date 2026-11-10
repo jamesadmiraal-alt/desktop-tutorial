@@ -3921,9 +3921,13 @@
   // point was still undefined (a hoisted var), so every builder query asked
   // PostgREST for "undefined,pos_system,pos_other" and got a 400 (42703) — the
   // custom template builder never loaded on the live site (retest, 14 Oct).
+  //
+  // trailing_newline (20261111_01) is here, so that migration must be applied
+  // BEFORE this page is pushed: without the column every template read is a
+  // 400 and no venue can export.
   var TEMPLATE_COLUMNS = 'id,org_id,is_system,code,name,description,verified,'
     + 'identifier_type,identifier_fallback,barcode_rules,include_header,columns,'
-    + 'delimiter,file_extension,file_name_pattern,bom,import_behaviour,mode';
+    + 'delimiter,file_extension,file_name_pattern,bom,trailing_newline,import_behaviour,mode';
   var BUILDER_COLUMNS = TEMPLATE_COLUMNS + ',pos_system,pos_other';
 
   // Ordered for a person choosing, not alphabetically: the two every import
@@ -3973,8 +3977,24 @@
     $(prefix + '-pos-other').style.display = on ? '' : 'none';
   }
 
+  // The builder offers csv/txt and comma/tab, and keeps only header, source
+  // and value from each column. A template it can't show (a .dat or fixed-width
+  // one) would be re-saved as csv/comma without anyone choosing that, so it is
+  // refused here instead. The database only allows those on Gantry's own
+  // templates (20261111_01), which never reach the builder, so this is the
+  // second lock, not the first.
+  function builderCanEdit(t) {
+    if (!t) return true;
+    if (t.file_extension !== 'csv' && t.file_extension !== 'txt') return false;
+    return t.delimiter === ',' || t.delimiter === '\t';
+  }
+
   function openExportBuilder(t) {
     if (!canBuildTemplates()) return;
+    if (!builderCanEdit(t)) {
+      toast('This template uses a file layout the builder can’t edit yet. Use Get help to ask us to change it.', '#b45309');
+      return;
+    }
     var ENGINE = window.GANTRY_EXPORT_ENGINE;
     eb.editing = t || null;
     eb.savedId = t ? t.id : null;
@@ -8564,7 +8584,8 @@
   // POS replaces its counts with the file rather than adding to them.
   function renderExportButton() {
     var t = currentOrg && currentOrg.exportTemplate;
-    var kind = (t && t.file_extension === 'txt') ? 'TXT' : 'CSV';
+    var ext = t && t.file_extension;
+    var kind = (ext === 'txt' || ext === 'dat') ? ext.toUpperCase() : 'CSV';
     $('take-export').innerHTML = ICO('download') + ' Export ' + kind;
     if (t) $('take-export').appendChild(document.createTextNode(' (' + templateShortName(t) + ')'));
     var notes = [];
@@ -8970,13 +8991,20 @@
   // reason 'export' (not 'manual') so the activity log can tell an automatic
   // completion from someone deliberately tapping Mark completed, and so
   // setTakeStatus() stays quiet and lets the messages here be the only ones.
-  function completeThenHandOver(take, handOver, handoverMsg) {
+  //
+  // `warning` (optional) is something about the file itself, e.g. fixed-width
+  // lines that overflowed. It rides on whichever message is shown below,
+  // because there is one toast and a second one would replace the first. It
+  // turns a success amber; the red ones stay red.
+  function completeThenHandOver(take, handOver, handoverMsg, warning) {
+    var extra = warning ? '. ' + warning : '';
+    var okColour = warning ? '#b45309' : undefined;
     // Re-exporting an already-completed take: nothing to change, and
     // set_stocktake_status() would no-op anyway — so don't spend a round trip
     // (or risk a cancelled one) before handing the file over.
     if (take.status === 'completed') {
       handOver();
-      toast(handoverMsg);
+      toast(handoverMsg + extra, okColour);
       return;
     }
     setTakeStatus(take, 'completed', 'export', function (ok, finalStatus) {
@@ -8987,14 +9015,14 @@
       // ok and finalStatus come from the server — the RPC's own answer, or a
       // read-back after a lost reply — never from what this device assumed.
       if (ok) {
-        toast(handoverMsg + ' — count marked completed');
+        toast(handoverMsg + ' — count marked completed' + extra, okColour);
       } else if (finalStatus) {
         // setTakeStatus may have toasted the underlying reason; this replaces
         // it deliberately: "Could not update stocktake: TypeError: Load failed"
         // tells a bartender nothing, whereas which half worked does.
-        toast(handoverMsg + ' — still ' + statusLabel(finalStatus) + ', finish it from ⋯', '#b91c1c');
+        toast(handoverMsg + ' — still ' + statusLabel(finalStatus) + ', finish it from ⋯' + extra, '#b91c1c');
       } else {
-        errorToast(handoverMsg + ' — couldn’t confirm it was marked completed; check the stocktake list');
+        errorToast(handoverMsg + ' — couldn’t confirm it was marked completed; check the stocktake list' + extra);
       }
       // Confirm Home against the server in the background, so the card can't
       // keep saying Ready if anything above went sideways.
@@ -9141,6 +9169,18 @@
     return out;
   }
 
+  // A fixed-width template's lines that didn't fit their columns (a 14-digit
+  // barcode in a 13-character field) went out whole: never cut short, since a
+  // cut barcode is a different barcode. Said with the download, never blocking
+  // it. '' when nothing overflowed, which is always for a comma or tab file.
+  function overflowWarning(overflow) {
+    var n = (overflow || []).length;
+    if (!n) return '';
+    return (n === 1 ? '1 line had a value' : n + ' lines had values')
+      + ' too long for the file’s fixed columns and went out in full, so check '
+      + (n === 1 ? 'it' : 'them') + ' after importing';
+  }
+
   function doExport() {
     // Snapshot up front: the overlay closes below and actionsTake can be
     // repointed by the next ⋯ tap before the async work finishes.
@@ -9200,7 +9240,7 @@
         // navigation cancels it.
         completeThenHandOver(take, function () {
           downloadFile(out.text, out.fileName, out.bom, out.mime);
-        }, templateShortName(template) + ' export downloaded');
+        }, templateShortName(template) + ' export downloaded', overflowWarning(out.overflow));
       }
 
       // EXPORT COMPLETES THE COUNT. Changed 2026-09-09 at James's direction,
