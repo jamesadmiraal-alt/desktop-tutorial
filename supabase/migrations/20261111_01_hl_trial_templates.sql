@@ -1,4 +1,10 @@
 -- ===========================================================================
+-- SUPERSEDED, 13 Nov 2026: 20261113_01 deleted the four trials below and
+-- replaced them with hl_bht, the layout H&L's BHT import actually reads. Do
+-- not re-run this file on its own: section 3 would bring the trials back.
+-- Sections 1 and 2 (trailing_newline, the system-only checks) still stand and
+-- are what hl_bht relies on.
+-- ===========================================================================
 -- APPLY THIS IN SUPABASE BEFORE PUSHING app.html.
 --
 -- The new app.html asks for export_templates.trailing_newline in every

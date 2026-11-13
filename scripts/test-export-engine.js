@@ -498,28 +498,56 @@ eq(names5[0], 'gantry-main-bar-cellar-' + FIXED_DATE + '.csv', 'full keeps its o
 eq(names5[3], 'gantry-main-bar-cellar-' + FIXED_DATE + '-our-pos.csv', 'blank custom pattern ends with the template name');
 
 // ---------------------------------------------------------------------------
-// 10. The four H&L trial templates (20261111_01): which layout H&L Stock's BHT
-// import accepts. Their own $hl_seed$ block, so the $seed$ proof above is
-// untouched. The expected bytes are the test files the venue was sent.
+// 10. The H&L Stock template (20261113_01), which replaced the four trials of
+// 20261111_01. Its own $hl_seed$ block, so the $seed$ proof above is untouched.
+//
+// THE READER. hlRead() is how H&L Stock's PDE import (PDE Type = BHT) reads a
+// line, as H&L's own PDE logs showed over two evenings of test imports: the
+// barcode is characters 1-16 and the count characters 17-22, each trimmed,
+// and anything past 22 is ignored. It is checked first against every line H&L
+// logged, so the file below is tested against what H&L did, not what we think.
 // ---------------------------------------------------------------------------
-console.log('H&L trial templates');
+console.log('H&L Stock template');
+const hlRead = (line) => ({ barcode: line.slice(0, 16).trim(), qty: line.slice(16, 22).trim() });
+// [the line sent, the barcode H&L logged, the quantity H&L logged]
+const HL_LOGGED = [
+  // 11 Nov: trial A (comma), B (tab), C (13 + 6, spaces), D (13 + 6, zeros).
+  ['2000000000015,11', '2000000000015,11', ''],
+  ['2000000000015\t21', '2000000000015\t21', ''],
+  ['2000000000015    31', '2000000000015', '31'],
+  ['2000000000015000041', '2000000000015000', '041'],
+  // 12 Nov: the probe. Every barcode padded to 16, one question per line.
+  ['2000000000015   6', '2000000000015', '6'],
+  ['2000000000022   12.5', '2000000000022', '12.5'],
+  ['9320000100755   12.5', '9320000100755', '12.5'], // a real product: "Count: 12.50"
+  ['2000000000039   1000', '2000000000039', '1000'],
+  ['2000000000046   10.25', '2000000000046', '10.25'],
+  ['2000000000053         24', '2000000000053', ''], // right-aligned in 8: 17-22 are spaces
+  ['2000000000060   36      ', '2000000000060', '36'], // trailing spaces are fine
+  ['2000000000077   1234567.75', '2000000000077', '123456'], // the count field is 6 wide
+  ['12000000000152  48', '12000000000152', '48'],
+];
+HL_LOGGED.forEach(([line, barcode, qty]) =>
+  eq(hlRead(line), { barcode: barcode, qty: qty }, 'reader matches H&L\'s log for ' + JSON.stringify(line)));
+
 function hlSeedBlock(file) {
   const sql = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
   const m = sql.match(/\$hl_seed\$(\[[\s\S]*?\])\$hl_seed\$/);
   if (!m) throw new Error('no $hl_seed$ block in ' + file);
   return m[1];
 }
-const HL_MIGRATION = 'supabase/migrations/20261111_01_hl_trial_templates.sql';
+const HL_MIGRATION = 'supabase/migrations/20261113_01_hl_bht_template.sql';
+const HL_ENGINE_MIGRATION = 'supabase/migrations/20261111_01_hl_trial_templates.sql';
 const hlMigrationSeed = hlSeedBlock(HL_MIGRATION);
 eq(hlSeedBlock('schema.sql'), hlMigrationSeed, 'schema.sql carries the identical $hl_seed$ block');
-const HL = {};
-JSON.parse(hlMigrationSeed).forEach((t) => { HL[t.code] = Object.assign({ is_system: true }, t); });
-eq(Object.keys(HL).sort(), ['hl_test_a', 'hl_test_b', 'hl_test_c', 'hl_test_d'], 'four H&L trials seeded');
+const HL_SEED = JSON.parse(hlMigrationSeed);
+eq(HL_SEED.map((t) => t.code), ['hl_bht'], 'one H&L template, hl_bht; no trial is seeded');
+const HLT = Object.assign({ is_system: true }, HL_SEED[0]);
 eq(Object.keys(SEEDS).every((c) => !('trailing_newline' in SEEDS[c])), true,
    'standard/bepoz/full seeds carry no trailing_newline (the column default, false)');
 
-// Both files widen the checks for system templates only, and add the column.
-[HL_MIGRATION, 'schema.sql'].forEach((f) => {
+// What the engine needs, from 20261111_01, still stands in schema.sql.
+[HL_ENGINE_MIGRATION, 'schema.sql'].forEach((f) => {
   const sql = fs.readFileSync(path.join(root, f), 'utf8');
   eq(/check \(delimiter in \(',', E'\\t'\) or \(is_system and delimiter = ''\)\)/.test(sql)
      && /check \(file_extension in \('csv', 'txt'\) or \(is_system and file_extension = 'dat'\)\)/.test(sql)
@@ -527,52 +555,71 @@ eq(Object.keys(SEEDS).every((c) => !('trailing_newline' in SEEDS[c])), true,
      true, f + ': dat and fixed width for system templates only; trailing_newline column');
   eq(/grant (insert|update) \([^)]*trailing_newline/.test(sql), false, f + ': trailing_newline is off the client GRANT');
 });
-
-const hlLines = (q) => [
-  { barcode: '2000000000015', qty: String(q[0]) },
-  { barcode: '2000000000022', qty: String(q[1]) },
-  { barcode: '2000000000039', qty: String(q[2]) },
-];
-const hlBuild = (code, items) => E.buildExport(HL[code], items, bctx);
-const HL_EXPECTED = {
-  hl_test_a: [[11, 12, 13], '2000000000015,11\r\n2000000000022,12\r\n2000000000039,13\r\n'],
-  hl_test_b: [[21, 22, 23], '2000000000015\t21\r\n2000000000022\t22\r\n2000000000039\t23\r\n'],
-  hl_test_c: [[31, 32, 33], '2000000000015    31\r\n2000000000022    32\r\n2000000000039    33\r\n'],
-  hl_test_d: [[41, 42, 43], '2000000000015000041\r\n2000000000022000042\r\n2000000000039000043\r\n'],
-};
-Object.keys(HL_EXPECTED).forEach((code) => {
-  const [q, bytes] = HL_EXPECTED[code];
-  const out = hlBuild(code, hlLines(q));
-  eq(out.text, bytes, code + ': byte for byte the file the venue was sent');
-  eq([out.bom, out.mime, out.overflow.length, out.blank.length], [false, 'text/plain;charset=utf-8', 0, 0],
-     code + ': no BOM, text/plain, nothing overflowed or blank');
-  eq(out.fileName, 'gantry-bar-cellar-' + FIXED_DATE + '-hl-' + code.slice(-1) + '.dat', code + ': file name');
-  eq(E.validateTemplate(HL[code]), [], code + ': validates');
+// Re-running never un-verifies hl_bht (verified is server-only, set by hand).
+[HL_MIGRATION, 'schema.sql'].forEach((f) => {
+  const sql = fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n');
+  const at = sql.indexOf('$hl_seed$::jsonb');
+  const upsert = sql.slice(at, sql.indexOf('mode = excluded.mode;', at));
+  eq([at > 0, /on conflict \(code\) where is_system do update set/.test(upsert), /verified = excluded\.verified/.test(upsert)],
+     [true, true, false], f + ': the hl_bht upsert leaves verified alone');
 });
+// The trials go on a live database: the migration moves anyone on one to
+// hl_bht with set_export_template()'s mirror, then deletes them. schema.sql
+// only ever builds an empty database, so it just never seeds them.
+{
+  const sql = fs.readFileSync(path.join(root, HL_MIGRATION), 'utf8').replace(/\r\n/g, '\n');
+  const trials = "code in ('hl_test_a', 'hl_test_b', 'hl_test_c', 'hl_test_d')";
+  const move = sql.indexOf('set export_template_id = h.id,\n       export_format = \'standard\',\n       strip_leading_zero = false');
+  const del = sql.indexOf('delete from public.export_templates\n where is_system and ' + trials + ';');
+  eq([move > 0, del > move, sql.indexOf('where is_system and ' + trials + ')') > move],
+     [true, true, true], HL_MIGRATION + ': moves orgs off the four trials, then deletes them');
+  eq(/hl_test_/.test(fs.readFileSync(path.join(root, 'schema.sql'), 'utf8')), false, 'schema.sql never mentions a trial');
+}
 
-// Fixed width never truncates: a 14-digit GTIN goes out whole, so that line is
-// 20 characters where the others are 19, and it is reported.
-const gtin14 = hlBuild('hl_test_c', [
-  { barcode: '2000000000015', qty: '31' },
-  { barcode: '12000000000152', qty: '5' },
+const bht = (items) => E.buildExport(HLT, items, bctx);
+const bhtOut = bht([
+  { barcode: '9310441001575', qty: '31' },
+  { barcode: '9320000100755', qty: '12.50' },
+  { barcode: '2000000000039', qty: '1000' },
+  { barcode: '2000000000046', qty: '10.25' },
+  { barcode: '12000000000152', qty: '0.5' },
+  { barcode: '95049809', qty: '999999' },
 ]);
-eq(gtin14.text, '2000000000015    31\r\n12000000000152     5\r\n', 'C: a 14-digit barcode goes out whole');
-eq(gtin14.text.split('\r\n').map((l) => l.length), [19, 20, 0], 'C: that line is one character longer');
-eq(gtin14.overflow.map((r) => r.barcode), ['12000000000152'], 'C: and it is in overflow, alone');
-// The count field overflows the same way.
-eq(hlBuild('hl_test_d', [{ barcode: '2000000000015', qty: '1234.25' }]).overflow.length, 1,
-   'D: a 7-character count overflows too, and is reported');
-eq(hlBuild('hl_test_d', [{ barcode: '2000000000015', qty: '1234.25' }]).text, '20000000000151234.25\r\n',
-   'D: and goes out whole');
-// Part bottles: 0.5 is "0000.5", still 6 characters.
-eq(hlBuild('hl_test_d', [{ barcode: '2000000000015', qty: '0.50' }]).text, '20000000000150000.5\r\n',
-   'D: a decimal count zero-pads to 0000.5');
-// Shorter than its width: padded, never moved. An 8-digit EAN in C.
-eq(hlBuild('hl_test_c', [{ barcode: '95049809', qty: '2' }]).text, '95049809          2\r\n',
-   'C: an 8-digit barcode is padded on the right to 13');
+eq(bhtOut.text,
+   '9310441001575       31\r\n' +
+   '9320000100755     12.5\r\n' +
+   '2000000000039     1000\r\n' +
+   '2000000000046    10.25\r\n' +
+   '12000000000152     0.5\r\n' +
+   '95049809        999999\r\n', 'hl_bht: barcode left in 16, count right in 6, CRLF and a final CRLF');
+const bhtLines = bhtOut.text.split('\r\n').slice(0, -1);
+eq(bhtLines.map((l) => l.length), [22, 22, 22, 22, 22, 22], 'hl_bht: every line is 22 characters');
+eq(bhtLines.map(hlRead), [
+  { barcode: '9310441001575', qty: '31' }, { barcode: '9320000100755', qty: '12.5' },
+  { barcode: '2000000000039', qty: '1000' }, { barcode: '2000000000046', qty: '10.25' },
+  { barcode: '12000000000152', qty: '0.5' }, { barcode: '95049809', qty: '999999' }],
+   'hl_bht: H&L reads back every barcode and count: 8, 13 and 14 digits, decimals, up to 6 characters');
+eq([bhtOut.bom, bhtOut.mime, bhtOut.overflow.length, bhtOut.blank.length], [false, 'text/plain;charset=utf-8', 0, 0],
+   'hl_bht: no BOM, text/plain, nothing overflowed or blank');
+eq(bhtOut.fileName, 'gantry-bar-cellar-' + FIXED_DATE + '-hl.dat', 'hl_bht: file name');
+eq(E.validateTemplate(HLT), [], 'hl_bht: validates');
+
+// What doesn't fit is never cut, and is reported: H&L would misread it, which
+// is exactly why the download toast names it.
+const tooLong = bht([
+  { barcode: '2000000000015', qty: '1000.25' },
+  { barcode: '12345678901234567', qty: '2' },
+  { barcode: '2000000000022', qty: '3' },
+]);
+eq(tooLong.overflow.map((r) => r.barcode), ['2000000000015', '12345678901234567'],
+   'hl_bht: a 7-character count and a 17-character barcode are both reported');
+eq(tooLong.text.split('\r\n').slice(0, -1).map(hlRead), [
+  { barcode: '2000000000015', qty: '1000.2' }, { barcode: '1234567890123456', qty: '7' },
+  { barcode: '2000000000022', qty: '3' }],
+   'hl_bht: and H&L really would misread them, while the line after is untouched');
 // Merging still happens first: two lines that resolve to one barcode are one line.
-eq(hlBuild('hl_test_a', [{ barcode: '2000000000015', qty: '1' }, { barcode: ' 2000000000015', qty: '2' }]).text,
-   '2000000000015,3\r\n', 'A: merged on the resolved barcode, as every template is');
+eq(bht([{ barcode: '2000000000015', qty: '1' }, { barcode: ' 2000000000015', qty: '2' }]).text,
+   '2000000000015        3\r\n', 'hl_bht: merged on the resolved barcode, as every template is');
 
 // Fixed width in general.
 const fixedT = (over) => T(Object.assign({ delimiter: '', include_header: false, columns: [
@@ -605,20 +652,20 @@ eq(E.buildExport(T({ trailing_newline: true }), one, ctx).text, 'Barcode,Count\r
 eq(E.fileNameFor(T({ file_extension: 'xls' }), ctx), 'gantry-main-bar-cellar-' + FIXED_DATE + '-test.csv',
    'an unrecognised extension is still csv');
 
-// Picker text: labelled unverified, says what to do, names nobody, no em dashes
-// in the new text (templateDetail()'s own sentence predates this).
-Object.keys(HL).forEach((code) => {
-  const t = HL[code];
-  eq(E.templateOptionLabel(t), t.name + ' — unverified', code + ': unverified in the option label');
-  eq(/Parafield|Airport|Colac|Port Adelaide|20\d\d-\d\d-\d\d/.test(t.name + ' ' + t.description), false,
-     code + ': no customer names or dates in system template text');
-  eq(/[—–]/.test(t.name + ' ' + t.description), false, code + ': no em or en dashes');
-  eq(/trial/.test(t.description) && /test stocktake/.test(t.description) && /discard/.test(t.description)
-     && /never import the same file twice/.test(t.description), true, code + ': says trial, test stocktake, discard, never twice');
-  eq([t.verified, t.import_behaviour, t.bom, t.trailing_newline, t.barcode_rules.leading_zero, t.include_header],
-     [false, 'add', false, true, 'keep', false], code + ': unverified, adds, no BOM, final newline, as scanned, no header');
-});
-eq(new Set(Object.keys(HL).map((c) => E.fileNameFor(HL[c], ctx))).size, 4, 'four downloads, four file names');
+// Picker text: labelled unverified until a real count has imported, says what
+// to do, names nobody, no em dashes in the new text (templateDetail()'s own
+// sentence predates this).
+eq(E.templateOptionLabel(HLT), 'H&L Stock (BHT) — unverified', 'hl_bht: unverified in the option label');
+eq(/Parafield|Airport|Colac|Port Adelaide|Royal Exchange|Duxton|Criterion|Eddie|20\d\d-\d\d-\d\d/.test(HLT.name + ' ' + HLT.description),
+   false, 'hl_bht: no customer names or dates in system template text');
+eq(/[—–]/.test(HLT.name + ' ' + HLT.description), false, 'hl_bht: no em or en dashes');
+eq([/PDE Type set to BHT/, /first 16 characters/, /next 6/, /H&L converts them/,
+    /never import the same file twice/, /flagged when you export/].map((re) => re.test(HLT.description)),
+   [true, true, true, true, true, true], 'hl_bht: says BHT, 16 then 6, packs, never twice, and what gets flagged');
+eq([HLT.verified, HLT.import_behaviour, HLT.bom, HLT.trailing_newline, HLT.barcode_rules.leading_zero, HLT.include_header],
+   [false, 'add', false, true, 'keep', false], 'hl_bht: unverified, adds, no BOM, final newline, as scanned, no header');
+eq(new Set([sys('full'), sys('standard'), sys('bepoz'), HLT].map((t) => E.fileNameFor(t, ctx))).size, 4,
+   'hl_bht: its own file name, distinct from full, standard and bepoz');
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures) {

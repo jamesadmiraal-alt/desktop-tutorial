@@ -214,9 +214,18 @@ Static frontend, Supabase backend, Stripe Payment Links for billing.
   server-only column) are labelled in the picker and under the Export button, as is
   `import_behaviour = 'replace'`. Fill mode (`mode = 'fill'`) is refused by both the RPC
   and the engine until Phase 4.
-  **H&L trials (20261111_01):** four unverified system templates, `hl_test_a`..`d`, one per
-  candidate layout for H&L Stock's BHT import, seeded from their OWN `$hl_seed$` block (same
-  must-match-schema.sql rule, same test). Three get deleted once H&L confirms one. They brought
+  **H&L Stock (BHT), `hl_bht` (20261113_01):** H&L's PDE import with PDE Type BHT reads the
+  barcode from characters 1-16 and the count from 17-22, both trimmed, and ignores the rest. That
+  came from H&L's own PDE logs over two rounds of test imports (11-12 Nov 2026), and
+  `hlRead()` in `test-export-engine.js` is checked against every logged line before it checks the
+  file. So `hl_bht` is barcode left in 16, count right in 6, spaces, every line 22 characters. A
+  count over 6 characters (1000.25) or a barcode over 16 doesn't fit; it goes out whole and the
+  download toast flags it, because H&L would misread it. H&L converts pack sizes itself (a carton
+  barcode counted as 1 came in as 24), and decimals import. It replaced four trials
+  (`hl_test_a`..`d`, 20261111_01, now deleted; C only worked while counts were 3 characters).
+  `hl_bht` is seeded from its OWN `$hl_seed$` block (same must-match-schema.sql rule, same test),
+  and stays unverified until a real Gantry count has imported; then set `verified` by hand (the
+  upsert leaves it alone). 20261111_01 brought what it needs:
   `.dat`, fixed width (`delimiter = ''`, each column's `width`/`align`/`pad`; never truncated, an
   overlong value goes out whole and is reported in `overflow`, which the download toast names)
   and `trailing_newline` (false = the old bytes). `.dat` and `''` are allowed on **system

@@ -3983,13 +3983,14 @@ alter table public.stocktakes
     references public.export_templates(id) on delete set null;
 
 -- ==========================================================================
--- H&L trial export templates (20261111_01): four candidate layouts for the
--- file H&L Stock's BHT import accepts, plus what they need from the engine:
--- .dat, fixed width (delimiter '') and a final line break
--- (trailing_newline). 'dat' and '' are allowed on system templates only.
--- See the migration for the full rationale, the deploy order, and how to
--- retire the three that don't work. The $hl_seed$ block below must stay
--- identical to the migration's; scripts/test-export-engine.js checks it.
+-- H&L Stock export. 20261111_01 added what the engine needed (.dat, fixed
+-- width with delimiter '', a final line break via trailing_newline; 'dat' and
+-- '' on system templates only) and four trial layouts. 20261113_01 replaced
+-- the trials with the layout H&L's BHT import actually reads: barcode in
+-- characters 1-16, count in 17-22. See both migrations for the evidence, and
+-- 20261113_01 for retiring the trials on a live database. The
+-- $hl_seed$ block below must stay identical to 20261113_01's;
+-- scripts/test-export-engine.js checks it.
 -- ==========================================================================
 -- ---------------------------------------------------------------------------
 -- 1. The column.
@@ -4009,14 +4010,12 @@ alter table public.export_templates add constraint export_templates_file_extensi
   check (file_extension in ('csv', 'txt') or (is_system and file_extension = 'dat'));
 
 -- ---------------------------------------------------------------------------
--- 3. The four trials.
+-- 3. The H&L template (20261113_01).
 --
 -- The JSON between the $hl_seed$ markers is ALSO read by
--- scripts/test-export-engine.js, which builds a file from each and compares it
--- with the bytes the venue was sent, and requires the same block, unchanged,
--- in schema.sql. Same pattern as $seed$ in 20261010_01, kept as its own block
--- so that one stays untouched. Upsert on code, so re-running updates rather
--- than duplicates.
+-- scripts/test-export-engine.js, which checks the file it builds against what
+-- H&L's import logs showed it reading, and requires the same block, unchanged, in
+-- schema.sql. Upsert on code. `verified` is set on insert only.
 --
 -- System template text is read by every org: no customer or venue names here.
 -- ---------------------------------------------------------------------------
@@ -4031,84 +4030,21 @@ select true, null, s.code, s.name, s.description, s.verified, s.identifier_type,
        s.trailing_newline, s.import_behaviour, s.mode, null
   from jsonb_to_recordset($hl_seed$[
     {
-      "code": "hl_test_a",
-      "name": "H&L trial A: comma",
-      "description": "A trial file for working out which layout H&L Stock accepts for a BHT import: barcode, a comma, then the count, one line per product. Import it into a test stocktake in H&L and discard that stocktake afterwards. H&L adds imported counts to the stocktake, so never import the same file twice.",
+      "code": "hl_bht",
+      "name": "H&L Stock (BHT)",
+      "description": "For H&L Stock's PDE import with PDE Type set to BHT: the barcode in the first 16 characters, then the count in the next 6, one line per product. Count cartons and packs as their own barcode; H&L converts them. H&L adds imported counts to the stocktake, so never import the same file twice. A count longer than 6 characters, such as 1000.25, does not fit and is flagged when you export.",
       "verified": false,
       "identifier_type": "barcode",
       "identifier_fallback": null,
       "barcode_rules": {"leading_zero": "keep", "trim": true},
       "include_header": false,
       "columns": [
-        {"header": "barcode", "source": "identifier"},
-        {"header": "count", "source": "quantity"}
-      ],
-      "delimiter": ",",
-      "file_extension": "dat",
-      "file_name_pattern": "gantry-{location}-{stocktake}-{date}-hl-a",
-      "bom": false,
-      "trailing_newline": true,
-      "import_behaviour": "add",
-      "mode": "generate"
-    },
-    {
-      "code": "hl_test_b",
-      "name": "H&L trial B: tab",
-      "description": "A trial file for working out which layout H&L Stock accepts for a BHT import: barcode, a tab, then the count, one line per product. Import it into a test stocktake in H&L and discard that stocktake afterwards. H&L adds imported counts to the stocktake, so never import the same file twice.",
-      "verified": false,
-      "identifier_type": "barcode",
-      "identifier_fallback": null,
-      "barcode_rules": {"leading_zero": "keep", "trim": true},
-      "include_header": false,
-      "columns": [
-        {"header": "barcode", "source": "identifier"},
-        {"header": "count", "source": "quantity"}
-      ],
-      "delimiter": "\t",
-      "file_extension": "dat",
-      "file_name_pattern": "gantry-{location}-{stocktake}-{date}-hl-b",
-      "bom": false,
-      "trailing_newline": true,
-      "import_behaviour": "add",
-      "mode": "generate"
-    },
-    {
-      "code": "hl_test_c",
-      "name": "H&L trial C: fixed width, spaces",
-      "description": "A trial file for working out which layout H&L Stock accepts for a BHT import: the barcode in 13 characters, then the count right-aligned in 6, padded with spaces, one line per product. Import it into a test stocktake in H&L and discard that stocktake afterwards. H&L adds imported counts to the stocktake, so never import the same file twice.",
-      "verified": false,
-      "identifier_type": "barcode",
-      "identifier_fallback": null,
-      "barcode_rules": {"leading_zero": "keep", "trim": true},
-      "include_header": false,
-      "columns": [
-        {"header": "barcode", "source": "identifier", "width": 13, "align": "left", "pad": " "},
+        {"header": "barcode", "source": "identifier", "width": 16, "align": "left", "pad": " "},
         {"header": "count", "source": "quantity", "width": 6, "align": "right", "pad": " "}
       ],
       "delimiter": "",
       "file_extension": "dat",
-      "file_name_pattern": "gantry-{location}-{stocktake}-{date}-hl-c",
-      "bom": false,
-      "trailing_newline": true,
-      "import_behaviour": "add",
-      "mode": "generate"
-    },
-    {
-      "code": "hl_test_d",
-      "name": "H&L trial D: fixed width, zeros",
-      "description": "A trial file for working out which layout H&L Stock accepts for a BHT import: the barcode in 13 characters, then the count right-aligned in 6, padded with zeros, one line per product. Import it into a test stocktake in H&L and discard that stocktake afterwards. H&L adds imported counts to the stocktake, so never import the same file twice.",
-      "verified": false,
-      "identifier_type": "barcode",
-      "identifier_fallback": null,
-      "barcode_rules": {"leading_zero": "keep", "trim": true},
-      "include_header": false,
-      "columns": [
-        {"header": "barcode", "source": "identifier", "width": 13, "align": "left", "pad": " "},
-        {"header": "count", "source": "quantity", "width": 6, "align": "right", "pad": "0"}
-      ],
-      "delimiter": "",
-      "file_extension": "dat",
-      "file_name_pattern": "gantry-{location}-{stocktake}-{date}-hl-d",
+      "file_name_pattern": "gantry-{location}-{stocktake}-{date}-hl",
       "bom": false,
       "trailing_newline": true,
       "import_behaviour": "add",
@@ -4123,7 +4059,6 @@ select true, null, s.code, s.name, s.description, s.verified, s.identifier_type,
 on conflict (code) where is_system do update set
   name = excluded.name,
   description = excluded.description,
-  verified = excluded.verified,
   identifier_type = excluded.identifier_type,
   identifier_fallback = excluded.identifier_fallback,
   barcode_rules = excluded.barcode_rules,
