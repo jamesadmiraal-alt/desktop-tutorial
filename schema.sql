@@ -4031,9 +4031,9 @@ select true, null, s.code, s.name, s.description, s.verified, s.identifier_type,
   from jsonb_to_recordset($hl_seed$[
     {
       "code": "hl_bht",
-      "name": "H&L Stock (BHT)",
+      "name": "H&L",
       "description": "For H&L Stock's PDE import with PDE Type set to BHT: the barcode in the first 16 characters, then the count in the next 6, one line per product. Count cartons and packs as their own barcode; H&L converts them. H&L adds imported counts to the stocktake, so never import the same file twice. A count longer than 6 characters, such as 1000.25, does not fit and is flagged when you export.",
-      "verified": false,
+      "verified": true,
       "identifier_type": "barcode",
       "identifier_fallback": null,
       "barcode_rules": {"leading_zero": "keep", "trim": true},

@@ -36,7 +36,9 @@
 -- For this template that means a barcode over 16 characters, or a count over 6
 -- (1000.25, 12345.5). H&L would misread that line, so the toast is the warning.
 --
--- verified stays false until a real Gantry count, exported with this template,
+-- Done 19 Nov 2026 by 20261119_01, after two counts exported from Gantry read
+-- cleanly in H&L. It was applied unverified, the plan being: verified stays
+-- false until a real Gantry count, exported with this template,
 -- has imported cleanly into a test stocktake in H&L. Then:
 --   update public.export_templates set verified = true where is_system and code = 'hl_bht';
 -- (verified is server-only, and is not in the seed's upsert path for that
@@ -61,6 +63,9 @@
 -- schema.sql. Upsert on code. `verified` is set on insert only.
 --
 -- System template text is read by every org: no customer or venue names here.
+--
+-- Applied as "H&L Stock (BHT)", unverified; 20261119_01 renamed it "H&L" and
+-- verified it, and this block carries both so a re-run or rebuild matches.
 -- ---------------------------------------------------------------------------
 insert into public.export_templates
   (is_system, org_id, code, name, description, verified, identifier_type,
@@ -74,9 +79,9 @@ select true, null, s.code, s.name, s.description, s.verified, s.identifier_type,
   from jsonb_to_recordset($hl_seed$[
     {
       "code": "hl_bht",
-      "name": "H&L Stock (BHT)",
+      "name": "H&L",
       "description": "For H&L Stock's PDE import with PDE Type set to BHT: the barcode in the first 16 characters, then the count in the next 6, one line per product. Count cartons and packs as their own barcode; H&L converts them. H&L adds imported counts to the stocktake, so never import the same file twice. A count longer than 6 characters, such as 1000.25, does not fit and is flagged when you export.",
-      "verified": false,
+      "verified": true,
       "identifier_type": "barcode",
       "identifier_fallback": null,
       "barcode_rules": {"leading_zero": "keep", "trim": true},

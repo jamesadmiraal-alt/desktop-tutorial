@@ -652,10 +652,10 @@ eq(E.buildExport(T({ trailing_newline: true }), one, ctx).text, 'Barcode,Count\r
 eq(E.fileNameFor(T({ file_extension: 'xls' }), ctx), 'gantry-main-bar-cellar-' + FIXED_DATE + '-test.csv',
    'an unrecognised extension is still csv');
 
-// Picker text: labelled unverified until a real count has imported, says what
-// to do, names nobody, no em dashes in the new text (templateDetail()'s own
-// sentence predates this).
-eq(E.templateOptionLabel(HLT), 'H&L Stock (BHT) — unverified', 'hl_bht: unverified in the option label');
+// Picker text: verified since 20261119_01 (two real Gantry counts read cleanly
+// in H&L), says what to do, names nobody, no em dashes in the new text
+// (templateDetail()'s own sentence predates this).
+eq([HLT.name, E.templateOptionLabel(HLT)], ['H&L', 'H&L'], 'hl_bht: named just H&L and verified (20261119_01): no "unverified" in the option label');
 eq(/Parafield|Airport|Colac|Port Adelaide|Royal Exchange|Duxton|Criterion|Eddie|20\d\d-\d\d-\d\d/.test(HLT.name + ' ' + HLT.description),
    false, 'hl_bht: no customer names or dates in system template text');
 eq(/[—–]/.test(HLT.name + ' ' + HLT.description), false, 'hl_bht: no em or en dashes');
@@ -663,7 +663,7 @@ eq([/PDE Type set to BHT/, /first 16 characters/, /next 6/, /H&L converts them/,
     /never import the same file twice/, /flagged when you export/].map((re) => re.test(HLT.description)),
    [true, true, true, true, true, true], 'hl_bht: says BHT, 16 then 6, packs, never twice, and what gets flagged');
 eq([HLT.verified, HLT.import_behaviour, HLT.bom, HLT.trailing_newline, HLT.barcode_rules.leading_zero, HLT.include_header],
-   [false, 'add', false, true, 'keep', false], 'hl_bht: unverified, adds, no BOM, final newline, as scanned, no header');
+   [true, 'add', false, true, 'keep', false], 'hl_bht: verified, adds, no BOM, final newline, as scanned, no header');
 eq(new Set([sys('full'), sys('standard'), sys('bepoz'), HLT].map((t) => E.fileNameFor(t, ctx))).size, 4,
    'hl_bht: its own file name, distinct from full, standard and bepoz');
 
